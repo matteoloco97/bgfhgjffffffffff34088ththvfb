@@ -1,0 +1,10 @@
+llm:
+  provider: localai
+  endpoint: http://localhost:8081
+  model: qwen-14b
+  temperature: 0.7
+  max_tokens: 1024
+
+telegram:
+  bot_token: "7812895693:AAFOwTMdq2eKii7AmAnZZao1jH_5R7JcF3I"
+  api_url: "http://127.0.0.1:8000/chat"
