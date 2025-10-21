@@ -4,32 +4,41 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-# Usiamo il nostro stesso endpoint /generate per riusare tutta la logica esistente
-GENERATE_URL = os.getenv("QUANTUM_API_URL", "http://127.0.0.1:8081/generate")
+
+# URL diretto all'endpoint GPU
+LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:18001/v1/chat/completions")
+LLM_MODEL = os.getenv("LLM_MODEL", "mixtral-8x7b")
 
 async def _post(url: str, payload: dict, timeout: int = 30):
     return await asyncio.to_thread(
         lambda: requests.post(url, json=payload, timeout=timeout)
     )
 
-def _extract_text(result: dict) -> str:
-    # Prova lo schema OpenAI-compat del tuo /generate
-    try:
-        return result["response"]["choices"][0]["message"]["content"].strip()
-    except Exception:
-        # fallback: prova a ritornare l’intero json (troncato)
-        return json.dumps(result, ensure_ascii=False)[:4000]
-
 async def reply_with_llm(user_text: str, persona: str) -> str:
+    """
+    Chiama direttamente l'LLM con formato OpenAI-compatible
+    """
     payload = {
-        "prompt": user_text,
-        "system": persona or "Sei una GPT neutra e modulare.",
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": persona or "Sei un assistente conciso e pratico."},
+            {"role": "user", "content": user_text}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 1024
     }
+    
     try:
-        r = await _post(GENERATE_URL, payload)
+        r = await _post(LLM_ENDPOINT, payload, timeout=60)
         if r.status_code != 200:
-            return f"❌ Backend {r.status_code}: {r.text[:300]}"
+            return f"❌ LLM error {r.status_code}: {r.text[:300]}"
+        
         data = r.json()
-        return _extract_text(data)
+        
+        try:
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError) as e:
+            return f"❌ Formato risposta inatteso: {e}\n{json.dumps(data, ensure_ascii=False)[:500]}"
+    
     except Exception as e:
-        return f"❌ Errore backend: {e}"
+        return f"❌ Errore LLM: {e}"
