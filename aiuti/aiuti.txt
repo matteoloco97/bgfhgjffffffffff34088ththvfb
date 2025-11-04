@@ -1,1 +1,0 @@
-scarface@scarfopc:~/quantumdev-open$ source venv/bin/activate
