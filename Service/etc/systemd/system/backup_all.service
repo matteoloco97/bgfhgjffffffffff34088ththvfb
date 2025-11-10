@@ -1,0 +1,8 @@
+[Unit]
+Description=QuantumDev - Backup automatico su Wasabi
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/quantumdev-open/scripts
+ExecStart=/root/quantumdev-open/venv/bin/python3 backup_all.py
