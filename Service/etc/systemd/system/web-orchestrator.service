@@ -1,0 +1,19 @@
+
+[Unit]
+Description=Quantum Web Orchestrator (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+WorkingDirectory=/root/quantumdev-open
+Environment="PYTHONPATH=/root/quantumdev-open"
+EnvironmentFile=-/root/quantumdev-open/.env
+ExecStart=/opt/qd-orch-venv/bin/uvicorn agents.web_orchestrator:app --app-dir /root/quantumdev-open --host 0.0.0.0 --port 8082 --workers 1 --log-level info
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
