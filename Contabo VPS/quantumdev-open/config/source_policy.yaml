@@ -1,0 +1,98 @@
+# config/source_policy.yaml
+# Categorie con trigger -> prefer/allow
+categories:
+
+  default:
+    triggers: []
+    # trusted general-purpose news sources
+    prefer:
+      - ansa.it
+      - reuters.com
+      - bbc.com
+      - theguardian.com
+      - repubblica.it
+      - ilsole24ore.com
+    allow:
+      - wikipedia.org
+      - treccani.it
+      - x.com
+    avoid:
+      - askjeeves.com
+      - quora.com
+      - yahooanswers.com
+
+  news:
+    triggers: ["news", "notizie", "ultimo", "ultime", "cronaca"]
+    prefer:
+      - ansa.it
+      - reuters.com
+      - bbc.com
+      - theguardian.com
+      - repubblica.it
+      - ilsole24ore.com
+    allow:
+      - corriere.it
+      - nytimes.com
+      - washingtonpost.com
+    avoid:
+      - dagospia.com
+      - liberoquotidiano.it
+      - ilgiornale.it
+
+  prices_markets:
+    triggers: ["prezzo", "prezzi", "quotazione", "mercato", "valore", "borsa", "azioni", "indice", "crypto", "criptovaluta", "bitcoin", "btc", "eth", "ethereum", "forex", "eurusd", "eur/usd"]
+    prefer:
+      - coinmarketcap.com
+      - coindesk.com
+      - investing.com
+      - tradingview.com
+      - binance.com
+      - kraken.com
+      - yahoo.com
+    allow:
+      - bloomberg.com
+      - reuters.com
+      - ilsole24ore.com
+    avoid:
+      - investingcube.com
+      - bitcoinist.com
+      - cryptoslate.com
+
+  health_medical:
+    triggers: ["salute", "health", "medico", "medicina", "malattia", "sintomi", "terapia", "diagnosi", "prevenzione"]
+    prefer:
+      - who.int
+      - salute.gov.it
+      - iss.it
+      - nih.gov
+      - mayoclinic.org
+      - medlineplus.gov
+      - unicef.org
+    allow:
+      - wikipedia.org
+      - webmd.com
+      - nhs.uk
+    avoid:
+      - wakeup-world.com
+      - naturalnews.com
+      - disinformazione.it
+
+  technical:
+    triggers: ["stack overflow", "stackoverflow", "github", "codice", "api", "documentazione", "python", "java", "javascript", "c++", "query", "sql", "errore", "bug"]
+    prefer:
+      - stackoverflow.com
+      - stackexchange.com
+      - docs.python.org
+      - developer.mozilla.org
+      - github.com
+      - readthedocs.io
+      - oracle.com
+      - microsoft.com
+    allow:
+      - medium.com
+      - dev.to
+      - hackernoon.com
+    avoid:
+      - reddit.com
+      - randomtechnicalblog.com
+      - quora.com
