@@ -129,9 +129,28 @@ def _append_unique(base: List[Dict[str, str]], more: List[Dict[str, str]], limit
 
 # ===================== HTTP =====================
 
+# OPTIMIZED: Connection pooling con HTTPAdapter per performance migliori
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 _session = requests.Session()
 _session.trust_env = False  # PATCH: Ignore proxy from environment
 _session.headers.update({"User-Agent": UA, **LANG_HDR})
+
+# OPTIMIZATION: Configura connection pooling e retry strategy
+_retry_strategy = Retry(
+    total=2,  # Max 2 retry
+    backoff_factor=0.3,  # 0.3s, 0.6s backoff
+    status_forcelist=[429, 500, 502, 503, 504],  # Retry su questi status
+    allowed_methods=["HEAD", "GET", "POST"],
+)
+_adapter = HTTPAdapter(
+    pool_connections=10,  # Pool di connessioni
+    pool_maxsize=20,  # Max connessioni per host
+    max_retries=_retry_strategy,
+)
+_session.mount("http://", _adapter)
+_session.mount("https://", _adapter)
 
 def _http_get(url: str, timeout: float) -> str:
     r = _session.get(url, timeout=timeout, allow_redirects=True)
@@ -475,8 +494,23 @@ def _heuristic_results(query: str, num: int) -> List[Dict[str, str]]:
 
 # ================= Tiny in-memory cache =================
 
+# OPTIMIZATION: Cache più grande e TTL più lungo
 _CACHE: Dict[Tuple[str, int], Tuple[float, List[Dict[str, str]]]] = {}
-_CACHE_TTL = 30.0  # secondi
+_CACHE_TTL = 120.0  # OPTIMIZED: 2 minuti invece di 30s per ridurre chiamate ripetute
+_CACHE_MAX_SIZE = 500  # OPTIMIZATION: Limite max per evitare memory leak
+
+def _cache_cleanup() -> None:
+    """Rimuove entries scadute e limita dimensione cache."""
+    now = time.time()
+    expired = [k for k, (ts, _) in _CACHE.items() if now - ts > _CACHE_TTL]
+    for k in expired:
+        _CACHE.pop(k, None)
+    
+    # Se ancora troppo grande, rimuovi i più vecchi
+    if len(_CACHE) > _CACHE_MAX_SIZE:
+        sorted_keys = sorted(_CACHE.keys(), key=lambda k: _CACHE[k][0])
+        for k in sorted_keys[:len(_CACHE) - _CACHE_MAX_SIZE]:
+            _CACHE.pop(k, None)
 
 def _cache_get(q: str, n: int) -> Optional[List[Dict[str, str]]]:
     key = (q.strip().lower(), int(n))
@@ -492,6 +526,9 @@ def _cache_get(q: str, n: int) -> Optional[List[Dict[str, str]]]:
 def _cache_set(q: str, n: int, data: List[Dict[str, str]]):
     key = (q.strip().lower(), int(n))
     _CACHE[key] = (time.time(), data[:])
+    # Cleanup periodico (ogni 50 inserimenti)
+    if len(_CACHE) % 50 == 0:
+        _cache_cleanup()
 
 # ===================== Domain policy (boost/allow) =====================
 

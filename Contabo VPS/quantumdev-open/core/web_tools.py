@@ -75,16 +75,30 @@ def _build_headers() -> dict:
 def _http_get(url: str, timeout: float) -> Optional[requests.Response]:
     """
     HTTP GET con gestione redirect e timeout separati.
+    OPTIMIZED: Connection pooling e migliore gestione errori.
 
     timeout: timeout "totale" desiderato. Lo splittiamo in connect/read.
     """
     headers = _build_headers()
     # provo a spezzare il timeout in connect + read
-    connect_timeout = min(4.0, timeout * 0.4)
-    read_timeout = max(2.0, timeout * 0.6)
+    connect_timeout = min(3.0, timeout * 0.35)  # OPTIMIZED: più tempo per lettura
+    read_timeout = max(2.5, timeout * 0.65)
 
     try:
-        resp = requests.get(
+        # OPTIMIZATION: Usa sessione con connection pooling se disponibile
+        session = getattr(_http_get, '_session', None)
+        if session is None:
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            session = requests.Session()
+            session.trust_env = False
+            retry = Retry(total=1, backoff_factor=0.2, status_forcelist=[502, 503, 504])
+            adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=retry)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            _http_get._session = session  # type: ignore
+        
+        resp = session.get(
             url,
             headers=headers,
             timeout=(connect_timeout, read_timeout),

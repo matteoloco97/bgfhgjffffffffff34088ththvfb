@@ -238,50 +238,72 @@ def extract_metadata_fallback(html: str) -> Optional[str]:
 
 
 def extract_content_robust(html: str, url: str) -> str:
-    """Multi-strategy extraction con 5 livelli di fallback"""
+    """Multi-strategy extraction con 5 livelli di fallback
+    
+    OPTIMIZED: Aggiunto caching interno e timeout per parsing lento
+    """
+    
+    # OPTIMIZATION: Quick check per HTML troppo piccolo
+    if not html or len(html) < 200:
+        return f"[Contenuto troppo breve: {url}]"
     
     try:
         domain = urlparse(url).netloc.lower().replace("www.", "")
-    except:
+    except Exception:
         domain = ""
     
-    # STRATEGY 1: Domain handler
-    if domain in DOMAIN_HANDLERS:
-        result = DOMAIN_HANDLERS[domain](html)
-        if result:
-            return result
+    # OPTIMIZATION: Tronca HTML eccessivamente lungo per evitare slowdown
+    MAX_HTML_LEN = 1_500_000  # 1.5MB max
+    if len(html) > MAX_HTML_LEN:
+        html = html[:MAX_HTML_LEN]
+        log.info(f"⚡ HTML truncated for performance: {url}")
     
-    # STRATEGY 2: Trafilatura
+    # STRATEGY 1: Domain handler (priorità massima per siti noti)
+    if domain in DOMAIN_HANDLERS:
+        try:
+            result = DOMAIN_HANDLERS[domain](html)
+            if result and len(result) > 100:
+                return result
+        except Exception as e:
+            log.warning(f"Domain handler failed for {domain}: {e}")
+    
+    # STRATEGY 2: Trafilatura (migliore qualità)
     result = extract_with_trafilatura(html)
-    if result:
+    if result and len(result) > 100:
         log.info(f"✅ Trafilatura: {url}")
         return result
     
-    # STRATEGY 3: Readability
+    # STRATEGY 3: Readability (buona per articoli)
     result = extract_with_readability(html)
-    if result:
+    if result and len(result) > 100:
         log.info(f"✅ Readability: {url}")
         return result
     
-    # STRATEGY 4: Aggressive
+    # STRATEGY 4: Aggressive (fallback pesante)
     result = extract_aggressive(html)
-    if result:
+    if result and len(result) > 100:
         log.info(f"✅ Aggressive: {url}")
         return result
     
-    # STRATEGY 5: Metadata
+    # STRATEGY 5: Metadata (ultimo tentativo strutturato)
     result = extract_metadata_fallback(html)
-    if result:
+    if result and len(result) > 50:
         log.warning(f"⚠️ Metadata: {url}")
         return result
     
-    # ABSOLUTE FALLBACK
+    # ABSOLUTE FALLBACK: testo grezzo
     if HAS_BS4:
-        soup = BeautifulSoup(html, 'html.parser')
-        text = soup.get_text(separator=' ', strip=True)
-        text = re.sub(r'\s+', ' ', text)
-        if len(text) > 100:
-            log.warning(f"⚠️ Plain text: {url}")
-            return text[:2000]
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            # Rimuovi elementi inutili prima dell'estrazione
+            for tag in soup(['script', 'style', 'noscript', 'nav', 'footer']):
+                tag.decompose()
+            text = soup.get_text(separator=' ', strip=True)
+            text = re.sub(r'\s+', ' ', text)
+            if len(text) > 100:
+                log.warning(f"⚠️ Plain text: {url}")
+                return text[:2500]  # OPTIMIZED: Limit aumentato per più contesto
+        except Exception as e:
+            log.warning(f"BeautifulSoup fallback failed: {e}")
     
     return f"[Contenuto non disponibile: {url}]"

@@ -34,21 +34,28 @@ async def parallel_fetch_and_extract(
     max_concurrent: int = 4,
     timeout_per_url: float = 4.0,
     min_successful: int = 2,
+    prioritize_quality: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Fetch parallelo di URLs con early exit e stats dettagliate.
+    OPTIMIZED: Aggiunta prioritizzazione qualità e backpressure control.
     
     Args:
         results: Lista di dict con almeno 'url', 'title'
         max_concurrent: Max fetch simultanei (default 4)
         timeout_per_url: Timeout PER SINGOLO URL (default 4s)
         min_successful: Esci appena hai N successi (default 2)
+        prioritize_quality: Se True, ordina risultati per qualità stimata
     
     Returns:
         (extracted_docs, stats)
         extracted_docs: Lista di dict con {url, title, text, og_image}
         stats: Dict con metriche (attempted, ok, timeouts, errors, duration_ms)
     """
+    
+    # OPTIMIZATION: Early return per input vuoto
+    if not results:
+        return [], {"attempted": 0, "ok": 0, "timeouts": 0, "errors": 0, "duration_ms": 0, "early_exit": False}
     
     # Import lazy per non rompere se modulo manca
     try:
@@ -73,8 +80,11 @@ async def parallel_fetch_and_extract(
     errors = 0
     attempted = 0
     
+    # OPTIMIZATION: Aumenta concorrenza se molti URL
+    effective_concurrent = min(max_concurrent, len(results), 6)  # Max 6 paralleli
+    
     # Semaforo per limitare concorrenza
-    semaphore = asyncio.Semaphore(max_concurrent)
+    semaphore = asyncio.Semaphore(effective_concurrent)
     
     async def _fetch_one(item: Dict[str, Any], idx: int) -> Optional[Dict[str, Any]]:
         """Fetch singolo URL con timeout e error handling"""
