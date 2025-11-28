@@ -34,18 +34,16 @@ async def parallel_fetch_and_extract(
     max_concurrent: int = 4,
     timeout_per_url: float = 4.0,
     min_successful: int = 2,
-    prioritize_quality: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Fetch parallelo di URLs con early exit e stats dettagliate.
-    OPTIMIZED: Aggiunta prioritizzazione qualità e backpressure control.
+    OPTIMIZED: Aggiunta concorrenza dinamica e backpressure control.
     
     Args:
         results: Lista di dict con almeno 'url', 'title'
         max_concurrent: Max fetch simultanei (default 4)
         timeout_per_url: Timeout PER SINGOLO URL (default 4s)
         min_successful: Esci appena hai N successi (default 2)
-        prioritize_quality: Se True, ordina risultati per qualità stimata
     
     Returns:
         (extracted_docs, stats)

@@ -31,6 +31,12 @@ try:
 except ImportError:
     HAS_READABILITY = False
 
+# ===================== Configuration Constants =====================
+# OPTIMIZATION: Limiti configurabili per performance
+EXTRACTION_MAX_HTML_LEN = 1_500_000  # 1.5MB max per evitare slowdown
+EXTRACTION_MIN_HTML_LEN = 200  # Minimo per considerare contenuto valido
+EXTRACTION_MAX_OUTPUT_LEN = 2500  # Limite output per fallback testo grezzo
+
 
 def extract_ilmeteo(html: str) -> Optional[str]:
     """Extractor per ilmeteo.it - usa html.parser per evitare XML errors"""
@@ -244,7 +250,7 @@ def extract_content_robust(html: str, url: str) -> str:
     """
     
     # OPTIMIZATION: Quick check per HTML troppo piccolo
-    if not html or len(html) < 200:
+    if not html or len(html) < EXTRACTION_MIN_HTML_LEN:
         return f"[Contenuto troppo breve: {url}]"
     
     try:
@@ -253,9 +259,8 @@ def extract_content_robust(html: str, url: str) -> str:
         domain = ""
     
     # OPTIMIZATION: Tronca HTML eccessivamente lungo per evitare slowdown
-    MAX_HTML_LEN = 1_500_000  # 1.5MB max
-    if len(html) > MAX_HTML_LEN:
-        html = html[:MAX_HTML_LEN]
+    if len(html) > EXTRACTION_MAX_HTML_LEN:
+        html = html[:EXTRACTION_MAX_HTML_LEN]
         log.info(f"⚡ HTML truncated for performance: {url}")
     
     # STRATEGY 1: Domain handler (priorità massima per siti noti)
@@ -302,7 +307,7 @@ def extract_content_robust(html: str, url: str) -> str:
             text = re.sub(r'\s+', ' ', text)
             if len(text) > 100:
                 log.warning(f"⚠️ Plain text: {url}")
-                return text[:2500]  # OPTIMIZED: Limit aumentato per più contesto
+                return text[:EXTRACTION_MAX_OUTPUT_LEN]
         except Exception as e:
             log.warning(f"BeautifulSoup fallback failed: {e}")
     

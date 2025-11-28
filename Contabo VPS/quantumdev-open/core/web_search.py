@@ -498,6 +498,7 @@ def _heuristic_results(query: str, num: int) -> List[Dict[str, str]]:
 _CACHE: Dict[Tuple[str, int], Tuple[float, List[Dict[str, str]]]] = {}
 _CACHE_TTL = 120.0  # OPTIMIZED: 2 minuti invece di 30s per ridurre chiamate ripetute
 _CACHE_MAX_SIZE = 500  # OPTIMIZATION: Limite max per evitare memory leak
+_CACHE_CLEANUP_FREQUENCY = 50  # Cleanup ogni N inserimenti
 
 def _cache_cleanup() -> None:
     """Rimuove entries scadute e limita dimensione cache."""
@@ -526,8 +527,8 @@ def _cache_get(q: str, n: int) -> Optional[List[Dict[str, str]]]:
 def _cache_set(q: str, n: int, data: List[Dict[str, str]]):
     key = (q.strip().lower(), int(n))
     _CACHE[key] = (time.time(), data[:])
-    # Cleanup periodico (ogni 50 inserimenti)
-    if len(_CACHE) % 50 == 0:
+    # Cleanup periodico
+    if len(_CACHE) % _CACHE_CLEANUP_FREQUENCY == 0:
         _cache_cleanup()
 
 # ===================== Domain policy (boost/allow) =====================
