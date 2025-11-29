@@ -94,6 +94,19 @@ class SmartIntentClassifier:
             "temperatura",
             "pioggia",
             "neve",
+            "previsioni",
+            "previsione",
+            "nuvoloso",
+            "sereno",
+            "temporale",
+        ]
+        
+        # Pattern più specifici per query meteo con città
+        self.weather_patterns = [
+            r"meteo\s+\w+",           # "meteo roma"
+            r"che\s+tempo\s+fa",      # "che tempo fa a..."
+            r"previsioni\s+\w+",      # "previsioni milano"
+            r"weather\s+\w+",         # "weather rome"
         ]
 
         # Asset keywords representing financial instruments, precious metals

@@ -110,6 +110,20 @@ try:
 except Exception:  # pragma: no cover
     WebResearchAgent = None  # type: ignore
 
+# 🌤️ Weather Agent (Open-Meteo API)
+try:
+    from agents.weather_open_meteo import (
+        get_weather_for_query,
+        is_weather_query,
+        extract_city_from_query,
+    )
+    WEATHER_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_weather_for_query = None  # type: ignore
+    is_weather_query = None  # type: ignore
+    extract_city_from_query = None  # type: ignore
+    WEATHER_AGENT_AVAILABLE = False
+
 # Smart intent (rule-based)
 from core.smart_intent_classifier import SmartIntentClassifier
 
@@ -1725,6 +1739,33 @@ async def generate(
                 out["intent"] = used_intent
                 out["reason"] = (out.get("reason") or "") + "|url_missing_fallback"
 
+        # 🌤️ WEATHER AGENT: intercetta query meteo prima del WEB_SEARCH generico
+        if used_intent == "WEB_SEARCH" and WEATHER_AGENT_AVAILABLE and is_weather_query:
+            if is_weather_query(prompt):
+                log.info(f"🌤️ Weather query detected: {prompt}")
+                try:
+                    weather_answer = await get_weather_for_query(prompt)
+                    if weather_answer:
+                        out.update(
+                            {
+                                "cached": False,
+                                "response": _wrap(weather_answer, model_name),
+                                "weather_agent": True,
+                                "note": "weather_agent_response",
+                            }
+                        )
+                        _fb_record(
+                            query=prompt,
+                            intent_used="WEATHER_AGENT",
+                            satisfaction=1.0,
+                            response_time_s=time.perf_counter() - t0,
+                        )
+                        redis_client.setex(cache_key, 3600, json.dumps(out))  # Cache 1h per meteo
+                        return out
+                except Exception as e:
+                    log.warning(f"Weather agent failed, fallback to WEB_SEARCH: {e}")
+                    # Continua con WEB_SEARCH normale
+
         # WEB_SEARCH
         if used_intent == "WEB_SEARCH":
             ws = await _web_search_pipeline(
@@ -2296,6 +2337,20 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                 "results": [],
                 "note": "non_web_query",
             }
+
+        # 🌤️ Weather Agent: intercetta query meteo
+        if WEATHER_AGENT_AVAILABLE and is_weather_query and is_weather_query(payload.q):
+            try:
+                weather_answer = await get_weather_for_query(payload.q)
+                if weather_answer:
+                    return {
+                        "summary": weather_answer,
+                        "results": [],
+                        "note": "weather_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Weather agent failed in /web/summarize: {e}")
+                # Fallback to normal search
 
         ws = await _web_search_pipeline(
             q=payload.q,

@@ -155,9 +155,16 @@ class AdvancedWebResearch:
                 log.info("Not enough extracts for follow-up, stopping")
                 break
             
-            # Salto follow-up per ora - troppo complesso
-            # next_query = await self._generate_followup(...)
-            break  # TEMP: solo 1 step per debug
+            # Per query complesse, genera una query di follow-up per colmare gaps
+            # TODO: implementare generazione follow-up con LLM
+            # Per ora usa una variante della query originale con termini aggiuntivi
+            if step_num == 1 and quality_score < self.quality_threshold:
+                # Prova una query più specifica
+                current_query = f"{original_query} dettagli approfondimento"
+                log.info(f"Follow-up query: {current_query}")
+            else:
+                # Qualità sufficiente o già fatto follow-up
+                break
         
         # 7. Synthesis
         if not all_extracts:
