@@ -271,12 +271,15 @@ class SmartIntentClassifier:
         # Determine whether the prompt contains any temporal indicators
         has_live_time = any(k in low for k in self.time_live_keywords)
 
-        # Weather queries: if the prompt mentions weather terms, send
-        # directly to web search and mark the live_type accordingly.
-        if any(k in low for k in self.weather_keywords):
+        # Weather queries: if the prompt mentions weather terms or matches
+        # weather patterns, send directly to web search.
+        has_weather_keyword = any(k in low for k in self.weather_keywords)
+        has_weather_pattern = any(re.search(p, low) for p in self.weather_patterns)
+        
+        if has_weather_keyword or has_weather_pattern:
             return {
                 "intent": "WEB_SEARCH",
-                "confidence": 0.92,
+                "confidence": 0.95,  # Higher confidence with pattern matching
                 "reason": "weather_query",
                 "live_type": "weather",
                 "url": None,

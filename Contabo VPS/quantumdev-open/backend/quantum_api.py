@@ -1740,31 +1740,30 @@ async def generate(
                 out["reason"] = (out.get("reason") or "") + "|url_missing_fallback"
 
         # 🌤️ WEATHER AGENT: intercetta query meteo prima del WEB_SEARCH generico
-        if used_intent == "WEB_SEARCH" and WEATHER_AGENT_AVAILABLE and is_weather_query:
-            if is_weather_query(prompt):
-                log.info(f"🌤️ Weather query detected: {prompt}")
-                try:
-                    weather_answer = await get_weather_for_query(prompt)
-                    if weather_answer:
-                        out.update(
-                            {
-                                "cached": False,
-                                "response": _wrap(weather_answer, model_name),
-                                "weather_agent": True,
-                                "note": "weather_agent_response",
-                            }
-                        )
-                        _fb_record(
-                            query=prompt,
-                            intent_used="WEATHER_AGENT",
-                            satisfaction=1.0,
-                            response_time_s=time.perf_counter() - t0,
-                        )
-                        redis_client.setex(cache_key, 3600, json.dumps(out))  # Cache 1h per meteo
-                        return out
-                except Exception as e:
-                    log.warning(f"Weather agent failed, fallback to WEB_SEARCH: {e}")
-                    # Continua con WEB_SEARCH normale
+        if used_intent == "WEB_SEARCH" and WEATHER_AGENT_AVAILABLE and is_weather_query(prompt):
+            log.info(f"🌤️ Weather query detected: {prompt}")
+            try:
+                weather_answer = await get_weather_for_query(prompt)
+                if weather_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(weather_answer, model_name),
+                            "weather_agent": True,
+                            "note": "weather_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="WEATHER_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, 3600, json.dumps(out))  # Cache 1h per meteo
+                    return out
+            except Exception as e:
+                log.warning(f"Weather agent failed, fallback to WEB_SEARCH: {e}")
+                # Continua con WEB_SEARCH normale
 
         # WEB_SEARCH
         if used_intent == "WEB_SEARCH":
