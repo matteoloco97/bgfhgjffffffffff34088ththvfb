@@ -388,8 +388,12 @@ def _is_win(team_name: str, match: Dict[str, Any]) -> bool:
     """Verifica se la squadra ha vinto."""
     home = (match.get("home") or "").lower()
     away = (match.get("away") or "").lower()
-    home_score = int(match.get("home_score") or 0)
-    away_score = int(match.get("away_score") or 0)
+    
+    try:
+        home_score = int(match.get("home_score") or 0)
+        away_score = int(match.get("away_score") or 0)
+    except (ValueError, TypeError):
+        return False
 
     team_lower = team_name.lower()
 
@@ -402,8 +406,11 @@ def _is_win(team_name: str, match: Dict[str, Any]) -> bool:
 
 def _is_draw(match: Dict[str, Any]) -> bool:
     """Verifica se è pareggio."""
-    home_score = int(match.get("home_score") or 0)
-    away_score = int(match.get("away_score") or 0)
+    try:
+        home_score = int(match.get("home_score") or 0)
+        away_score = int(match.get("away_score") or 0)
+    except (ValueError, TypeError):
+        return False
     return home_score == away_score
 
 

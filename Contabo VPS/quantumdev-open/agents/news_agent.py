@@ -256,10 +256,15 @@ async def _fetch_headlines(
 def _format_relative_time(published_at: str) -> str:
     """Formatta timestamp in tempo relativo."""
     try:
-        # Parse ISO format
-        if "Z" in published_at:
-            published_at = published_at.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        if not published_at:
+            return ""
+        
+        # Parse ISO format - gestisce vari formati
+        timestamp = published_at
+        if "Z" in timestamp:
+            timestamp = timestamp.replace("Z", "+00:00")
+        
+        dt = datetime.fromisoformat(timestamp)
         now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
 
         diff = now - dt

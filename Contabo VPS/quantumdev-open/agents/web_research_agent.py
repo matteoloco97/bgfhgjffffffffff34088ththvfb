@@ -49,6 +49,7 @@ WEB_RESEARCH_MAX_DOCS = int(os.getenv("WEB_RESEARCH_MAX_DOCS", "5"))
 WEB_RESEARCH_MAX_STEPS = int(os.getenv("WEB_RESEARCH_MAX_STEPS", "3"))
 WEB_RESEARCH_QUALITY_THRESHOLD = float(os.getenv("WEB_RESEARCH_QUALITY_THRESHOLD", "0.6"))
 WEB_RESEARCH_MAX_CONCURRENT = int(os.getenv("WEB_RESEARCH_MAX_CONCURRENT", "4"))
+WEB_RESEARCH_MIN_KEYWORD_LEN = int(os.getenv("WEB_RESEARCH_MIN_KEYWORD_LEN", "3"))
 
 
 class WebResearchAgent:
@@ -197,9 +198,12 @@ class WebResearchAgent:
         for e in extracts:
             text_lower = (e.get("text") or "").lower()
             for word in query_words:
-                if len(word) > 3 and word in text_lower:
+                if len(word) > WEB_RESEARCH_MIN_KEYWORD_LEN and word in text_lower:
                     keyword_hits += 1
-        keyword_score = min(keyword_hits / (len(query_words) * len(extracts) + 1), 1.0)
+        
+        # Evita divisione per zero e calcola score
+        max_possible_hits = max(len(query_words), 1) * max(len(extracts), 1)
+        keyword_score = min(keyword_hits / max_possible_hits, 1.0)
 
         # Media pesata
         return 0.4 * count_score + 0.3 * diversity_score + 0.3 * keyword_score

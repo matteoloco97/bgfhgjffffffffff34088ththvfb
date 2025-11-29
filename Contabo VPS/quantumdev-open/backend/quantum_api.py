@@ -2605,7 +2605,7 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                 log.warning(f"Weather agent failed in /web/summarize: {e}")
 
         # 💰 Price Agent: intercetta query prezzi
-        if PRICE_AGENT_AVAILABLE and is_price_query and is_price_query(payload.q):
+        if PRICE_AGENT_AVAILABLE and is_price_query(payload.q):
             try:
                 price_answer = await get_price_for_query(payload.q)
                 if price_answer:
@@ -2618,7 +2618,7 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                 log.warning(f"Price agent failed in /web/summarize: {e}")
 
         # ⚽ Sports Agent: intercetta query sportive
-        if SPORTS_AGENT_AVAILABLE and is_sports_query and is_sports_query(payload.q):
+        if SPORTS_AGENT_AVAILABLE and is_sports_query(payload.q):
             try:
                 sports_answer = await get_sports_for_query(payload.q)
                 if sports_answer:
@@ -2631,7 +2631,7 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                 log.warning(f"Sports agent failed in /web/summarize: {e}")
 
         # 📰 News Agent: intercetta query news
-        if NEWS_AGENT_AVAILABLE and is_news_query and is_news_query(payload.q):
+        if NEWS_AGENT_AVAILABLE and is_news_query(payload.q):
             try:
                 news_answer = await get_news_for_query(payload.q)
                 if news_answer:
@@ -2644,7 +2644,7 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                 log.warning(f"News agent failed in /web/summarize: {e}")
 
         # 📅 Schedule Agent: intercetta query calendario
-        if SCHEDULE_AGENT_AVAILABLE and is_schedule_query and is_schedule_query(payload.q):
+        if SCHEDULE_AGENT_AVAILABLE and is_schedule_query(payload.q):
             try:
                 schedule_answer = await get_schedule_for_query(payload.q)
                 if schedule_answer:

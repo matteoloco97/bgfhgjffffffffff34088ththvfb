@@ -538,8 +538,9 @@ def extract_asset_from_query(query: str) -> Optional[Dict[str, Any]]:
     ticker_match = re.search(r"\b([A-Z]{2,5})\b", query)
     if ticker_match:
         ticker = ticker_match.group(1)
-        # Priorità crypto se sembra crypto
-        if ticker.upper() in ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"]:
+        # Priorità crypto se sembra crypto (usa chiavi da CRYPTO_ALIASES)
+        known_crypto_tickers = {k.upper() for k in CRYPTO_ALIASES.keys() if len(k) <= 5}
+        if ticker.upper() in known_crypto_tickers:
             crypto_id = CRYPTO_ALIASES.get(ticker.lower())
             if crypto_id:
                 return {"type": "crypto", "id": crypto_id, "alias": ticker}
