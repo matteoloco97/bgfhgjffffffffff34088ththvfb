@@ -124,6 +124,54 @@ except Exception:  # pragma: no cover
     extract_city_from_query = None  # type: ignore
     WEATHER_AGENT_AVAILABLE = False
 
+# 💰 Price Agent (Crypto/Stocks/Forex)
+try:
+    from agents.price_agent import (
+        get_price_for_query,
+        is_price_query,
+    )
+    PRICE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_price_for_query = None  # type: ignore
+    is_price_query = None  # type: ignore
+    PRICE_AGENT_AVAILABLE = False
+
+# ⚽ Sports Agent (Results/Standings)
+try:
+    from agents.sports_agent import (
+        get_sports_for_query,
+        is_sports_query,
+    )
+    SPORTS_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_sports_for_query = None  # type: ignore
+    is_sports_query = None  # type: ignore
+    SPORTS_AGENT_AVAILABLE = False
+
+# 📰 News Agent (Breaking News)
+try:
+    from agents.news_agent import (
+        get_news_for_query,
+        is_news_query,
+    )
+    NEWS_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_news_for_query = None  # type: ignore
+    is_news_query = None  # type: ignore
+    NEWS_AGENT_AVAILABLE = False
+
+# 📅 Schedule Agent (Events/Calendar)
+try:
+    from agents.schedule_agent import (
+        get_schedule_for_query,
+        is_schedule_query,
+    )
+    SCHEDULE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_schedule_for_query = None  # type: ignore
+    is_schedule_query = None  # type: ignore
+    SCHEDULE_AGENT_AVAILABLE = False
+
 # Smart intent (rule-based)
 from core.smart_intent_classifier import SmartIntentClassifier
 
@@ -268,11 +316,12 @@ from backend.synthesis_prompt_v2 import build_aggressive_synthesis_prompt
 from backend.parallel_fetch_optimizer import parallel_fetch_and_extract
 
 BUILD_SIGNATURE = (
-    "smart-intent-2025-11-19+env-safe+lazy-semcache+token-budget+summarize-q+no-error-user+"
+    "smart-intent-2025-11-29+env-safe+lazy-semcache+token-budget+summarize-q+no-error-user+"
     "feedback-toggle+web-search-endpoint+meta-override+zero-web-guard+no-generic-fallback+"
     "parallel-fetch-v1+validator+analytics+guard-relax+warm-harden+explain-guard+"
     "analytics-endpoints+web-minicache-endpoints+web-research-agent+web-summary-direct+"
-    "search-diversifier+synthesis-aggressive-v1+llm-intent+jarvis-uncensored-v1+web-deep-mode-v1"
+    "search-diversifier+synthesis-aggressive-v1+llm-intent+jarvis-uncensored-v1+web-deep-mode-v1+"
+    "live-agents-v1+price-agent+sports-agent+news-agent+schedule-agent+live-cache-redis"
 )
 
 load_dotenv()
@@ -328,6 +377,16 @@ WEB_DEEP_MAX_SOURCES = env_int("WEB_DEEP_MAX_SOURCES", 15)
 WEB_FETCH_TIMEOUT_S = env_float("WEB_FETCH_TIMEOUT_S", 3.0)
 WEB_FETCH_MAX_INFLIGHT = env_int("WEB_FETCH_MAX_INFLIGHT", 4)
 WEB_READ_TIMEOUT_S = env_float("WEB_READ_TIMEOUT_S", 6.0)
+
+# 🚀 Live Agent Cache TTL (in secondi)
+LIVE_CACHE_TTL_WEATHER = env_int("LIVE_CACHE_TTL_WEATHER", 1800)  # 30 min
+LIVE_CACHE_TTL_PRICE = env_int("LIVE_CACHE_TTL_PRICE", 60)  # 1 min (prezzi cambiano spesso)
+LIVE_CACHE_TTL_SPORTS = env_int("LIVE_CACHE_TTL_SPORTS", 300)  # 5 min
+LIVE_CACHE_TTL_NEWS = env_int("LIVE_CACHE_TTL_NEWS", 600)  # 10 min
+LIVE_CACHE_TTL_SCHEDULE = env_int("LIVE_CACHE_TTL_SCHEDULE", 3600)  # 1 ora
+
+# 🕐 Live Agent Timeout (in secondi)
+LIVE_AGENT_TIMEOUT_S = env_float("LIVE_AGENT_TIMEOUT_S", 10.0)
 
 # Feedback back-end (telemetria, NON addestra il modello)
 INTENT_FEEDBACK_ENABLED = env_bool("INTENT_FEEDBACK_ENABLED", False)
@@ -642,6 +701,60 @@ def _cheap_similarity(a: str, b: str) -> float:
     inter = len(A & B)
     uni = len(A | B)
     return round(inter / uni, 4)
+
+
+# ===================== LIVE AGENT CACHE =====================
+
+async def cached_live_call(
+    cache_key: str,
+    ttl_seconds: int,
+    coro,
+) -> Optional[str]:
+    """
+    Wrapper generico per cache live agent con Redis.
+    
+    Args:
+        cache_key: Chiave Redis (es: "live:weather:roma")
+        ttl_seconds: TTL in secondi
+        coro: Coroutine da eseguire se cache miss
+    
+    Returns:
+        Risultato dalla cache o dalla coroutine
+    """
+    try:
+        # Check cache
+        cached = redis_client.get(cache_key)
+        if cached:
+            log.info(f"Live cache HIT: {cache_key}")
+            return cached.decode("utf-8")
+    except Exception as e:
+        log.warning(f"Redis cache get error: {e}")
+    
+    # Cache miss → esegui coroutine
+    try:
+        result = await asyncio.wait_for(coro, timeout=LIVE_AGENT_TIMEOUT_S)
+        
+        if result:
+            try:
+                redis_client.setex(cache_key, ttl_seconds, result)
+                log.info(f"Live cache SET: {cache_key} (TTL={ttl_seconds}s)")
+            except Exception as e:
+                log.warning(f"Redis cache set error: {e}")
+        
+        return result
+    
+    except asyncio.TimeoutError:
+        log.warning(f"Live agent timeout for {cache_key}")
+        return None
+    except Exception as e:
+        log.error(f"Live agent error for {cache_key}: {e}")
+        return None
+
+
+def _get_live_cache_key(agent_type: str, query: str) -> str:
+    """Genera chiave cache per live agent."""
+    q_hash = hashlib.sha256(query.lower().encode("utf-8")).hexdigest()[:12]
+    return f"live:{agent_type}:{q_hash}"
 
 
 # 🔎 Riconoscitore grezzo di query su hardware/setup personale
@@ -1743,13 +1856,18 @@ async def generate(
         if used_intent == "WEB_SEARCH" and WEATHER_AGENT_AVAILABLE and is_weather_query(prompt):
             log.info(f"🌤️ Weather query detected: {prompt}")
             try:
-                weather_answer = await get_weather_for_query(prompt)
+                cache_key_weather = _get_live_cache_key("weather", prompt)
+                weather_answer = await cached_live_call(
+                    cache_key_weather,
+                    LIVE_CACHE_TTL_WEATHER,
+                    get_weather_for_query(prompt),
+                )
                 if weather_answer:
                     out.update(
                         {
                             "cached": False,
                             "response": _wrap(weather_answer, model_name),
-                            "weather_agent": True,
+                            "live_agent": "weather",
                             "note": "weather_agent_response",
                         }
                     )
@@ -1759,11 +1877,130 @@ async def generate(
                         satisfaction=1.0,
                         response_time_s=time.perf_counter() - t0,
                     )
-                    redis_client.setex(cache_key, 3600, json.dumps(out))  # Cache 1h per meteo
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_WEATHER, json.dumps(out))
                     return out
             except Exception as e:
                 log.warning(f"Weather agent failed, fallback to WEB_SEARCH: {e}")
-                # Continua con WEB_SEARCH normale
+
+        # 💰 PRICE AGENT: intercetta query prezzi crypto/azioni/forex
+        if used_intent == "WEB_SEARCH" and PRICE_AGENT_AVAILABLE and is_price_query(prompt):
+            log.info(f"💰 Price query detected: {prompt}")
+            try:
+                cache_key_price = _get_live_cache_key("price", prompt)
+                price_answer = await cached_live_call(
+                    cache_key_price,
+                    LIVE_CACHE_TTL_PRICE,
+                    get_price_for_query(prompt),
+                )
+                if price_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(price_answer, model_name),
+                            "live_agent": "price",
+                            "note": "price_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="PRICE_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_PRICE, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Price agent failed, fallback to WEB_SEARCH: {e}")
+
+        # ⚽ SPORTS AGENT: intercetta query risultati/classifiche sportive
+        if used_intent == "WEB_SEARCH" and SPORTS_AGENT_AVAILABLE and is_sports_query(prompt):
+            log.info(f"⚽ Sports query detected: {prompt}")
+            try:
+                cache_key_sports = _get_live_cache_key("sports", prompt)
+                sports_answer = await cached_live_call(
+                    cache_key_sports,
+                    LIVE_CACHE_TTL_SPORTS,
+                    get_sports_for_query(prompt),
+                )
+                if sports_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(sports_answer, model_name),
+                            "live_agent": "sports",
+                            "note": "sports_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="SPORTS_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_SPORTS, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Sports agent failed, fallback to WEB_SEARCH: {e}")
+
+        # 📰 NEWS AGENT: intercetta query breaking news
+        if used_intent == "WEB_SEARCH" and NEWS_AGENT_AVAILABLE and is_news_query(prompt):
+            log.info(f"📰 News query detected: {prompt}")
+            try:
+                cache_key_news = _get_live_cache_key("news", prompt)
+                news_answer = await cached_live_call(
+                    cache_key_news,
+                    LIVE_CACHE_TTL_NEWS,
+                    get_news_for_query(prompt),
+                )
+                if news_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(news_answer, model_name),
+                            "live_agent": "news",
+                            "note": "news_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="NEWS_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_NEWS, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"News agent failed, fallback to WEB_SEARCH: {e}")
+
+        # 📅 SCHEDULE AGENT: intercetta query orari/calendario
+        if used_intent == "WEB_SEARCH" and SCHEDULE_AGENT_AVAILABLE and is_schedule_query(prompt):
+            log.info(f"📅 Schedule query detected: {prompt}")
+            try:
+                cache_key_schedule = _get_live_cache_key("schedule", prompt)
+                schedule_answer = await cached_live_call(
+                    cache_key_schedule,
+                    LIVE_CACHE_TTL_SCHEDULE,
+                    get_schedule_for_query(prompt),
+                )
+                if schedule_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(schedule_answer, model_name),
+                            "live_agent": "schedule",
+                            "note": "schedule_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="SCHEDULE_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_SCHEDULE, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Schedule agent failed, fallback to WEB_SEARCH: {e}")
 
         # WEB_SEARCH
         if used_intent == "WEB_SEARCH":
@@ -2349,8 +2586,60 @@ async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
                     }
             except Exception as e:
                 log.warning(f"Weather agent failed in /web/summarize: {e}")
-                # Fallback to normal search
 
+        # 💰 Price Agent: intercetta query prezzi
+        if PRICE_AGENT_AVAILABLE and is_price_query and is_price_query(payload.q):
+            try:
+                price_answer = await get_price_for_query(payload.q)
+                if price_answer:
+                    return {
+                        "summary": price_answer,
+                        "results": [],
+                        "note": "price_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Price agent failed in /web/summarize: {e}")
+
+        # ⚽ Sports Agent: intercetta query sportive
+        if SPORTS_AGENT_AVAILABLE and is_sports_query and is_sports_query(payload.q):
+            try:
+                sports_answer = await get_sports_for_query(payload.q)
+                if sports_answer:
+                    return {
+                        "summary": sports_answer,
+                        "results": [],
+                        "note": "sports_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Sports agent failed in /web/summarize: {e}")
+
+        # 📰 News Agent: intercetta query news
+        if NEWS_AGENT_AVAILABLE and is_news_query and is_news_query(payload.q):
+            try:
+                news_answer = await get_news_for_query(payload.q)
+                if news_answer:
+                    return {
+                        "summary": news_answer,
+                        "results": [],
+                        "note": "news_agent",
+                    }
+            except Exception as e:
+                log.warning(f"News agent failed in /web/summarize: {e}")
+
+        # 📅 Schedule Agent: intercetta query calendario
+        if SCHEDULE_AGENT_AVAILABLE and is_schedule_query and is_schedule_query(payload.q):
+            try:
+                schedule_answer = await get_schedule_for_query(payload.q)
+                if schedule_answer:
+                    return {
+                        "summary": schedule_answer,
+                        "results": [],
+                        "note": "schedule_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Schedule agent failed in /web/summarize: {e}")
+
+        # Fallback a web search standard
         ws = await _web_search_pipeline(
             q=payload.q,
             src=payload.source,
