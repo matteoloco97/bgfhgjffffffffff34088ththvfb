@@ -414,14 +414,18 @@ async def web_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /web <query>")
         return
     http = context.application.bot_data["http"]
+    chat_id = update.effective_chat.id
+
+    # Mostra solo indicatore typing, niente messaggi "Cerco..."
+    await typing(context, chat_id)
 
     live_type = _detect_live_type(query)
     if live_type:
-        await update.message.reply_text(f"🌐 Cerco (veloce {live_type}): {query}")
-        final = await call_web_summary_query(query, http, update.effective_chat.id)
+        # Percorso veloce per meteo/prezzi/risultati/news
+        final = await call_web_summary_query(query, http, chat_id)
     else:
-        await update.message.reply_text(f"🌐 Cerco (ricerca avanzata): {query}")
-        final = await call_web_research(query, http, update.effective_chat.id)
+        # Ricerca avanzata per query complesse
+        final = await call_web_research(query, http, chat_id)
 
     for part in split_text(final):
         await update.message.reply_text(part, disable_web_page_preview=not SOURCE_PREVIEW)

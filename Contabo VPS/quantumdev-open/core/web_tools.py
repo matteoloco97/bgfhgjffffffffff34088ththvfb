@@ -26,6 +26,8 @@ from typing import Optional, Tuple
 
 import requests
 from requests.exceptions import RequestException
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from urllib.parse import urljoin
 from core.robust_content_extraction import extract_content_robust
 
@@ -51,6 +53,27 @@ DEFAULT_TIMEOUT_S = float(os.getenv("WEB_EXTRACT_TIMEOUT_S", "8.0"))
 # Limite massimo di byte letti dal body (per evitare esplosioni)
 MAX_HTML_BYTES = int(os.getenv("WEB_EXTRACT_MAX_BYTES", str(1_500_000)))
 
+# ===================== HTTP Session (module-level singleton) =====================
+
+def _create_http_session() -> requests.Session:
+    """Crea una sessione HTTP ottimizzata con connection pooling."""
+    session = requests.Session()
+    session.trust_env = False
+    retry = Retry(total=1, backoff_factor=0.2, status_forcelist=[502, 503, 504])
+    adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+_HTTP_SESSION: Optional[requests.Session] = None
+
+def _get_http_session() -> requests.Session:
+    """Ritorna la sessione HTTP singleton."""
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        _HTTP_SESSION = _create_http_session()
+    return _HTTP_SESSION
+
 
 # ===================== Helper dataclass =====================
 
@@ -75,16 +98,20 @@ def _build_headers() -> dict:
 def _http_get(url: str, timeout: float) -> Optional[requests.Response]:
     """
     HTTP GET con gestione redirect e timeout separati.
+    OPTIMIZED: Connection pooling e migliore gestione errori.
 
     timeout: timeout "totale" desiderato. Lo splittiamo in connect/read.
     """
     headers = _build_headers()
     # provo a spezzare il timeout in connect + read
-    connect_timeout = min(4.0, timeout * 0.4)
-    read_timeout = max(2.0, timeout * 0.6)
+    connect_timeout = min(3.0, timeout * 0.35)  # OPTIMIZED: più tempo per lettura
+    read_timeout = max(2.5, timeout * 0.65)
 
     try:
-        resp = requests.get(
+        # OPTIMIZATION: Usa sessione con connection pooling (module-level singleton)
+        session = _get_http_session()
+        
+        resp = session.get(
             url,
             headers=headers,
             timeout=(connect_timeout, read_timeout),
