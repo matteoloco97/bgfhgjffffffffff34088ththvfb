@@ -1349,6 +1349,15 @@ def healthz() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # 🚀 Live Agents status
+    live_agents = {
+        "weather": WEATHER_AGENT_AVAILABLE,
+        "price": PRICE_AGENT_AVAILABLE,
+        "sports": SPORTS_AGENT_AVAILABLE,
+        "news": NEWS_AGENT_AVAILABLE,
+        "schedule": SCHEDULE_AGENT_AVAILABLE,
+    }
+
     return {
         "ok": True,
         "model": LLM_MODEL,
@@ -1363,6 +1372,14 @@ def healthz() -> Dict[str, Any]:
             "gpu_active_endpoint": _get_redis_str("gpu_active_endpoint"),
         },
         "semantic_cache": cache_info,
+        "live_agents": live_agents,
+        "live_cache_ttl": {
+            "weather": LIVE_CACHE_TTL_WEATHER,
+            "price": LIVE_CACHE_TTL_PRICE,
+            "sports": LIVE_CACHE_TTL_SPORTS,
+            "news": LIVE_CACHE_TTL_NEWS,
+            "schedule": LIVE_CACHE_TTL_SCHEDULE,
+        },
         "smart_intent": True,
         "feedback_enabled": INTENT_FEEDBACK_ENABLED,
         "router_build": BUILD_SIGNATURE,

@@ -28,19 +28,27 @@ Questo documento descrive le modifiche effettuate per implementare la "roadmap J
 
 ### File Modificati
 
-5. **`core/smart_intent_classifier.py`** - Pattern estesi
+5. **`core/smart_intent_classifier.py`** - Pattern estesi (SmartIntent 2.0)
    - Più crypto (SOL, XRP, DOGE, ecc.)
    - Più forex (GBP/USD, USD/JPY, ecc.)
    - Più azioni (AAPL, MSFT, TSLA, ecc.)
    - Più sport (squadre, competizioni)
    - Keywords betting e trading
-   - Nuovi live_type: "price", "sports", "news", "schedule"
+   - Nuovi live_type: "price", "sports", "news", "schedule", "betting", "trading"
 
 6. **`backend/quantum_api.py`** - Integrazione agenti
    - Import di tutti i nuovi agenti
    - Funzione `cached_live_call()` per cache Redis
    - Routing nel `/generate` e `/web/summarize`
    - TTL configurabili per tipo di agente
+   - Healthcheck con stato live agents
+
+7. **`agents/web_research_agent.py`** - Multi-step Research v2
+   - Multi-step: riformula e cerca se la prima ricerca non basta
+   - Parallel fetch aggressivo con asyncio.Semaphore
+   - Dedup per dominio (max 2 risultati per dominio)
+   - Quality estimation per decidere se continuare
+   - Prompt di sintesi con formato standardizzato (blocchi ✅/⚠️)
 
 ## 🔧 Variabili .env Necessarie
 
@@ -92,6 +100,13 @@ PRICE_API_TIMEOUT=8.0
 SPORTS_API_TIMEOUT=10.0
 NEWS_API_TIMEOUT=10.0
 SCHEDULE_API_TIMEOUT=10.0
+
+# === WEB RESEARCH AGENT v2 ===
+WEB_RESEARCH_BUDGET_TOK=2000      # Token budget per contesto
+WEB_RESEARCH_MAX_DOCS=5           # Max documenti da leggere
+WEB_RESEARCH_MAX_STEPS=3          # Max step di ricerca
+WEB_RESEARCH_QUALITY_THRESHOLD=0.6  # Soglia qualità per stop
+WEB_RESEARCH_MAX_CONCURRENT=4     # Max fetch paralleli
 ```
 
 ## 📦 Dipendenze Python
@@ -117,6 +132,17 @@ requests>=2.28.0    # Per chiamate HTTP sync (già presente)
 7. Se `live_type == "weather"` → `WeatherAgent` (già esistente)
 8. Fallback → `WebResearchAgent` per ricerche generiche
 
+### Priorità Live Agents
+
+```
+1. Weather Agent (meteo)
+2. Price Agent (prezzi/quotazioni)
+3. Sports Agent (risultati/classifiche)
+4. News Agent (breaking news)
+5. Schedule Agent (orari/calendario)
+6. Web Research Agent (fallback generico)
+```
+
 ## 📊 Formato Risposte Standardizzato
 
 Tutti gli agenti seguono questo formato:
@@ -135,12 +161,25 @@ Tutti gli agenti seguono questo formato:
 📡 Fonte: NomeAPI (aggiornato: YYYY-MM-DD HH:MM)
 ```
 
+## 🔍 WebResearchAgent v2 - Multi-Step
+
+Il nuovo WebResearchAgent implementa:
+
+1. **Multi-step search**: Se la prima ricerca ha qualità bassa (< 0.6), riformula la query e cerca di nuovo
+2. **Parallel fetch**: Scarica fino a 4 pagine in parallelo per velocità
+3. **Dedup per dominio**: Max 2 risultati per dominio per garantire diversità
+4. **Quality estimation**: Stima qualità basata su:
+   - Numero di estratti
+   - Diversità domini
+   - Match keywords query
+5. **Prompt strutturato**: Output con blocchi ✅ (dati verificati) e ⚠️ (analisi)
+
 ## 🚀 Prossimi Passi (da implementare)
 
 1. **BettingAgent** - Quote, probabilità, value bet
 2. **TradingAgent** - Analisi tecnica, segnali
 3. **Memoria storica query** - Contesto conversazione
-4. **Multi-step WebResearch** - Ricerche più profonde
+4. **EdgeAgent** - Calcolo EV per betting
 
 ## 📝 Note
 
@@ -151,3 +190,26 @@ Tutti gli agenti seguono questo formato:
   - Alpha Vantage (azioni/forex real-time)
   - NewsAPI (più richieste)
   - football-data.org (più richieste)
+
+## 🔒 Healthcheck
+
+L'endpoint `/healthz` ora include lo stato dei live agents:
+
+```json
+{
+  "live_agents": {
+    "weather": true,
+    "price": true,
+    "sports": true,
+    "news": true,
+    "schedule": true
+  },
+  "live_cache_ttl": {
+    "weather": 1800,
+    "price": 60,
+    "sports": 300,
+    "news": 600,
+    "schedule": 3600
+  }
+}
+```
