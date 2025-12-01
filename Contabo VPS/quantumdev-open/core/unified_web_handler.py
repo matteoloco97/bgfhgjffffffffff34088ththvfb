@@ -137,6 +137,9 @@ class UnifiedIntentDetector:
     """
     Classificatore unificato per intent web.
     Mappa query → agente appropriato.
+    
+    NOTA: Questo è il classificatore UNICO per tutto il sistema.
+    SmartIntentClassifier e altri classificatori devono delegare qui.
     """
     
     # Intent types
@@ -146,6 +149,8 @@ class UnifiedIntentDetector:
     NEWS = "news"
     SCHEDULE = "schedule"
     CODE = "code"
+    BETTING = "betting"
+    TRADING = "trading"
     DEEP_RESEARCH = "deep_research"
     GENERAL_WEB = "general_web"
     DIRECT_LLM = "direct_llm"
@@ -170,9 +175,24 @@ class UnifiedIntentDetector:
             "price", "quote", "market cap", "tasso", "cambio",
         ]
         self.asset_keywords = [
+            # Crypto principali
             "btc", "bitcoin", "eth", "ethereum", "sol", "solana",
-            "euro", "dollaro", "oro", "gold", "azioni", "stock",
-            "nasdaq", "s&p", "dow jones", "crypto",
+            "xrp", "ripple", "ada", "cardano", "doge", "dogecoin",
+            "bnb", "binance coin", "usdt", "usdc", "matic", "polygon",
+            "link", "chainlink", "uni", "uniswap", "ltc", "litecoin",
+            "avax", "avalanche", "dot", "polkadot", "shib", "shiba",
+            "atom", "cosmos", "near", "apt", "aptos", "arb", "arbitrum",
+            "sui", "pepe", "trx", "tron",
+            # Forex
+            "euro", "dollaro", "eurusd", "eur/usd", "gbpusd", "gbp/usd",
+            "usdjpy", "usd/jpy", "forex", "fx",
+            # Commodities
+            "oro", "gold", "xauusd", "argento", "silver", "petrolio", "oil",
+            # Stocks/Indices
+            "azioni", "stock", "stocks", "shares",
+            "apple", "aapl", "microsoft", "msft", "google", "googl",
+            "amazon", "amzn", "tesla", "tsla", "nvidia", "nvda", "meta",
+            "nasdaq", "s&p", "dow jones", "dow", "ftse", "dax",
         ]
         
         # Sports patterns
@@ -180,22 +200,28 @@ class UnifiedIntentDetector:
             "risultato", "risultati", "score", "partita", "partite",
             "chi ha vinto", "classifica", "standings",
             "serie a", "premier league", "champions", "calcio",
+            "gol", "marcatori", "formazione",
         ]
         self.team_keywords = [
             "milan", "inter", "juventus", "juve", "napoli", "roma",
-            "real madrid", "barcellona", "liverpool", "chelsea",
+            "lazio", "atalanta", "fiorentina", "torino", "bologna",
+            "real madrid", "barcellona", "barcelona", "psg",
+            "manchester", "liverpool", "chelsea", "arsenal", "bayern",
         ]
         
         # News patterns
         self.news_keywords = [
             "notizie", "news", "breaking", "ultime",
             "cosa è successo", "cosa succede", "novità", "aggiornamenti",
+            "headlines", "latest news",
         ]
         
         # Schedule patterns
         self.schedule_keywords = [
             "quando gioca", "a che ora", "orario", "calendario",
             "prossima partita", "prossimo gp", "f1", "formula 1",
+            "prossima gara", "quando è", "quando sarà",
+            "fed", "fomc", "bce", "ecb",
         ]
         
         # Code patterns
@@ -203,6 +229,31 @@ class UnifiedIntentDetector:
             "scrivi codice", "genera codice", "crea script",
             "implementa", "programma che", "funzione che",
             "debug", "fixa", "fix", "correggi",
+            "scrivi uno script", "genera uno script",
+            "codice python", "codice javascript",
+        ]
+        
+        # Betting patterns (NEW)
+        self.betting_keywords = [
+            "scommessa", "scommesse", "bet", "betting",
+            "quote", "odds", "pronostico", "pronostici",
+            "value bet", "over", "under", "handicap",
+            "1x2", "combo", "multipla", "singola",
+            "expected value", "ev", "kelly", "kelly criterion",
+            "bookmaker", "bookie", "quota",
+        ]
+        
+        # Trading patterns (NEW)
+        self.trading_keywords = [
+            "trading", "trader", "trade",
+            "long", "short", "buy signal", "sell signal",
+            "stop loss", "take profit", "tp", "sl",
+            "leva", "leverage", "margin",
+            "analisi tecnica", "technical analysis",
+            "supporto", "resistenza", "support", "resistance",
+            "candlestick", "pattern", "trend",
+            "portafoglio", "portfolio", "allocazione",
+            "risk management", "position size",
         ]
         
         # Deep research triggers
@@ -211,10 +262,21 @@ class UnifiedIntentDetector:
             "deep research", "fammi una ricerca", "indaga su",
             "tutto quello che sai su", "approfondisci",
         ]
+        
+        # Travel patterns (to avoid confusion with sports teams like Roma)
+        self.travel_keywords = [
+            "volo", "voli", "flight", "flights",
+            "hotel", "albergo", "booking",
+            "viaggio", "viaggi", "travel", "trip",
+            "vacanza", "vacanze",
+        ]
     
     def classify(self, query: str) -> Dict[str, Any]:
         """
         Classifica una query e ritorna intent + confidence.
+        
+        Returns:
+            Dict con keys: intent, confidence, reason, live_type (opzionale)
         """
         q = query.lower().strip()
         
@@ -224,6 +286,7 @@ class UnifiedIntentDetector:
                 "intent": self.DIRECT_LLM,
                 "confidence": 0.0,
                 "reason": "empty_query",
+                "live_type": None,
             }
         
         # Check deep research first (esplicito)
@@ -232,6 +295,7 @@ class UnifiedIntentDetector:
                 "intent": self.DEEP_RESEARCH,
                 "confidence": 0.95,
                 "reason": "explicit_deep_research",
+                "live_type": None,
             }
         
         # Check code
@@ -240,6 +304,7 @@ class UnifiedIntentDetector:
                 "intent": self.CODE,
                 "confidence": 0.95,
                 "reason": "code_request",
+                "live_type": "code",
             }
         
         # Check weather (alta priorità)
@@ -250,6 +315,42 @@ class UnifiedIntentDetector:
                 "intent": self.WEATHER,
                 "confidence": 0.95,
                 "reason": "weather_query",
+                "live_type": "weather",
+            }
+        
+        # Check travel BEFORE sports (to avoid "roma" matching as team)
+        if any(kw in q for kw in self.travel_keywords):
+            return {
+                "intent": self.GENERAL_WEB,
+                "confidence": 0.85,
+                "reason": "travel_query",
+                "live_type": "travel",
+            }
+        
+        # Check betting (NEW)
+        if any(kw in q for kw in self.betting_keywords):
+            return {
+                "intent": self.BETTING,
+                "confidence": 0.90,
+                "reason": "betting_query",
+                "live_type": "betting",
+            }
+        
+        # Check trading (NEW)
+        if any(kw in q for kw in self.trading_keywords):
+            # Educational questions → LLM
+            if any(p in q for p in ["cos'è", "che cos'è", "cosa significa", "spiega"]):
+                return {
+                    "intent": self.DIRECT_LLM,
+                    "confidence": 0.85,
+                    "reason": "trading_educational",
+                    "live_type": "trading",
+                }
+            return {
+                "intent": self.TRADING,
+                "confidence": 0.88,
+                "reason": "trading_query",
+                "live_type": "trading",
             }
         
         # Check price
@@ -260,6 +361,7 @@ class UnifiedIntentDetector:
                 "intent": self.PRICE,
                 "confidence": 0.92,
                 "reason": "price_query",
+                "live_type": "price",
             }
         if has_asset and len(q.split()) <= 4:
             # Query breve con asset = probabilmente prezzo
@@ -267,6 +369,7 @@ class UnifiedIntentDetector:
                 "intent": self.PRICE,
                 "confidence": 0.85,
                 "reason": "implicit_price_query",
+                "live_type": "price",
             }
         
         # Check sports
@@ -277,6 +380,7 @@ class UnifiedIntentDetector:
                 "intent": self.SPORTS,
                 "confidence": 0.90,
                 "reason": "sports_query",
+                "live_type": "sports",
             }
         
         # Check schedule
@@ -285,6 +389,7 @@ class UnifiedIntentDetector:
                 "intent": self.SCHEDULE,
                 "confidence": 0.88,
                 "reason": "schedule_query",
+                "live_type": "schedule",
             }
         
         # Check news
@@ -293,6 +398,7 @@ class UnifiedIntentDetector:
                 "intent": self.NEWS,
                 "confidence": 0.85,
                 "reason": "news_query",
+                "live_type": "news",
             }
         
         # Check if needs live/fresh data
@@ -305,6 +411,7 @@ class UnifiedIntentDetector:
                 "intent": self.GENERAL_WEB,
                 "confidence": 0.75,
                 "reason": "needs_fresh_data",
+                "live_type": None,
             }
         
         # Default: direct LLM for general knowledge
@@ -312,7 +419,40 @@ class UnifiedIntentDetector:
             "intent": self.DIRECT_LLM,
             "confidence": 0.6,
             "reason": "general_knowledge",
+            "live_type": None,
         }
+    
+    def to_smart_intent_format(self, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Converte il formato di classificazione a quello usato da SmartIntentClassifier.
+        Utile per retrocompatibilità.
+        """
+        intent = classification.get("intent", self.DIRECT_LLM)
+        
+        # Map to SmartIntentClassifier format
+        if intent in (self.WEATHER, self.PRICE, self.SPORTS, self.NEWS, 
+                      self.SCHEDULE, self.BETTING, self.TRADING, self.GENERAL_WEB):
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": classification.get("confidence", 0.8),
+                "reason": classification.get("reason", ""),
+                "live_type": classification.get("live_type"),
+                "url": None,
+            }
+        elif intent == self.CODE:
+            return {
+                "intent": "DIRECT_LLM",
+                "confidence": classification.get("confidence", 0.95),
+                "reason": "code_generation_request",
+                "live_type": "code",
+            }
+        else:
+            return {
+                "intent": "DIRECT_LLM",
+                "confidence": classification.get("confidence", 0.6),
+                "reason": classification.get("reason", ""),
+                "live_type": classification.get("live_type"),
+            }
 
 
 # ===================== UNIFIED HANDLER =====================
@@ -333,6 +473,8 @@ class UnifiedWebHandler:
             UnifiedIntentDetector.SPORTS: 300,     # 5 min
             UnifiedIntentDetector.NEWS: 600,       # 10 min
             UnifiedIntentDetector.SCHEDULE: 3600,  # 1 ora
+            UnifiedIntentDetector.BETTING: 300,    # 5 min (quote cambiano spesso)
+            UnifiedIntentDetector.TRADING: 120,    # 2 min (dati trading volatili)
             UnifiedIntentDetector.GENERAL_WEB: 3600,
         }
     
@@ -438,6 +580,12 @@ class UnifiedWebHandler:
             elif intent == UnifiedIntentDetector.CODE:
                 return await self._handle_code(query)
             
+            elif intent == UnifiedIntentDetector.BETTING:
+                return await self._handle_betting(query)
+            
+            elif intent == UnifiedIntentDetector.TRADING:
+                return await self._handle_trading(query)
+            
             elif intent == UnifiedIntentDetector.DEEP_RESEARCH:
                 return await self._handle_deep_research(query)
             
@@ -518,6 +666,69 @@ class UnifiedWebHandler:
             return "❌ Agente codice non disponibile."
         except Exception as e:
             return f"❌ Errore generazione codice: {e}"
+    
+    async def _handle_betting(self, query: str) -> str:
+        """Handler per betting/scommesse."""
+        try:
+            from agents.betting_agent import get_betting_for_query
+            result = await get_betting_for_query(query)
+            return result or "❌ Impossibile elaborare la richiesta di betting."
+        except ImportError:
+            log.info("Betting agent not available, using fallback")
+            return await self._betting_fallback(query)
+        except Exception as e:
+            log.error(f"Betting handler error: {e}")
+            return await self._betting_fallback(query)
+    
+    async def _betting_fallback(self, query: str) -> str:
+        """Fallback per betting quando l'agente non è disponibile."""
+        try:
+            from core.chat_engine import reply_with_llm
+            prompt = (
+                "L'utente chiede informazioni su betting/scommesse. "
+                "Fornisci una risposta educativa su:\n"
+                "- Expected Value (EV)\n"
+                "- Kelly Criterion\n"
+                "- Value betting\n"
+                "- Gestione del bankroll\n\n"
+                f"Query: {query}\n\n"
+                "NOTA: Non fornire consigli specifici su scommesse. "
+                "Spiega solo i concetti matematici e le strategie generali."
+            )
+            return await reply_with_llm(prompt, "")
+        except Exception as e:
+            return f"⚠️ Modulo betting in sviluppo. Per calcoli EV e Kelly, consulta risorse specializzate. Errore: {e}"
+    
+    async def _handle_trading(self, query: str) -> str:
+        """Handler per trading."""
+        try:
+            from agents.trading_agent import get_trading_for_query
+            result = await get_trading_for_query(query)
+            return result or "❌ Impossibile elaborare la richiesta di trading."
+        except ImportError:
+            log.info("Trading agent not available, using fallback")
+            return await self._trading_fallback(query)
+        except Exception as e:
+            log.error(f"Trading handler error: {e}")
+            return await self._trading_fallback(query)
+    
+    async def _trading_fallback(self, query: str) -> str:
+        """Fallback per trading quando l'agente non è disponibile."""
+        try:
+            from core.chat_engine import reply_with_llm
+            prompt = (
+                "L'utente chiede informazioni su trading. "
+                "Fornisci una risposta educativa su:\n"
+                "- Analisi tecnica (supporti, resistenze, pattern)\n"
+                "- Risk management (stop loss, position sizing)\n"
+                "- Concetti di portafoglio\n\n"
+                f"Query: {query}\n\n"
+                "NOTA: Non fornire consigli finanziari specifici. "
+                "Spiega solo i concetti e le strategie generali."
+            )
+            return await reply_with_llm(prompt, "")
+        except Exception as e:
+            return f"⚠️ Modulo trading in sviluppo. Per analisi tecniche, consulta risorse specializzate. Errore: {e}"
     
     async def _handle_deep_research(self, query: str) -> str:
         """Handler per ricerca approfondita."""

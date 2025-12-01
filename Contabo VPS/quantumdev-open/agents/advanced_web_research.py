@@ -155,13 +155,24 @@ class AdvancedWebResearch:
                 log.info("Not enough extracts for follow-up, stopping")
                 break
             
-            # Per query complesse, genera una query di follow-up per colmare gaps
-            # TODO: implementare generazione follow-up con LLM
-            # Per ora usa una variante della query originale con termini aggiuntivi
+            # Genera follow-up queries con LLM per colmare gaps informativi
             if step_num == 1 and quality_score < self.quality_threshold:
-                # Prova una query più specifica
-                current_query = f"{original_query} dettagli approfondimento"
-                log.info(f"Follow-up query: {current_query}")
+                try:
+                    follow_up = await self._generate_follow_up_query(
+                        original_query,
+                        all_extracts,
+                        quality_score,
+                    )
+                    if follow_up and follow_up != current_query:
+                        current_query = follow_up
+                        log.info(f"LLM generated follow-up query: {current_query}")
+                    else:
+                        # Fallback: variante semplice
+                        current_query = f"{original_query} dettagli approfondimento"
+                        log.info(f"Fallback follow-up query: {current_query}")
+                except Exception as e:
+                    log.warning(f"Follow-up generation failed: {e}, using fallback")
+                    current_query = f"{original_query} dettagli approfondimento"
             else:
                 # Qualità sufficiente o già fatto follow-up
                 break
@@ -277,6 +288,94 @@ class AdvancedWebResearch:
         )
         
         return round(quality, 3)
+    
+    async def _generate_follow_up_query(
+        self,
+        original_query: str,
+        extracts: List[Dict],
+        current_quality: float,
+    ) -> Optional[str]:
+        """
+        Genera una query di follow-up intelligente usando LLM.
+        
+        Analizza gli estratti correnti e identifica gaps informativi
+        per generare una query che colmi le lacune.
+        
+        Args:
+            original_query: Query originale dell'utente
+            extracts: Estratti raccolti finora
+            current_quality: Score qualità corrente
+        
+        Returns:
+            Nuova query di ricerca o None se non serve
+        """
+        try:
+            from core.chat_engine import reply_with_llm
+            from core.token_budget import trim_to_tokens
+        except ImportError as e:
+            log.error(f"Import error in follow-up generation: {e}")
+            return None
+        
+        if not extracts:
+            return f"{original_query} guida completa"
+        
+        # Prepara contesto degli estratti (solo titoli e snippet)
+        ctx_parts = []
+        for i, ex in enumerate(extracts[:5], 1):
+            title = ex.get("title", "")[:100]
+            text = ex.get("text", "")[:200]
+            ctx_parts.append(f"{i}. {title}: {text}...")
+        
+        ctx = "\n".join(ctx_parts)
+        ctx = trim_to_tokens(ctx, 500)
+        
+        prompt = f"""Sei un ricercatore. L'utente ha cercato:
+
+QUERY ORIGINALE: {original_query}
+
+INFORMAZIONI RACCOLTE FINORA:
+{ctx}
+
+QUALITÀ CORRENTE: {current_quality:.2f}/1.0 (insufficiente)
+
+COMPITO: Genera UNA SINGOLA query di ricerca per colmare le lacune informative.
+
+REGOLE:
+1. La query deve essere specifica e mirata
+2. Deve coprire aspetti NON ancora presenti nelle info raccolte
+3. Massimo 8-10 parole
+4. Non ripetere la query originale
+5. Rispondi SOLO con la nuova query, niente altro
+
+NUOVA QUERY DI RICERCA:"""
+        
+        try:
+            follow_up = await reply_with_llm(prompt, "")
+            
+            # Pulisci la risposta
+            follow_up = (follow_up or "").strip()
+            
+            # Rimuovi eventuali prefissi tipo "Query:", "Ricerca:", etc.
+            for prefix in ["query:", "ricerca:", "nuova query:", "search:"]:
+                if follow_up.lower().startswith(prefix):
+                    follow_up = follow_up[len(prefix):].strip()
+            
+            # Rimuovi virgolette
+            follow_up = follow_up.strip('"\'')
+            
+            # Valida: non troppo corta, non troppo lunga
+            if len(follow_up) < 5 or len(follow_up) > 150:
+                return None
+            
+            # Non deve essere uguale all'originale
+            if follow_up.lower() == original_query.lower():
+                return None
+            
+            return follow_up
+            
+        except Exception as e:
+            log.error(f"Follow-up generation LLM call failed: {e}")
+            return None
     
     async def _hierarchical_synthesis(
         self,
