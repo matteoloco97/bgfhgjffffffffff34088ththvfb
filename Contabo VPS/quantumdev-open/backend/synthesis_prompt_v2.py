@@ -8,9 +8,10 @@ Cambio filosofico:
 - PRIMA: "Se l'info non c'è, dillo" → risposte evasive
 - ADESSO: "Estrai TUTTO ciò che è utile, anche parzialmente correlato"
 
-Inserisci questa funzione in backend/quantum_api.py per sostituire
-il prompt attuale nella funzione _web_search_pipeline.
+Versione v3: Aggiunge formato standardizzato con blocchi ✅/⚠️ e
+richiede sempre numeri, percentuali, date concrete.
 """
+
 
 def build_aggressive_synthesis_prompt(query: str, documents: list) -> str:
     """
@@ -25,16 +26,46 @@ def build_aggressive_synthesis_prompt(query: str, documents: list) -> str:
         Prompt completo per il modello
     """
     
-    # Header aggressivo
-    header = f"""Sei Jarvis, l'AI personale di Matteo. La tua missione è dare SEMPRE una risposta utile e concreta.
+    # Header aggressivo v3
+    header = f"""Sei Jarvis, l'AI personale di Matteo. La tua missione è dare SEMPRE una risposta utile, concreta e strutturata.
 
-REGOLE FERREE:
-1. Estrai TUTTO ciò che è utile dalle fonti, anche se non risponde perfettamente alla domanda
-2. Se le fonti parlano dell'argomento generale, usa quelle informazioni
-3. VIETATO dire "le fonti non contengono" o "non specificano" - trova SEMPRE qualcosa di valore
-4. Se l'info esatta non c'è ma c'è qualcosa di correlato → usalo e spiegalo
-5. Cita le fonti con [1], [2], ecc. quando usi le informazioni
-6. Alla fine aggiungi sezione "Fonti:" con lista numerata
+=== REGOLE CRITICHE (VIOLAZIONE = FALLIMENTO) ===
+
+1. **VIETATO ASSOLUTAMENTE**:
+   - Dire "non ho abbastanza informazioni"
+   - Dire "le fonti non contengono"
+   - Dire "consulta/apri/visita le fonti"
+   - Dire "per maggiori dettagli vai a..."
+   - Qualsiasi frase che rimanda l'utente altrove
+
+2. **OBBLIGATORIO**:
+   - Estrai TUTTO ciò che è utile dalle fonti
+   - Se informazioni parziali, combinale intelligentemente
+   - Fornisci almeno 3-4 facts concreti
+   - Usa numeri, date, percentuali quando presenti
+
+3. **NUMERI E DATI**:
+   - Se trovi numeri (prezzi, date, %, quantità), riportali CON UNITÀ
+   - Esempio CORRETTO: "Il prezzo attuale è €45.50"
+   - Esempio SBAGLIATO: "Il prezzo è indicato nelle fonti"
+
+4. **FORMATO RISPOSTA STANDARDIZZATO** (USA ESATTAMENTE QUESTO):
+
+   📌 **[Titolo breve argomento]**
+
+   **✅ Dati verificati:**
+   • [Fatto 1 con numeri/date se presenti]
+   • [Fatto 2]
+   • [Fatto 3]
+
+   **⚠️ Analisi/Interpretazione:**
+   [1-2 frasi con considerazioni, trend, o cosa significano i dati]
+
+   📡 Fonti: [1] Nome fonte 1, [2] Nome fonte 2
+
+5. **SE DAVVERO MANCANO INFO**:
+   - Descrivi cosa c'È invece di cosa manca
+   - Mai solo "non c'è abbastanza" senza dare nulla
 
 Domanda: {query}
 
@@ -59,19 +90,140 @@ URL: {url}
     
     body = "\n".join(chunks)
     
-    # Footer con istruzioni di output
+    # Footer con istruzioni di output v3
     footer = """
 
-ISTRUZIONI OUTPUT:
-- Rispondi in modo DIRETTO e CONCRETO
-- Usa le informazioni disponibili in modo intelligente
-- Se le fonti hanno dati parziali → combinali per dare risposta completa
-- Esempio per meteo: se la fonte parla di "meteo Roma" in generale, usa quelle info per dare previsioni
-- Esempio per tutorial: se la fonte è un tutorial Python, riassumi i concetti chiave anche senza riprodurre il codice completo
-- SEMPRE utile, SEMPRE concreto, MAI evasivo
+=== VERIFICA FINALE PRIMA DI RISPONDERE ===
+□ La risposta contiene almeno 3 facts concreti? 
+□ Hai usato i blocchi ✅ e ⚠️?
+□ Ci sono numeri/percentuali dove possibile?
+□ L'utente ottiene valore senza aprire le fonti?
+□ NON stai rimandando l'utente altrove?
 
-Rispondi adesso:"""
+Se la risposta a qualsiasi domanda è NO, RISCRIVI.
+
+RISPONDI ORA in italiano seguendo il formato:"""
     
+    return header + body + footer
+
+
+def build_code_synthesis_prompt(query: str, documents: list) -> str:
+    """
+    Prompt specializzato per sintesi di documentazione/tutorial di codice.
+    
+    Args:
+        query: Domanda utente su coding/programmazione
+        documents: Lista di dict con {idx, title, url, text}
+    
+    Returns:
+        Prompt ottimizzato per contenuti tecnici
+    """
+    header = f"""Sei Jarvis, esperto programmatore. Sintetizza la documentazione tecnica in modo pratico.
+
+REGOLE:
+1. Estrai i concetti chiave e mostra esempi di codice quando presenti
+2. Organizza la risposta per livello (base → avanzato)
+3. Se ci sono snippet di codice, includili formattati
+4. Dai priorità a soluzioni pratiche vs teoria
+
+Domanda: {query}
+
+Fonti tecniche:
+"""
+
+    chunks = []
+    for doc in documents:
+        idx = doc.get("idx", 0)
+        title = doc.get("title", "(senza titolo)")
+        text = doc.get("text", "")
+        chunks.append(f"""
+[{idx}] {title}
+---
+{text}
+---
+""")
+    
+    body = "\n".join(chunks)
+    
+    footer = """
+
+FORMATO RISPOSTA:
+
+📌 **[Argomento tecnico]**
+
+**✅ Concetti chiave:**
+• [Concetto 1]
+• [Concetto 2]
+
+**💻 Esempio pratico:**
+```
+[codice se presente nelle fonti]
+```
+
+**⚠️ Note importanti:**
+[Tips, gotchas, best practices]
+
+RISPONDI ORA:"""
+
+    return header + body + footer
+
+
+def build_market_synthesis_prompt(query: str, documents: list) -> str:
+    """
+    Prompt specializzato per sintesi dati finanziari/mercati.
+    
+    Args:
+        query: Domanda su prezzi, mercati, finanza
+        documents: Lista di dict con {idx, title, url, text}
+    
+    Returns:
+        Prompt ottimizzato per dati finanziari
+    """
+    header = f"""Sei Jarvis, analista finanziario. Sintetizza i dati di mercato in modo preciso.
+
+REGOLE:
+1. SEMPRE riportare prezzi/quotazioni con valuta e timestamp
+2. Mostrare variazioni % (24h, 7d, YTD se disponibili)
+3. Evidenziare trend (rialzo/ribasso)
+4. Mai arrotondare troppo i numeri - precisione conta
+
+Domanda: {query}
+
+Fonti finanziarie:
+"""
+
+    chunks = []
+    for doc in documents:
+        idx = doc.get("idx", 0)
+        title = doc.get("title", "(senza titolo)")
+        text = doc.get("text", "")
+        chunks.append(f"""
+[{idx}] {title}
+---
+{text}
+---
+""")
+    
+    body = "\n".join(chunks)
+    
+    footer = """
+
+FORMATO RISPOSTA:
+
+📈 **[Asset/Mercato]** – quotazione live
+
+**✅ Dati di mercato:**
+• Prezzo: [valore con valuta]
+• Variazione 24h: [+/-X.XX%]
+• Volume/Market Cap: [se disponibile]
+
+**⚠️ Contesto:**
+[Trend, supporti/resistenze, eventi che impattano]
+
+📡 Fonti: [lista numerata]
+
+RISPONDI ORA:"""
+
     return header + body + footer
 
 
@@ -125,75 +277,38 @@ def test_examples():
         }
     ]
     
-    prompt_python = build_aggressive_synthesis_prompt(
+    prompt_python = build_code_synthesis_prompt(
         "python tutorial",
         docs_python
     )
     
     print("="*80)
-    print("ESEMPIO 2: Python tutorial")
+    print("ESEMPIO 2: Python tutorial (code synthesis)")
     print("="*80)
     print(prompt_python)
+    print("\n" + "="*80 + "\n")
+    
+    # Caso 3: Prezzo Bitcoin
+    docs_crypto = [
+        {
+            "idx": 1,
+            "title": "CoinMarketCap - Bitcoin",
+            "url": "https://coinmarketcap.com/currencies/bitcoin/",
+            "text": "Bitcoin (BTC) price today is $43,250.00 with a 24-hour trading volume of $28B. BTC is up 2.5% in the last 24 hours. Market cap: $847B."
+        }
+    ]
+    
+    prompt_crypto = build_market_synthesis_prompt(
+        "prezzo bitcoin oggi",
+        docs_crypto
+    )
+    
+    print("="*80)
+    print("ESEMPIO 3: Prezzo Bitcoin (market synthesis)")
+    print("="*80)
+    print(prompt_crypto)
     print("\n" + "="*80 + "\n")
 
 
 if __name__ == "__main__":
     test_examples()
-    
-    print("""
-╔══════════════════════════════════════════════════════════════════════╗
-║                      DEPLOYMENT INSTRUCTIONS                          ║
-╔══════════════════════════════════════════════════════════════════════╗
-
-1. BACKUP del prompt attuale:
-   cd /root/quantumdev-open
-   cp backend/quantum_api.py backend/quantum_api.py.backup
-
-2. TROVA la funzione di synthesis in quantum_api.py
-   Cerca la stringa: "Sei un assistente che risponde SOLO usando le fonti"
-   
-3. SOSTITUISCI il prompt con build_aggressive_synthesis_prompt()
-   
-   PRIMA (circa linea 450-500 in quantum_api.py):
-   ```
-   prompt = (
-       "Sei un assistente che risponde SOLO usando le fonti fornite.\\n"
-       "Cita in linea come [1], [2]… quando usi una fonte. Mantieni la risposta concisa e pratica.\\n"
-       "Se l'informazione non è presente nelle fonti, dillo chiaramente.\\n\\n"
-       f"Domanda: {q}\\n\\n"
-       "Fonti:\\n"
-   )
-   ```
-   
-   DOPO:
-   ```
-   # Import all'inizio del file
-   from synthesis_prompt_v2 import build_aggressive_synthesis_prompt
-   
-   # Nella funzione _web_search_pipeline, sostituisci il blocco prompt con:
-   prompt = build_aggressive_synthesis_prompt(q, [
-       {"idx": i+1, "title": e.get("title",""), "url": e["url"], "text": e["text"]}
-       for i, e in enumerate(synth_docs)
-   ])
-   ```
-
-4. RESTART del servizio:
-   sudo systemctl restart quantum-api
-   
-5. TEST immediato:
-   curl -X POST "http://127.0.0.1:8081/web/search" \\
-     -H "Content-Type: application/json" \\
-     -d '{"q": "meteo Roma domani", "k": 5, "source": "test", "source_id": "test"}'
-   
-   curl -X POST "http://127.0.0.1:8081/web/search" \\
-     -H "Content-Type: application/json" \\
-     -d '{"q": "python tutorial", "k": 5, "source": "test", "source_id": "test"}'
-
-RISULTATO ATTESO:
-- "meteo Roma domani" → risposta con temperature e condizioni (anche se non specificamente "domani")
-- "python tutorial" → riassunto dei concetti chiave da Python docs/tutorials
-- Latenza invariata (stessa pipeline)
-- Success rate: da ~40% a ~70% (+30% solo cambiando prompt!)
-
-╚══════════════════════════════════════════════════════════════════════╝
-""")
