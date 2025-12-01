@@ -181,6 +181,81 @@ Il nuovo WebResearchAgent implementa:
 3. **Memoria storica query** - Contesto conversazione
 4. **EdgeAgent** - Calcolo EV per betting
 
+---
+
+## 🆕 Update v2.1 - Intent Classifier & Synthesis Enhancements
+
+### Smart Intent Classifier v2.1
+
+Aggiunte nuove categorie di intenti nel file `core/smart_intent_classifier.py`:
+
+1. **Code Generation** (`code_generation_keywords`)
+   - Riconosce richieste di generazione codice/script
+   - Keywords: "scrivi codice", "genera script", "implementa funzione", ecc.
+   - Routing: DIRECT_LLM con alta confidence (0.95)
+
+2. **Health/Salute** (`health_keywords`)
+   - Riconosce query su salute, sintomi, farmaci
+   - Keywords: "salute", "sintomi", "medicina", "dieta", ecc.
+   - Routing: WEB_SEARCH (per info aggiornate) o DIRECT_LLM (per domande educative)
+
+3. **Travel/Viaggi** (`travel_keywords`)
+   - Riconosce query su voli, hotel, vacanze
+   - Keywords: "volo", "hotel", "viaggio", "vacanza", ecc.
+   - Routing: WEB_SEARCH per info aggiornate
+
+### Synthesis Prompt v3
+
+Il file `backend/synthesis_prompt_v2.py` ora include:
+
+1. **`build_aggressive_synthesis_prompt()`** - Prompt generico migliorato
+   - Formato standardizzato con blocchi ✅/⚠️
+   - Checklist di verifica finale
+   - Regole più aggressive anti-evasione
+   - Richiede sempre numeri, date, percentuali concrete
+
+2. **`build_code_synthesis_prompt()`** - Nuovo prompt per codice
+   - Ottimizzato per documentazione tecnica
+   - Include snippet di codice formattati
+   - Organizzazione base → avanzato
+
+3. **`build_market_synthesis_prompt()`** - Nuovo prompt per finanza
+   - Ottimizzato per dati di mercato
+   - Richiede prezzi con valuta e variazioni %
+   - Evidenzia trend e contesto
+
+### Advanced Cache v2
+
+Il file `core/advanced_cache.py` ora supporta:
+
+1. **TTL per categoria** - Cache TTL configurabili:
+   - Weather: 30 min (dati meteo cambiano lentamente)
+   - Price: 1 min (prezzi crypto/azioni cambiano spesso)
+   - Sports: 5 min (risultati live)
+   - News: 10 min (breaking news)
+   - Generic: 6 ore (contenuti statici)
+
+2. **QueryCache** - Nuova classe per cachare risultati di query complete
+
+3. **Variabili .env aggiuntive**:
+   ```env
+   CACHE_TTL_WEATHER=1800
+   CACHE_TTL_PRICE=60
+   CACHE_TTL_SPORTS=300
+   CACHE_TTL_NEWS=600
+   CACHE_TTL_SCHEDULE=3600
+   CACHE_TTL_GENERIC=21600
+   ```
+
+### Documentazione
+
+Nuovo file `ENV_REFERENCE.md` con:
+- Lista completa di tutte le variabili d'ambiente
+- Valori default
+- Esempi di configurazione minima e completa
+
+---
+
 ## 📝 Note
 
 - Gli agenti usano cache Redis per evitare chiamate ripetute

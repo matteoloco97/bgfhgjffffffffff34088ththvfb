@@ -237,6 +237,44 @@ class SmartIntentClassifier:
             "supporto", "resistenza", "support", "resistance",
             "candlestick", "pattern", "trend",
         ]
+        
+        # NUOVO: Keywords per code generation (script, software, coding)
+        self.code_generation_keywords = [
+            "scrivi codice", "genera codice", "crea script",
+            "scrivi uno script", "genera uno script",
+            "scrivi un programma", "crea un programma",
+            "implementa", "programma che", "script che",
+            "funzione che", "classe che", "metodo che",
+            "codice python", "codice javascript", "codice java",
+            "script bash", "script python", "script shell",
+            "write code", "generate code", "create script",
+            "implementa una funzione", "crea una funzione",
+            "scrivi una funzione", "genera una funzione",
+            "codice per", "script per", "programma per",
+        ]
+        
+        # NUOVO: Keywords per health/salute (per future integrazioni)
+        self.health_keywords = [
+            "salute", "health", "sintomi", "symptoms",
+            "malattia", "malattie", "disease",
+            "medicina", "medicine", "farmaco", "farmaci",
+            "vaccino", "vaccini", "cura", "cure",
+            "dieta", "nutrizione", "calorie",
+            "fitness", "allenamento", "workout",
+            "benessere", "wellness",
+        ]
+        
+        # NUOVO: Keywords per viaggi (per future integrazioni)
+        self.travel_keywords = [
+            "volo", "voli", "flight", "flights",
+            "hotel", "albergo", "alberghi", "booking",
+            "viaggio", "viaggi", "travel", "trip",
+            "vacanza", "vacanze", "holiday",
+            "destinazione", "destination",
+            "itinerario", "itinerary",
+            "biglietto", "biglietti", "ticket",
+            "aereo", "treno", "autobus",
+        ]
 
     # ------------------------------------------------------------------
     # Helpers
@@ -378,6 +416,18 @@ class SmartIntentClassifier:
                 "live_type": "price",
                 "url": None,
             }
+        
+        # PRIORITÀ: Travel keywords → check PRIMA di sports per evitare conflitti
+        # Es: "volo roma parigi" non deve matchare "roma" come squadra
+        has_travel = any(k in low for k in self.travel_keywords)
+        if has_travel:
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": 0.85,
+                "reason": "travel_query",
+                "live_type": "travel",
+                "url": None,
+            }
 
         # Live results: detect sports scores or standings requests when
         # accompanied by temporal hints (today, yesterday).  These
@@ -443,6 +493,35 @@ class SmartIntentClassifier:
                 "live_type": "trading",
                 "url": None,
             }
+        
+        # NUOVO: Code generation → DIRECT_LLM con alta confidence
+        # Richieste esplicite di generazione codice vanno direttamente al LLM
+        if any(k in low for k in self.code_generation_keywords):
+            return {
+                "intent": "DIRECT_LLM",
+                "confidence": 0.95,
+                "reason": "code_generation_request",
+                "live_type": "code",
+            }
+        
+        # NUOVO: Health keywords → WEB_SEARCH (con nota che non è consiglio medico)
+        if any(k in low for k in self.health_keywords):
+            # Domande educative → LLM
+            if _GENERAL_KNOWLEDGE_RE.search(low):
+                return {
+                    "intent": "DIRECT_LLM",
+                    "confidence": 0.80,
+                    "reason": "health_educational_query",
+                    "live_type": "health",
+                }
+            # Informazioni su farmaci/malattie → WEB_SEARCH per dati aggiornati
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": 0.75,
+                "reason": "health_info_query",
+                "live_type": "health",
+                "url": None,
+            }
 
         # Operational requests (coding, writing, optimisation, etc.)
         # should stay within the LLM environment.  Recognise Italian
@@ -454,8 +533,9 @@ class SmartIntentClassifier:
         ):
             return {
                 "intent": "DIRECT_LLM",
-                "confidence": 0.8,
+                "confidence": 0.85,
                 "reason": "tooling_or_coding_request",
+                "live_type": "code",
             }
 
         # Default fallback: for anything not matched above, use the
