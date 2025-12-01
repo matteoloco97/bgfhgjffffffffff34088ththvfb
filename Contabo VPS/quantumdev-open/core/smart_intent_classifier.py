@@ -113,50 +113,100 @@ class SmartIntentClassifier:
         # or currencies.  When combined with price triggers or temporal
         # indicators these cause the classifier to search for live price
         # information.
+        # EXTENDED: più crypto, azioni, forex, indici
         self.asset_keywords = [
-            "btc", "bitcoin", "eth", "ethereum",
-            "eurusd", "eur/usd", "usd/eur",
-            "oro", "gold", "argento", "silver",
-            "azioni", "stock", "indice", "index",
-            "dow jones", "nasdaq", "s&p", "ftse",
+            # Crypto principali
+            "btc", "bitcoin", "eth", "ethereum", "sol", "solana",
+            "xrp", "ripple", "ada", "cardano", "doge", "dogecoin",
+            "bnb", "binance coin", "usdt", "tether", "usdc",
+            "dot", "polkadot", "avax", "avalanche", "matic", "polygon",
+            "link", "chainlink", "uni", "uniswap", "ltc", "litecoin",
+            "shib", "shiba", "atom", "cosmos", "near", "apt", "aptos",
+            "arb", "arbitrum", "sui", "pepe", "trx", "tron",
+            # Forex
+            "eurusd", "eur/usd", "usd/eur", "gbpusd", "gbp/usd",
+            "usdjpy", "usd/jpy", "usdchf", "usd/chf",
+            "eurgbp", "eur/gbp", "forex", "fx",
+            # Commodities
+            "oro", "gold", "xauusd", "xau/usd",
+            "argento", "silver", "xagusd", "xag/usd",
+            "petrolio", "oil", "crude", "brent", "wti",
+            # Azioni/ETF
+            "azioni", "stock", "stocks", "shares",
+            "apple", "aapl", "microsoft", "msft", "google", "googl",
+            "amazon", "amzn", "tesla", "tsla", "nvidia", "nvda",
+            "meta", "facebook", "netflix", "nflx",
+            # Indici
+            "indice", "index", "indices",
+            "dow jones", "dow", "nasdaq", "s&p", "s&p 500", "sp500",
+            "ftse", "dax", "cac", "nikkei", "hang seng",
+            "ftsemib", "ftse mib",
         ]
 
         # Triggers for price or value queries.  Used in conjunction
         # with asset keywords to detect requests like "prezzo del bitcoin"
         # or "quanto vale l'oro adesso".
+        # EXTENDED: più trigger per finanza/trading
         self.price_trigger_keywords = [
-            "prezzo", "quotazione", "quanto vale",
+            "prezzo", "quotazione", "quanto vale", "quanto costa",
             "valore", "tasso di cambio", "cambio",
-            "price", "exchange rate",
+            "price", "exchange rate", "quote",
+            "market cap", "capitalizzazione",
+            "volume", "trading volume",
+            "bid", "ask", "spread",
         ]
 
         # Words that suggest the user is asking for the result of a
         # sporting event or league table.  When present alongside
         # temporal hints (oggi, ieri, etc.) we route to web search for
         # fresh scores and standings.
+        # EXTENDED: più sport, squadre, competizioni
         self.results_keywords = [
-            "risultato", "risultati", "score",
+            "risultato", "risultati", "score", "scores",
             "quanto è finita", "com'è finita",
-            "chi ha vinto", "chi ha segnato",
-            "classifica", "standing", "table",
+            "chi ha vinto", "chi ha segnato", "gol",
+            "classifica", "standing", "table", "standings",
+            "partita", "partite", "match",
+            # Squadre italiane (trigger diretto)
+            "milan", "inter", "juventus", "juve", "napoli", "roma",
+            "lazio", "atalanta", "fiorentina", "torino", "bologna",
+            # Squadre internazionali
+            "real madrid", "barcellona", "barcelona", "psg",
+            "manchester", "liverpool", "chelsea", "arsenal", "bayern",
+            # Competizioni
+            "serie a", "premier league", "champions", "europa league",
+            "la liga", "bundesliga", "ligue 1",
         ]
 
         # Terms indicating a schedule or time query, such as asking
         # when a match starts or what time an event occurs.
+        # EXTENDED: F1, MotoGP, eventi finanziari
         self.schedule_keywords = [
             "orari", "orario", "a che ora",
             "quando gioca", "quando inizia", "quando parte",
-            "what time",
+            "what time", "schedule", "calendario",
+            "prossima partita", "prossimo match",
+            # F1/Motorsport
+            "f1", "formula 1", "formula1", "gran premio", "gp",
+            "motogp", "moto gp",
+            "prossima gara", "prossimo gp",
+            # Eventi finanziari
+            "quando è", "quando sarà",
+            "fed", "fomc", "bce", "ecb",
+            "riunione fed", "riunione bce",
         ]
 
         # High‑level news triggers.  These capture phrases like
         # "ultime notizie" or "breaking news" and cause the query to be
         # handled via web search to fetch the most recent headlines.
+        # EXTENDED: più pattern news
         self.news_keywords = [
-            "ultime notizie", "breaking news",
+            "ultime notizie", "breaking news", "news",
             "oggi in", "oggi cosa è successo", "oggi cosa succede",
-            "ultime news", "news oggi",
-            "cosa è successo oggi",
+            "ultime news", "news oggi", "notizie oggi",
+            "cosa è successo oggi", "cosa succede",
+            "novità", "aggiornamenti", "headline", "headlines",
+            "latest news", "current events",
         ]
 
         # Temporal indicators implying that the user expects live or
@@ -167,6 +217,25 @@ class SmartIntentClassifier:
             "in tempo reale", "in real time", "live",
             "ultimi", "ieri", "pochi minuti fa",
             "ultima ora", "ultimo aggiornamento",
+            "attuale", "corrente", "now", "current",
+        ]
+        
+        # NUOVO: Keywords per betting/trading (per future integrazioni)
+        self.betting_keywords = [
+            "scommessa", "scommesse", "bet", "betting",
+            "quote", "odds", "pronostico", "pronostici",
+            "value bet", "over", "under", "handicap",
+            "1x2", "combo", "multipla", "singola",
+        ]
+        
+        self.trading_keywords = [
+            "trading", "trader", "trade",
+            "long", "short", "buy", "sell",
+            "stop loss", "take profit", "tp", "sl",
+            "leva", "leverage", "margin",
+            "analisi tecnica", "technical analysis",
+            "supporto", "resistenza", "support", "resistance",
+            "candlestick", "pattern", "trend",
         ]
 
     # ------------------------------------------------------------------
@@ -293,8 +362,19 @@ class SmartIntentClassifier:
         if has_asset and (has_price_trigger or has_live_time):
             return {
                 "intent": "WEB_SEARCH",
-                "confidence": 0.9,
+                "confidence": 0.92,
                 "reason": "price_or_market_live_query",
+                "live_type": "price",
+                "url": None,
+            }
+        
+        # NUOVO: Asset da solo con contesto implicito di prezzo
+        # Es: "bitcoin ora", "btc oggi", "ethereum" (query singola già gestita sopra)
+        if has_asset and len(tokens) <= 3:
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": 0.88,
+                "reason": "asset_implicit_price_query",
                 "live_type": "price",
                 "url": None,
             }
@@ -302,14 +382,14 @@ class SmartIntentClassifier:
         # Live results: detect sports scores or standings requests when
         # accompanied by temporal hints (today, yesterday).  These
         # queries are best answered with a fresh web search.
-        if any(k in low for k in self.results_keywords) and (
-            has_live_time or "oggi" in low or "ieri" in low
-        ):
+        # EXTENDED: anche senza hint temporali se menziona squadre/competizioni
+        has_sports_keywords = any(k in low for k in self.results_keywords)
+        if has_sports_keywords:
             return {
                 "intent": "WEB_SEARCH",
-                "confidence": 0.88,
-                "reason": "results_or_scores_recent_query",
-                "live_type": "results",
+                "confidence": 0.90,
+                "reason": "sports_results_query",
+                "live_type": "sports",
                 "url": None,
             }
 
@@ -317,7 +397,7 @@ class SmartIntentClassifier:
         if any(k in low for k in self.schedule_keywords):
             return {
                 "intent": "WEB_SEARCH",
-                "confidence": 0.86,
+                "confidence": 0.88,
                 "reason": "schedule_or_time_query",
                 "live_type": "schedule",
                 "url": None,
@@ -330,9 +410,37 @@ class SmartIntentClassifier:
         ):
             return {
                 "intent": "WEB_SEARCH",
-                "confidence": 0.82,
+                "confidence": 0.85,
                 "reason": "news_live_query",
                 "live_type": "news",
+                "url": None,
+            }
+        
+        # NUOVO: Betting keywords → WEB_SEARCH per dati aggiornati
+        if any(k in low for k in self.betting_keywords):
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": 0.80,
+                "reason": "betting_query",
+                "live_type": "betting",
+                "url": None,
+            }
+        
+        # NUOVO: Trading keywords → mix LLM + context
+        if any(k in low for k in self.trading_keywords):
+            # Se è una domanda educativa ("cos'è lo stop loss") → LLM
+            if _GENERAL_KNOWLEDGE_RE.search(low):
+                return {
+                    "intent": "DIRECT_LLM",
+                    "confidence": 0.85,
+                    "reason": "trading_educational_query",
+                }
+            # Altrimenti potrebbe volere dati live
+            return {
+                "intent": "WEB_SEARCH",
+                "confidence": 0.78,
+                "reason": "trading_live_query",
+                "live_type": "trading",
                 "url": None,
             }
 
