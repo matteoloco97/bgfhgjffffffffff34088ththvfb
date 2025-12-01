@@ -674,7 +674,7 @@ class UnifiedWebHandler:
             result = await get_betting_for_query(query)
             return result or "❌ Impossibile elaborare la richiesta di betting."
         except ImportError:
-            log.warning("Betting agent not available, using fallback")
+            log.info("Betting agent not available, using fallback")
             return await self._betting_fallback(query)
         except Exception as e:
             log.error(f"Betting handler error: {e}")
@@ -706,7 +706,7 @@ class UnifiedWebHandler:
             result = await get_trading_for_query(query)
             return result or "❌ Impossibile elaborare la richiesta di trading."
         except ImportError:
-            log.warning("Trading agent not available, using fallback")
+            log.info("Trading agent not available, using fallback")
             return await self._trading_fallback(query)
         except Exception as e:
             log.error(f"Trading handler error: {e}")

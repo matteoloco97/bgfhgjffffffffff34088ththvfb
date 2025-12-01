@@ -39,15 +39,6 @@ log = logging.getLogger(__name__)
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 BETTING_API_TIMEOUT = float(os.getenv("BETTING_API_TIMEOUT", "10.0"))
 
-# ===================== CONSTANTS =====================
-
-# Formato quote comuni
-ODDS_FORMATS = {
-    "decimal": "Decimali (EU)",
-    "fractional": "Frazionarie (UK)",
-    "american": "Americane (US)",
-}
-
 # ===================== CALCULATION FUNCTIONS =====================
 
 
