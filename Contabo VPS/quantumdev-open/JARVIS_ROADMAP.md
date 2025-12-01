@@ -26,29 +26,52 @@ Questo documento descrive le modifiche effettuate per implementare la "roadmap J
    - API: TheSportsDB, Ergast (F1)
    - Supporta: Orari partite, calendario F1, eventi macro FED/BCE
 
+5. **`agents/code_agent.py`** - 🆕 Agente codice dedicato
+   - Generazione codice strutturata con piano + implementazione
+   - Debug e fix di errori con spiegazione
+   - Generazione test unitari
+   - Code review e documentazione
+   - Formato: Piano → Codice → Istruzioni → Note
+
+### Nuovi Core Modules (`core/`)
+
+6. **`core/unified_web_handler.py`** - 🆕 Handler web unificato
+   - Garantisce consistenza tra /web e auto-web
+   - Formato risposta standard: TL;DR + bullet + fonti
+   - Routing unificato per tutti gli intent
+   - Cache per live data con TTL configurabili
+
 ### File Modificati
 
-5. **`core/smart_intent_classifier.py`** - Pattern estesi (SmartIntent 2.0)
+7. **`core/smart_intent_classifier.py`** - Pattern estesi (SmartIntent 2.0)
    - Più crypto (SOL, XRP, DOGE, ecc.)
    - Più forex (GBP/USD, USD/JPY, ecc.)
    - Più azioni (AAPL, MSFT, TSLA, ecc.)
    - Più sport (squadre, competizioni)
    - Keywords betting e trading
-   - Nuovi live_type: "price", "sports", "news", "schedule", "betting", "trading"
+   - Nuovi live_type: "price", "sports", "news", "schedule", "betting", "trading", "code"
 
-6. **`backend/quantum_api.py`** - Integrazione agenti
-   - Import di tutti i nuovi agenti
+8. **`backend/quantum_api.py`** - Integrazione agenti
+   - Import di tutti i nuovi agenti (incluso code_agent)
+   - Import di unified_web_handler
+   - Nuovo endpoint `/web/deep` per ricerca approfondita
+   - Nuovo endpoint `/code` per generazione codice
+   - Nuovo endpoint `/unified-web` per routing consistente
    - Funzione `cached_live_call()` per cache Redis
-   - Routing nel `/generate` e `/web/summarize`
-   - TTL configurabili per tipo di agente
-   - Healthcheck con stato live agents
+   - Healthcheck con stato live agents esteso
 
-7. **`agents/web_research_agent.py`** - Multi-step Research v2
-   - Multi-step: riformula e cerca se la prima ricerca non basta
-   - Parallel fetch aggressivo con asyncio.Semaphore
-   - Dedup per dominio (max 2 risultati per dominio)
-   - Quality estimation per decidere se continuare
-   - Prompt di sintesi con formato standardizzato (blocchi ✅/⚠️)
+9. **`backend/synthesis_prompt_v2.py`** - 🆕 Formato TL;DR
+   - Prompt v4 con formato TL;DR + bullet + fonti
+   - Risposte più secche e concrete
+   - Meno "fuffa" e frasi evasive
+   - Limite a 6 bullet points
+
+10. **`agents/advanced_web_research.py`** - Multi-step Research v2
+    - Multi-step: riformula e cerca se la prima ricerca non basta
+    - Parallel fetch aggressivo con asyncio.Semaphore
+    - Dedup per dominio (max 2 risultati per dominio)
+    - Quality estimation per decidere se continuare
+    - Prompt di sintesi con formato standardizzato
 
 ## 🔧 Variabili .env Necessarie
 
@@ -84,6 +107,10 @@ GNEWS_API_KEY=your_gnews_key_here
 # === SPORTS AGENT ===
 # football-data.org - free tier: 10 req/min
 FOOTBALL_DATA_API_KEY=your_football_data_key_here
+
+# === CODE AGENT ===
+CODE_AGENT_TIMEOUT=30.0
+CODE_MAX_TOKENS=2048
 
 # === LIVE CACHE TTL (in secondi) ===
 LIVE_CACHE_TTL_WEATHER=1800    # 30 minuti
@@ -124,13 +151,14 @@ requests>=2.28.0    # Per chiamate HTTP sync (già presente)
 ## 🔄 Come Funziona il Routing
 
 1. L'utente invia una query (es: "prezzo bitcoin")
-2. `SmartIntentClassifier` classifica la query con `live_type`
+2. `SmartIntentClassifier` o `UnifiedIntentDetector` classifica la query con `live_type`
 3. Se `live_type == "price"` → `PriceAgent`
 4. Se `live_type == "sports"` → `SportsAgent`
 5. Se `live_type == "news"` → `NewsAgent`
 6. Se `live_type == "schedule"` → `ScheduleAgent`
 7. Se `live_type == "weather"` → `WeatherAgent` (già esistente)
-8. Fallback → `WebResearchAgent` per ricerche generiche
+8. Se `live_type == "code"` → `CodeAgent` 🆕
+9. Fallback → `WebResearchAgent` per ricerche generiche
 
 ### Priorità Live Agents
 
@@ -140,25 +168,115 @@ requests>=2.28.0    # Per chiamate HTTP sync (già presente)
 3. Sports Agent (risultati/classifiche)
 4. News Agent (breaking news)
 5. Schedule Agent (orari/calendario)
-6. Web Research Agent (fallback generico)
+6. Code Agent (generazione/debug codice) 🆕
+7. Web Research Agent (fallback generico)
 ```
 
-## 📊 Formato Risposte Standardizzato
+## 📊 Formato Risposte Standardizzato v4 (TL;DR)
 
-Tutti gli agenti seguono questo formato:
+Tutte le risposte web seguono ora questo formato compatto:
 
 ```
-📈 **Titolo con emoji** – contesto
+📌 **TL;DR:** [Sintesi 1-2 frasi]
 
-**✅ Dati verificati:**
-• Dato 1
-• Dato 2
-• Dato 3
+**✅ Punti chiave:**
+1. [Fatto concreto con numero/data]
+2. [Fatto concreto]
+3. [Fatto concreto]
 
-**⚠️ Analisi / Nota:**
-• Interpretazione o avvisi
+**📡 Fonti:** [1] Nome1, [2] Nome2
 
-📡 Fonte: NomeAPI (aggiornato: YYYY-MM-DD HH:MM)
+**⚠️ Nota:** [Solo se necessario, max 1 riga]
+```
+
+### Formato Code Agent
+
+```
+📌 **[Titolo componente]**
+
+**📋 Piano:**
+1. [Passo 1]
+2. [Passo 2]
+3. [Passo 3]
+
+**💻 Codice:**
+```python
+[codice completo]
+```
+
+**🚀 Come usarlo:**
+1. [Istruzione 1]
+2. [Istruzione 2]
+
+**⚠️ Note:**
+• [Dipendenze]
+• [Limitazioni]
+```
+
+## 🆕 Nuovi Endpoints API
+
+### `/web/deep` (POST)
+Ricerca approfondita multi-step.
+
+```json
+{
+  "q": "quali sono i rischi degli ETF obbligazionari nel 2025?",
+  "source": "tg",
+  "source_id": "123"
+}
+```
+
+Risposta:
+```json
+{
+  "answer": "...",
+  "sources": [...],
+  "steps": [...],
+  "quality": 0.85,
+  "total_sources": 12
+}
+```
+
+### `/code` (POST)
+Generazione codice strutturata.
+
+```json
+{
+  "q": "scrivi una funzione Python che calcola il fattoriale",
+  "language": "python",
+  "source": "tg"
+}
+```
+
+Risposta:
+```json
+{
+  "ok": true,
+  "code": "📌 **Calcolo Fattoriale**\n\n**📋 Piano:**...",
+  "language": "python"
+}
+```
+
+### `/unified-web` (POST)
+Endpoint unificato per qualsiasi richiesta web.
+
+```json
+{
+  "q": "meteo roma",
+  "deep": false,
+  "source": "api"
+}
+```
+
+Risposta:
+```json
+{
+  "response": "...",
+  "intent": "weather",
+  "confidence": 0.95,
+  "cached": true,
+  "latency_ms": 45
+}
 ```
 
 ## 🔍 WebResearchAgent v2 - Multi-Step
@@ -172,7 +290,7 @@ Il nuovo WebResearchAgent implementa:
    - Numero di estratti
    - Diversità domini
    - Match keywords query
-5. **Prompt strutturato**: Output con blocchi ✅ (dati verificati) e ⚠️ (analisi)
+5. **Prompt strutturato**: Output con formato TL;DR + bullet + fonti
 
 ## 🚀 Prossimi Passi (da implementare)
 
@@ -183,76 +301,56 @@ Il nuovo WebResearchAgent implementa:
 
 ---
 
-## 🆕 Update v2.1 - Intent Classifier & Synthesis Enhancements
+## 🆕 Update v2.2 - Unified Handler & Code Agent
 
-### Smart Intent Classifier v2.1
+### Code Agent (`agents/code_agent.py`)
 
-Aggiunte nuove categorie di intenti nel file `core/smart_intent_classifier.py`:
+Agente dedicato per generazione codice con:
 
-1. **Code Generation** (`code_generation_keywords`)
-   - Riconosce richieste di generazione codice/script
-   - Keywords: "scrivi codice", "genera script", "implementa funzione", ecc.
-   - Routing: DIRECT_LLM con alta confidence (0.95)
+1. **Generazione strutturata**
+   - Piano in passi chiari
+   - Codice completo e funzionante
+   - Istruzioni di esecuzione (3-5 passi)
+   - Note su dipendenze e limitazioni
 
-2. **Health/Salute** (`health_keywords`)
-   - Riconosce query su salute, sintomi, farmaci
-   - Keywords: "salute", "sintomi", "medicina", "dieta", ecc.
-   - Routing: WEB_SEARCH (per info aggiornate) o DIRECT_LLM (per domande educative)
+2. **Debug intelligente**
+   - Analisi dell'errore
+   - Codice corretto con spiegazione
+   - Suggerimenti aggiuntivi
 
-3. **Travel/Viaggi** (`travel_keywords`)
-   - Riconosce query su voli, hotel, vacanze
-   - Keywords: "volo", "hotel", "viaggio", "vacanza", ecc.
-   - Routing: WEB_SEARCH per info aggiornate
+3. **Linguaggi supportati**
+   - Python, JavaScript, TypeScript
+   - Java, C/C++, C#
+   - Go, Rust, Bash/Shell
+   - SQL, HTML/CSS, Ruby, PHP
 
-### Synthesis Prompt v3
+4. **Tipi di richieste**
+   - `generate`: Generazione nuovo codice
+   - `debug`: Fix di errori
+   - `explain`: Spiegazione codice
+   - `test`: Generazione unit test
+   - `optimize`: Refactoring/ottimizzazione
 
-Il file `backend/synthesis_prompt_v2.py` ora include:
+### Unified Web Handler (`core/unified_web_handler.py`)
 
-1. **`build_aggressive_synthesis_prompt()`** - Prompt generico migliorato
-   - Formato standardizzato con blocchi ✅/⚠️
-   - Checklist di verifica finale
-   - Regole più aggressive anti-evasione
-   - Richiede sempre numeri, date, percentuali concrete
+Handler unificato che:
 
-2. **`build_code_synthesis_prompt()`** - Nuovo prompt per codice
-   - Ottimizzato per documentazione tecnica
-   - Include snippet di codice formattati
-   - Organizzazione base → avanzato
+1. **Garantisce consistenza**
+   - Stesso routing per /web e auto-web
+   - Stesso formato risposta
+   - Stessa cache
 
-3. **`build_market_synthesis_prompt()`** - Nuovo prompt per finanza
-   - Ottimizzato per dati di mercato
-   - Richiede prezzi con valuta e variazioni %
-   - Evidenzia trend e contesto
+2. **Intent detection unificata**
+   - Weather, Price, Sports, News, Schedule, Code
+   - Deep Research, General Web, Direct LLM
 
-### Advanced Cache v2
+3. **Cache intelligente**
+   - TTL configurabili per tipo
+   - Cache key basata su intent + query hash
 
-Il file `core/advanced_cache.py` ora supporta:
-
-1. **TTL per categoria** - Cache TTL configurabili:
-   - Weather: 30 min (dati meteo cambiano lentamente)
-   - Price: 1 min (prezzi crypto/azioni cambiano spesso)
-   - Sports: 5 min (risultati live)
-   - News: 10 min (breaking news)
-   - Generic: 6 ore (contenuti statici)
-
-2. **QueryCache** - Nuova classe per cachare risultati di query complete
-
-3. **Variabili .env aggiuntive**:
-   ```env
-   CACHE_TTL_WEATHER=1800
-   CACHE_TTL_PRICE=60
-   CACHE_TTL_SPORTS=300
-   CACHE_TTL_NEWS=600
-   CACHE_TTL_SCHEDULE=3600
-   CACHE_TTL_GENERIC=21600
-   ```
-
-### Documentazione
-
-Nuovo file `ENV_REFERENCE.md` con:
-- Lista completa di tutte le variabili d'ambiente
-- Valori default
-- Esempi di configurazione minima e completa
+4. **Formato risposta standard**
+   - `format_standard_response()`: TL;DR + bullet + fonti
+   - `format_live_data_response()`: Per dati live strutturati
 
 ---
 
@@ -268,7 +366,7 @@ Nuovo file `ENV_REFERENCE.md` con:
 
 ## 🔒 Healthcheck
 
-L'endpoint `/healthz` ora include lo stato dei live agents:
+L'endpoint `/healthz` ora include lo stato di tutti i live agents:
 
 ```json
 {
@@ -277,7 +375,9 @@ L'endpoint `/healthz` ora include lo stato dei live agents:
     "price": true,
     "sports": true,
     "news": true,
-    "schedule": true
+    "schedule": true,
+    "code": true,
+    "unified_web": true
   },
   "live_cache_ttl": {
     "weather": 1800,

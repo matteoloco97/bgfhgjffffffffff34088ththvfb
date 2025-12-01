@@ -10,6 +10,8 @@ Cambio filosofico:
 
 Versione v3: Aggiunge formato standardizzato con blocchi ✅/⚠️ e
 richiede sempre numeri, percentuali, date concrete.
+
+Versione v4: Formato TL;DR + bullet + fonti per risposte secche.
 """
 
 
@@ -26,83 +28,58 @@ def build_aggressive_synthesis_prompt(query: str, documents: list) -> str:
         Prompt completo per il modello
     """
     
-    # Header aggressivo v3
-    header = f"""Sei Jarvis, l'AI personale di Matteo. La tua missione è dare SEMPRE una risposta utile, concreta e strutturata.
+    # Header aggressivo v4 - formato TL;DR
+    header = f"""Sei Jarvis, l'AI personale di Matteo. Dai SEMPRE risposte SECCHE e CONCRETE.
 
-=== REGOLE CRITICHE (VIOLAZIONE = FALLIMENTO) ===
+=== REGOLE CRITICHE ===
 
-1. **VIETATO ASSOLUTAMENTE**:
-   - Dire "non ho abbastanza informazioni"
-   - Dire "le fonti non contengono"
-   - Dire "consulta/apri/visita le fonti"
-   - Dire "per maggiori dettagli vai a..."
-   - Qualsiasi frase che rimanda l'utente altrove
+1. **FORMATO OBBLIGATORIO**:
 
-2. **OBBLIGATORIO**:
-   - Estrai TUTTO ciò che è utile dalle fonti
-   - Se informazioni parziali, combinale intelligentemente
-   - Fornisci almeno 3-4 facts concreti
-   - Usa numeri, date, percentuali quando presenti
+📌 **TL;DR:** [1-2 frasi di sintesi diretta]
 
-3. **NUMERI E DATI**:
-   - Se trovi numeri (prezzi, date, %, quantità), riportali CON UNITÀ
-   - Esempio CORRETTO: "Il prezzo attuale è €45.50"
-   - Esempio SBAGLIATO: "Il prezzo è indicato nelle fonti"
+**✅ Punti chiave:**
+1. [Fatto concreto con numero/data se presente]
+2. [Fatto concreto]
+3. [Fatto concreto]
 
-4. **FORMATO RISPOSTA STANDARDIZZATO** (USA ESATTAMENTE QUESTO):
+**📡 Fonti:** [1] Nome1, [2] Nome2
 
-   📌 **[Titolo breve argomento]**
+**⚠️ Nota:** [Solo se necessario, max 1 riga]
 
-   **✅ Dati verificati:**
-   • [Fatto 1 con numeri/date se presenti]
-   • [Fatto 2]
-   • [Fatto 3]
+2. **VIETATO ASSOLUTAMENTE**:
+   - "Non ho abbastanza informazioni"
+   - "Le fonti sono parziali"
+   - "Consulta/apri le fonti per..."
+   - "Potrebbe essere/tuttavia/forse" (sii diretto!)
+   - Più di 6 bullet points
+   - Frasi da manuale scolastico
 
-   **⚠️ Analisi/Interpretazione:**
-   [1-2 frasi con considerazioni, trend, o cosa significano i dati]
-
-   📡 Fonti: [1] Nome fonte 1, [2] Nome fonte 2
-
-5. **SE DAVVERO MANCANO INFO**:
-   - Descrivi cosa c'È invece di cosa manca
-   - Mai solo "non c'è abbastanza" senza dare nulla
+3. **OBBLIGATORIO**:
+   - TL;DR breve e diretto (max 2 frasi)
+   - 3-6 bullet points NUMERATI con fatti concreti
+   - Numeri CON UNITÀ quando presenti
+   - Lista fonti a fine risposta
 
 Domanda: {query}
 
-Fonti a disposizione:
+Fonti:
 """
     
-    # Corpo con documenti
+    # Corpo con documenti (compatto)
     chunks = []
     for doc in documents:
         idx = doc.get("idx", 0)
-        title = doc.get("title", "(senza titolo)")
-        url = doc.get("url", "")
-        text = doc.get("text", "")
+        title = doc.get("title", "(senza titolo)")[:60]
+        text = doc.get("text", "")[:800]  # Limita testo
         
-        chunks.append(f"""
-[{idx}] {title}
-URL: {url}
----
-{text}
----
-""")
+        chunks.append(f"[{idx}] {title}\n{text}\n---")
     
     body = "\n".join(chunks)
     
-    # Footer con istruzioni di output v3
+    # Footer minimal
     footer = """
 
-=== VERIFICA FINALE PRIMA DI RISPONDERE ===
-□ La risposta contiene almeno 3 facts concreti? 
-□ Hai usato i blocchi ✅ e ⚠️?
-□ Ci sono numeri/percentuali dove possibile?
-□ L'utente ottiene valore senza aprire le fonti?
-□ NON stai rimandando l'utente altrove?
-
-Se la risposta a qualsiasi domanda è NO, RISCRIVI.
-
-RISPONDI ORA in italiano seguendo il formato:"""
+RISPONDI ORA usando il formato TL;DR + bullet + fonti:"""
     
     return header + body + footer
 

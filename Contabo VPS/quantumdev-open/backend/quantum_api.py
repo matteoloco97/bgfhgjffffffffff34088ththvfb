@@ -172,6 +172,32 @@ except Exception:  # pragma: no cover
     is_schedule_query = None  # type: ignore
     SCHEDULE_AGENT_AVAILABLE = False
 
+# 💻 Code Agent (Code Generation/Debug)
+try:
+    from agents.code_agent import (
+        get_code_for_query,
+        is_code_query,
+    )
+    CODE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_code_for_query = None  # type: ignore
+    is_code_query = None  # type: ignore
+    CODE_AGENT_AVAILABLE = False
+
+# 🌐 Unified Web Handler (consistent routing)
+try:
+    from core.unified_web_handler import (
+        handle_web_query,
+        handle_web_command,
+        get_unified_web_handler,
+    )
+    UNIFIED_WEB_HANDLER_AVAILABLE = True
+except Exception:  # pragma: no cover
+    handle_web_query = None  # type: ignore
+    handle_web_command = None  # type: ignore
+    get_unified_web_handler = None  # type: ignore
+    UNIFIED_WEB_HANDLER_AVAILABLE = False
+
 # Smart intent (rule-based)
 from core.smart_intent_classifier import SmartIntentClassifier
 
@@ -1356,6 +1382,8 @@ def healthz() -> Dict[str, Any]:
         "sports": SPORTS_AGENT_AVAILABLE,
         "news": NEWS_AGENT_AVAILABLE,
         "schedule": SCHEDULE_AGENT_AVAILABLE,
+        "code": CODE_AGENT_AVAILABLE,
+        "unified_web": UNIFIED_WEB_HANDLER_AVAILABLE,
     }
 
     return {
@@ -2846,6 +2874,162 @@ async def web_research(req: WebResearchReq) -> Dict[str, Any]:
             "steps": [],
             "total_steps": 1,
             "note": "web_research_error_fallback",
+            "error": str(e),
+        }
+
+
+# -------------------------- /web/deep ---------------------------------
+class WebDeepReq(BaseModel):
+    q: str
+    source: str = "tg"
+    source_id: str = "default"
+
+
+@app.post("/web/deep")
+async def web_deep(req: WebDeepReq) -> Dict[str, Any]:
+    """
+    Ricerca approfondita multi-step (comando /webdeep).
+    Usa AdvancedWebResearch per coverage completo.
+    """
+    if _is_smalltalk_query(req.q):
+        return {
+            "answer": "",
+            "sources": [],
+            "steps": [],
+            "quality": 0.0,
+            "note": "non_web_query",
+        }
+
+    try:
+        from agents.advanced_web_research import get_advanced_research
+
+        researcher = get_advanced_research()
+        persona = (
+            await get_persona(req.source, str(req.source_id))
+            or DEFAULT_SYSTEM_PROMPT
+        )
+        persona = (persona.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+
+        result = await researcher.research_deep(req.q, persona)
+
+        return {
+            "answer": result.get("answer", ""),
+            "sources": result.get("sources", []),
+            "steps": result.get("steps", []),
+            "quality": result.get("quality_final", 0.0),
+            "total_sources": result.get("total_sources", 0),
+            "note": "deep_research",
+        }
+
+    except Exception as e:
+        log.error(f"/web/deep error: {e}")
+        # Fallback a ricerca standard
+        ws = await _web_search_pipeline_deep(
+            q=req.q,
+            src=req.source,
+            sid=str(req.source_id),
+        )
+        return {
+            "answer": ws.get("summary") or "",
+            "sources": ws.get("results") or [],
+            "steps": [],
+            "quality": 0.5,
+            "note": "deep_fallback_standard",
+            "error": str(e),
+        }
+
+
+# -------------------------- /code -------------------------------------
+class CodeReq(BaseModel):
+    q: str
+    language: Optional[str] = None
+    source: str = "tg"
+    source_id: str = "default"
+
+
+@app.post("/code")
+async def code_generate(req: CodeReq) -> Dict[str, Any]:
+    """
+    Generazione codice dedicata (comando /code).
+    Usa il Code Agent per risposte strutturate.
+    """
+    if not CODE_AGENT_AVAILABLE:
+        return {
+            "ok": False,
+            "error": "Code Agent non disponibile.",
+            "code": "",
+        }
+
+    try:
+        persona = (
+            await get_persona(req.source, str(req.source_id))
+            or DEFAULT_SYSTEM_PROMPT
+        )
+        persona = (persona.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+
+        result = await get_code_for_query(
+            req.q,
+            llm_func=reply_with_llm,
+            persona=persona,
+        )
+
+        return {
+            "ok": True,
+            "code": result or "",
+            "language": req.language,
+            "note": "code_agent_response",
+        }
+
+    except Exception as e:
+        log.error(f"/code error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "code": "",
+        }
+
+
+# -------------------------- /unified-web ------------------------------
+class UnifiedWebReq(BaseModel):
+    q: str
+    deep: bool = False
+    source: str = "api"
+
+
+@app.post("/unified-web")
+async def unified_web_endpoint(req: UnifiedWebReq) -> Dict[str, Any]:
+    """
+    Endpoint unificato per tutte le richieste web.
+    Garantisce consistenza di routing e formato risposta.
+    """
+    if not UNIFIED_WEB_HANDLER_AVAILABLE:
+        # Fallback a pipeline standard
+        ws = await _web_search_pipeline(
+            q=req.q,
+            src=req.source,
+            sid="default",
+        )
+        return {
+            "response": ws.get("summary") or "",
+            "intent": "general_web",
+            "cached": False,
+            "note": "unified_handler_not_available",
+        }
+
+    try:
+        result = await handle_web_query(
+            query=req.q,
+            source=req.source,
+            deep=req.deep,
+        )
+        return result
+
+    except Exception as e:
+        log.error(f"/unified-web error: {e}")
+        return {
+            "response": f"Errore: {e}",
+            "intent": "error",
+            "cached": False,
             "error": str(e),
         }
 
