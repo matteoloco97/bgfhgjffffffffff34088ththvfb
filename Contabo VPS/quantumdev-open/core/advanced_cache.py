@@ -237,7 +237,7 @@ async def _fetch_one_with_cache(
     budget: int,
     index: int,
     domain_cache: DomainCache,
-    category: str = "generic"
+    category: str = "generic"  # Default mantiene backward compatibility
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch con cache integrata e categoria.
@@ -273,7 +273,7 @@ async def _fetch_one_with_cache(
     
     # Altrimenti fetch normale
     try:
-        from core.robust_content_extraction import fetch_and_extract_robust
+        from core.web_tools import fetch_and_extract_robust
         text, og_img = await fetch_and_extract_robust(url, timeout=6.0)
         
         if text and len(text) > 100:
