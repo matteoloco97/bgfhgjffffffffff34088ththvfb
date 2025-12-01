@@ -294,10 +294,154 @@ Il nuovo WebResearchAgent implementa:
 
 ## 🚀 Prossimi Passi (da implementare)
 
-1. **BettingAgent** - Quote, probabilità, value bet
-2. **TradingAgent** - Analisi tecnica, segnali
+1. ~~**BettingAgent** - Quote, probabilità, value bet~~ ✅ IMPLEMENTATO
+2. ~~**TradingAgent** - Analisi tecnica, segnali~~ ✅ IMPLEMENTATO
 3. **Memoria storica query** - Contesto conversazione
-4. **EdgeAgent** - Calcolo EV per betting
+4. ~~**EdgeAgent** - Calcolo EV per betting~~ ✅ INTEGRATO IN BettingAgent
+
+---
+
+## 🆕 Update v2.3 - Betting/Trading Agents & Follow-up Queries
+
+### BettingAgent (`agents/betting_agent.py`)
+
+Nuovo agente dedicato per betting e scommesse con:
+
+1. **Calcoli EV (Expected Value)**
+   - `calcola ev quota 2.50 probabilità 45%`
+   - Determina se una scommessa è "value" (EV positivo)
+   - Mostra edge rispetto al bookmaker
+
+2. **Kelly Criterion**
+   - `kelly quota 1.85 prob 60%`
+   - Calcola stake ottimale per massimizzare crescita bankroll
+   - Supporta Quarter/Half Kelly per ridurre varianza
+
+3. **Funzioni disponibili:**
+   - `calculate_ev(odds, probability, stake)` - Calcola EV
+   - `calculate_kelly(odds, probability, fraction)` - Calcola Kelly
+   - `decimal_to_probability(odds)` - Converte quota → probabilità
+   - `american_to_decimal(american_odds)` - Converte quote US
+
+4. **Formato risposta:**
+   ```
+   🎰 **Calcolo Expected Value (EV)**
+
+   **✅ Input:**
+   • Quota: **2.50**
+   • Probabilità stimata: **45.0%**
+   • Stake: **€100**
+
+   **📊 Risultati:**
+   • Expected Value: **€12.50**
+   • ROI atteso: **12.50%**
+   • Edge: **+5.00%**
+
+   **✅ Verdetto:** Value Bet! (EV positivo)
+   ```
+
+### TradingAgent (`agents/trading_agent.py`)
+
+Nuovo agente dedicato per trading e risk management:
+
+1. **Position Sizing**
+   - `position size account 10000 risk 2% entry 100 sl 95`
+   - Calcola quante unità comprare basandosi su rischio massimo
+
+2. **Risk/Reward Calculation**
+   - `risk reward entry 100 sl 95 tp 115`
+   - Calcola R:R ratio e win rate necessario per break-even
+
+3. **Leverage Impact**
+   - `impatto leva 10x su 1000€ con movimento 5%`
+   - Mostra P/L su margine e rischio liquidazione
+
+4. **Funzioni disponibili:**
+   - `calculate_position_size(account, risk_pct, entry, sl)` - Position sizing
+   - `calculate_risk_reward(entry, sl, tp)` - Calcola R:R
+   - `calculate_leverage_impact(position, leverage, change_pct)` - Impatto leva
+   - `calculate_compound_growth(initial, return_pct, months)` - Crescita composta
+
+### Follow-up Query Generation
+
+Migliorata la ricerca multi-step in `advanced_web_research.py`:
+
+1. **Generazione follow-up con LLM**
+   - Analizza gli estratti raccolti
+   - Identifica gaps informativi
+   - Genera query mirate per colmare lacune
+
+2. **Prompt intelligente:**
+   ```
+   QUERY ORIGINALE: [query]
+   INFORMAZIONI RACCOLTE FINORA: [estratti]
+   QUALITÀ CORRENTE: [score]/1.0
+
+   Genera UNA SINGOLA query per colmare le lacune...
+   ```
+
+3. **Fallback robusto:**
+   - Se LLM fallisce, usa variante semplice
+   - Validazione: non troppo corta, non duplicata
+
+### Intent Detection Unificato
+
+Consolidati i classificatori in `UnifiedIntentDetector`:
+
+1. **Nuovi intent:**
+   - `BETTING` - Query su scommesse/quote
+   - `TRADING` - Query su analisi/position sizing
+
+2. **Retrocompatibilità:**
+   - Metodo `to_smart_intent_format()` per conversione
+   - Mantiene compatibilità con vecchio SmartIntentClassifier
+
+3. **Travel detection:**
+   - Evita che "volo roma" sia classificato come sports (Roma squadra)
+
+### Fallback Migliorati
+
+Aggiunto fallback robusto per tutti gli agenti:
+
+1. **Price Agent:**
+   - Se API fallisce, fornisce link a CoinGecko/Yahoo/TradingView
+   - Messaggi informativi invece di errori generici
+
+2. **Betting/Trading:**
+   - Fallback a risposte educative
+   - Spiega concetti senza dati live
+
+### Unit Tests
+
+Aggiunti test in `tests/`:
+
+1. **`test_intent_detection.py`**
+   - Test per tutti gli intent (weather, price, sports, news, schedule, code, betting, trading)
+   - Test edge cases (query vuota, travel vs sports)
+   - Test retrocompatibilità
+
+2. **`test_betting_trading_agents.py`**
+   - Test calcoli EV e Kelly
+   - Test position size e risk/reward
+   - Test leverage impact
+   - Test parsing query
+
+---
+
+## 🔧 Nuove Variabili .env
+
+```env
+# === BETTING AGENT ===
+ODDS_API_KEY=                    # Opzionale: per quote live
+BETTING_API_TIMEOUT=10.0
+
+# === TRADING AGENT ===
+TRADING_API_TIMEOUT=10.0
+
+# === CACHE TTL NUOVI AGENTI ===
+LIVE_CACHE_TTL_BETTING=300       # 5 minuti (quote cambiano)
+LIVE_CACHE_TTL_TRADING=120       # 2 minuti (dati volatili)
+```
 
 ---
 

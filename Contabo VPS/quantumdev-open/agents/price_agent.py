@@ -616,7 +616,9 @@ async def get_price_answer(query: str) -> Optional[str]:
             if data:
                 return _format_crypto_response(data)
             else:
-                return f"❌ Impossibile recuperare il prezzo per {asset.get('alias', coin_id)}. Riprova tra poco."
+                # Fallback: prova a recuperare dati dalla cache o fornisci info utili
+                fallback_msg = await _get_fallback_crypto_info(coin_id, asset.get("alias", coin_id))
+                return fallback_msg
 
         elif asset_type == "stock":
             symbol = asset.get("symbol")
@@ -624,7 +626,8 @@ async def get_price_answer(query: str) -> Optional[str]:
             if data:
                 return _format_stock_response(data)
             else:
-                return f"❌ Impossibile recuperare la quotazione per {symbol}. L'API potrebbe essere in rate limit."
+                # Fallback con info utili
+                return _get_fallback_stock_info(symbol, asset.get("name", symbol))
 
         elif asset_type == "forex":
             from_curr = asset.get("from")
@@ -634,13 +637,48 @@ async def get_price_answer(query: str) -> Optional[str]:
             if data:
                 return _format_forex_response(data, pair_name)
             else:
-                return f"❌ Impossibile recuperare il tasso {pair_name}. Riprova tra poco."
+                return _get_fallback_forex_info(from_curr, to_curr, pair_name)
 
     except Exception as e:
         log.error(f"Price agent error: {e}")
-        return f"❌ Errore nel recupero del prezzo: {e}"
+        return f"⚠️ Errore nel recupero del prezzo: {e}\n\nProva più tardi o consulta direttamente CoinGecko/TradingView."
 
     return None
+
+
+async def _get_fallback_crypto_info(coin_id: str, alias: str) -> str:
+    """Fallback per crypto quando l'API fallisce."""
+    lines = [f"⚠️ **Prezzo {alias.upper()} non disponibile al momento**\n"]
+    lines.append("L'API CoinGecko potrebbe essere in rate limit o non raggiungibile.\n")
+    lines.append("**🔗 Consulta direttamente:**")
+    lines.append(f"• CoinGecko: https://www.coingecko.com/en/coins/{coin_id}")
+    lines.append(f"• CoinMarketCap: https://coinmarketcap.com/currencies/{coin_id}/")
+    lines.append(f"• TradingView: https://www.tradingview.com/symbols/{alias.upper()}USD/")
+    lines.append(f"\n📡 Riprova tra qualche minuto per dati aggiornati.")
+    return "\n".join(lines)
+
+
+def _get_fallback_stock_info(symbol: str, name: str) -> str:
+    """Fallback per azioni quando l'API fallisce."""
+    lines = [f"⚠️ **Quotazione {symbol} non disponibile al momento**\n"]
+    lines.append("L'API Alpha Vantage potrebbe essere in rate limit (5 chiamate/minuto per free tier).\n")
+    lines.append("**🔗 Consulta direttamente:**")
+    lines.append(f"• Yahoo Finance: https://finance.yahoo.com/quote/{symbol}")
+    lines.append(f"• TradingView: https://www.tradingview.com/symbols/{symbol}/")
+    lines.append(f"• Google: https://www.google.com/finance/quote/{symbol}:NASDAQ")
+    lines.append(f"\n💡 Suggerimento: configura una API key Alpha Vantage per più chiamate.")
+    return "\n".join(lines)
+
+
+def _get_fallback_forex_info(from_curr: str, to_curr: str, pair_name: str) -> str:
+    """Fallback per forex quando l'API fallisce."""
+    lines = [f"⚠️ **Tasso {pair_name} non disponibile al momento**\n"]
+    lines.append("L'API potrebbe essere in rate limit.\n")
+    lines.append("**🔗 Consulta direttamente:**")
+    lines.append(f"• Investing.com: https://www.investing.com/currencies/{from_curr.lower()}-{to_curr.lower()}")
+    lines.append(f"• TradingView: https://www.tradingview.com/symbols/{from_curr}{to_curr}/")
+    lines.append(f"• XE.com: https://www.xe.com/currencyconverter/convert/?From={from_curr}&To={to_curr}")
+    return "\n".join(lines)
 
 
 async def get_price_for_query(query: str) -> Optional[str]:

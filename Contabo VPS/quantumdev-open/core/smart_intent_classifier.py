@@ -546,3 +546,34 @@ class SmartIntentClassifier:
             "confidence": 0.6,
             "reason": "default_direct_llm",
         }
+    
+    def classify_with_unified(self, text: str) -> Dict[str, object]:
+        """
+        Alternativa a classify() che delega a UnifiedIntentDetector.
+        
+        Questa funzione garantisce coerenza con unified_web_handler.py
+        e converte automaticamente il formato di ritorno per 
+        retrocompatibilità con il sistema SmartIntent.
+        
+        Parameters
+        ----------
+        text : str
+            The user prompt to classify.
+
+        Returns
+        -------
+        Dict[str, object]
+            A dictionary in SmartIntentClassifier format.
+        """
+        try:
+            from core.unified_web_handler import UnifiedIntentDetector
+            
+            detector = UnifiedIntentDetector()
+            classification = detector.classify(text)
+            
+            # Converti al formato SmartIntentClassifier
+            return detector.to_smart_intent_format(classification)
+            
+        except ImportError:
+            # Fallback alla logica originale se UnifiedIntentDetector non è disponibile
+            return self.classify(text)

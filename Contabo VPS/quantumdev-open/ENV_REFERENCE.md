@@ -59,6 +59,16 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | `FOOTBALL_DATA_API_KEY` | - | API key football-data.org |
 | `NEWSAPI_KEY` | - | API key NewsAPI.org |
 | `GNEWS_API_KEY` | - | API key GNews (alternativa) |
+| `ODDS_API_KEY` | - | API key per quote betting (opzionale) |
+
+## Betting/Trading Agent Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BETTING_API_TIMEOUT` | `10.0` | Timeout chiamate betting API |
+| `TRADING_API_TIMEOUT` | `10.0` | Timeout chiamate trading API |
+| `LIVE_CACHE_TTL_BETTING` | `300` | TTL cache betting (5 min) |
+| `LIVE_CACHE_TTL_TRADING` | `120` | TTL cache trading (2 min) |
 
 ## Redis Configuration
 
@@ -154,12 +164,15 @@ REDIS_DB=0
 ALPHA_VANTAGE_API_KEY=your_key_here
 NEWSAPI_KEY=your_key_here
 FOOTBALL_DATA_API_KEY=your_key_here
+ODDS_API_KEY=your_key_here
 
 # === Cache TTL ===
 LIVE_CACHE_TTL_WEATHER=1800
 LIVE_CACHE_TTL_PRICE=60
 LIVE_CACHE_TTL_SPORTS=300
 LIVE_CACHE_TTL_NEWS=600
+LIVE_CACHE_TTL_BETTING=300
+LIVE_CACHE_TTL_TRADING=120
 
 # === Features ===
 WEB_SEARCH_DEEP_MODE=true
