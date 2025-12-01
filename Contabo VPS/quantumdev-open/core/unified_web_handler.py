@@ -522,15 +522,21 @@ class UnifiedWebHandler:
     async def _handle_deep_research(self, query: str) -> str:
         """Handler per ricerca approfondita."""
         try:
-            from agents.advanced_web_research import get_advanced_research
-            researcher = get_advanced_research()
+            from agents.advanced_web_research import AdvancedWebResearch
+            researcher = AdvancedWebResearch(
+                max_steps=3,
+                min_sources=8,
+                quality_threshold=0.70
+            )
             result = await researcher.research_deep(query)
             
             if result.get("answer"):
-                # Formatta in modo standard
+                # Formatta in modo standard, troncando a confine parola
+                answer = result["answer"]
+                tldr = self._truncate_at_word_boundary(answer, 200)
                 sources = result.get("sources", [])
                 return format_standard_response(
-                    tldr=result["answer"][:200] + "..." if len(result["answer"]) > 200 else result["answer"],
+                    tldr=tldr,
                     bullets=[],  # La risposta è già completa
                     sources=sources[:5],
                     emoji="🔬",
@@ -541,11 +547,54 @@ class UnifiedWebHandler:
         except Exception as e:
             return f"❌ Errore ricerca: {e}"
     
+    def _truncate_at_word_boundary(self, text: str, max_len: int) -> str:
+        """Tronca testo a confine parola per evitare tagli a metà."""
+        if len(text) <= max_len:
+            return text
+        # Trova ultimo spazio prima del limite
+        truncated = text[:max_len]
+        last_space = truncated.rfind(" ")
+        if last_space > max_len * 0.7:  # Se lo spazio è ragionevolmente vicino
+            return truncated[:last_space] + "..."
+        return truncated + "..."
+    
     async def _handle_general_web(self, query: str) -> str:
         """Handler per ricerca web generica."""
-        # Questo dovrebbe usare la pipeline web standard
-        # Per ora ritorna un messaggio placeholder
-        return f"🔍 Ricerca web per: {query}\n\n(Pipeline web standard da implementare)"
+        # Usa la pipeline web standard da quantum_api
+        try:
+            # Import lazy per evitare dipendenze circolari
+            from backend.quantum_api import _web_search_pipeline
+            
+            ws = await _web_search_pipeline(
+                q=query,
+                src="unified",
+                sid="default",
+                k=6,
+                nsum=2,
+            )
+            
+            summary = ws.get("summary", "")
+            results = ws.get("results", [])
+            
+            if summary:
+                return summary
+            elif results:
+                # Fallback: lista risultati
+                lines = ["🔍 Risultati trovati:\n"]
+                for i, r in enumerate(results[:5], 1):
+                    title = r.get("title", "")[:60]
+                    url = r.get("url", "")
+                    lines.append(f"{i}. {title}\n   {url}")
+                return "\n".join(lines)
+            else:
+                return "❌ Nessun risultato trovato per questa ricerca."
+                
+        except ImportError:
+            log.warning("quantum_api not available for general web search")
+            return f"🔍 Ricerca web per: {query}\n\n(Pipeline web in caricamento...)"
+        except Exception as e:
+            log.error(f"General web search error: {e}")
+            return f"❌ Errore nella ricerca web: {e}"
     
     async def _handle_direct_llm(self, query: str) -> str:
         """Handler per risposta diretta LLM."""
