@@ -58,6 +58,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "0") or "0")
 
 QUANTUM_CHAT_URL = os.getenv("QUANTUM_CHAT_URL", "http://127.0.0.1:8081/chat").strip()
+QUANTUM_UNIFIED_URL = os.getenv("QUANTUM_UNIFIED_URL", "http://127.0.0.1:8081/unified").strip()
 QUANTUM_WEB_SEARCH_URL = os.getenv("QUANTUM_WEB_SEARCH_URL", "http://127.0.0.1:8081/web/search").strip()
 QUANTUM_WEB_SUMMARY_URL = os.getenv("QUANTUM_WEB_SUMMARY_URL", "http://127.0.0.1:8081/web/summarize").strip()
 QUANTUM_WEB_RESEARCH_URL = os.getenv("QUANTUM_WEB_RESEARCH_URL", "http://127.0.0.1:8081/web/research").strip()
@@ -162,7 +163,8 @@ def _detect_live_type(q: str) -> str | None:
 async def on_startup(app):
     app.bot_data["http"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
     log.info(
-        "🌐 HTTP session pronta; /chat=%s | /web/search=%s | /web/summarize=%s | /web/research=%s",
+        "🌐 HTTP session pronta; /unified=%s | /chat=%s | /web/search=%s | /web/summarize=%s | /web/research=%s",
+        QUANTUM_UNIFIED_URL,
         QUANTUM_CHAT_URL,
         QUANTUM_WEB_SEARCH_URL,
         QUANTUM_WEB_SUMMARY_URL,
@@ -208,6 +210,16 @@ async def _post_json_retry(http: aiohttp.ClientSession, url: str, payload: dict)
 
 
 async def call_chat(text: str, http: aiohttp.ClientSession, chat_id: int) -> dict:
+    # Try unified endpoint first (uses master orchestrator for smart routing)
+    try:
+        payload = {"q": text, "source": "tg", "source_id": str(chat_id)}
+        status, data, txt = await _post_json_retry(http, QUANTUM_UNIFIED_URL, payload)
+        if status == 200 and isinstance(data, dict):
+            return data
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        log.warning(f"Unified endpoint failed, falling back to /chat: {e}")
+    
+    # Fallback to legacy /chat endpoint
     payload = {"source": "tg", "source_id": str(chat_id), "text": text}
     status, data, txt = await _post_json_retry(http, QUANTUM_CHAT_URL, payload)
     if status == 200 and isinstance(data, dict):

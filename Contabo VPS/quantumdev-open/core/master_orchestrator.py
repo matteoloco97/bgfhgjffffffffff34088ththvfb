@@ -94,6 +94,16 @@ ENABLE_PROACTIVE_SUGGESTIONS = _env_bool("ENABLE_PROACTIVE_SUGGESTIONS", False)
 
 MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 32000)
 
+# Prompt templates
+HYBRID_SYNTHESIS_PROMPT_TEMPLATE = (
+    "Query dell'utente: {query}\n\n"
+    "Dati raccolti dai tool:\n{tool_context}\n\n"
+    "Fornisci una risposta completa citando esplicitamente i dati dai tool. "
+    "Non dire frasi generiche come 'dovresti consultare un sito' quando abbiamo già i dati."
+)
+
+HYBRID_SYNTHESIS_SYSTEM = "Sei un assistente che sintetizza dati da fonti web e tool. Cita sempre le fonti dei dati."
+
 
 # === Enums ===
 class ResponseStrategy(str, Enum):
@@ -179,6 +189,16 @@ class QueryAnalyzer:
         r'\b(ultime\s+notizie|breaking\s+news|latest)\b',
         r'\b(prezzo|price|quotazione|meteo|weather)\b',
         r'\b(come\s+funziona|how\s+does|spiegami|explain)\b.*\b(internet|web|online)\b',
+        # Weather patterns
+        r'\b(meteo|tempo|previsioni|che\s+tempo\s+fa|weather|forecast|temperatura|pioggia|neve)\b',
+        # Price/Value patterns
+        r'\b(prezzo|quotazione|quanto\s+vale|valore|tasso\s+di\s+cambio|cambio|borsa|azioni)\b',
+        # News patterns
+        r'\b(notizie|news|ultime\s+notizie|ultime\s+di\s+oggi|ANSA|breaking|oggi\s+cosa\s+è\s+successo)\b',
+        # Common crypto symbols
+        r'\b(BTC|bitcoin|ETH|ethereum|SOL|solana|ADA|cardano|USDT|tether|BNB|binance\s+coin)\b',
+        # Common stock symbols
+        r'\b(AAPL|apple\s+stock|NVDA|nvidia\s+stock|TSLA|tesla\s+stock|MSFT|microsoft\s+stock|GOOGL|google\s+stock)\b',
     ]
     
     MEMORY_PATTERNS = [
@@ -221,7 +241,7 @@ class QueryAnalyzer:
             return QueryType.CALCULATION, ResponseStrategy.TOOL_ASSISTED
         
         if self._matches_any(q_lower, self.RESEARCH_PATTERNS):
-            return QueryType.RESEARCH, ResponseStrategy.TOOL_ASSISTED
+            return QueryType.RESEARCH, ResponseStrategy.HYBRID  # Use HYBRID to get tools + LLM synthesis
         
         if self._matches_any(q_lower, self.MEMORY_PATTERNS):
             return QueryType.MEMORY, ResponseStrategy.MEMORY_RECALL
@@ -237,6 +257,27 @@ class QueryAnalyzer:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
         return False
+    
+    def get_strategy_for_type(self, query_type: QueryType) -> ResponseStrategy:
+        """
+        Get the appropriate strategy for a query type.
+        
+        Args:
+            query_type: The type of query
+            
+        Returns:
+            ResponseStrategy to use
+        """
+        strategy_map = {
+            QueryType.RESEARCH: ResponseStrategy.HYBRID,
+            QueryType.CALCULATION: ResponseStrategy.TOOL_ASSISTED,
+            QueryType.MEMORY: ResponseStrategy.MEMORY_RECALL,
+            QueryType.CODE: ResponseStrategy.DIRECT_LLM,
+            QueryType.CREATIVE: ResponseStrategy.DIRECT_LLM,
+            QueryType.CONVERSATIONAL: ResponseStrategy.DIRECT_LLM,
+            QueryType.GENERAL: ResponseStrategy.DIRECT_LLM,
+        }
+        return strategy_map.get(query_type, ResponseStrategy.DIRECT_LLM)
 
 
 async def classify_query_via_llm(query: str, llm_func: Optional[Callable] = None) -> Optional[QueryType]:
@@ -405,19 +446,12 @@ class MasterOrchestrator:
             if self.llm_func:
                 query_type = await classify_query_via_llm(query, self.llm_func)
             
-            # Fallback to regex-based analysis
+            # Fallback to regex-based analysis or get strategy from LLM-classified type
             if query_type is None:
                 query_type, strategy = self.analyzer.analyze(query)
             else:
-                # Determine strategy based on LLM classification
-                if query_type == QueryType.RESEARCH:
-                    strategy = ResponseStrategy.TOOL_ASSISTED
-                elif query_type == QueryType.CALCULATION:
-                    strategy = ResponseStrategy.TOOL_ASSISTED
-                elif query_type == QueryType.MEMORY:
-                    strategy = ResponseStrategy.MEMORY_RECALL
-                else:
-                    strategy = ResponseStrategy.DIRECT_LLM
+                # Get appropriate strategy for LLM-classified query type
+                strategy = self.analyzer.get_strategy_for_type(query_type)
             
             context.query_type = query_type
             context.strategy = strategy
@@ -439,7 +473,7 @@ class MasterOrchestrator:
             # Step 4: Execute strategy
             response_text = ""
             
-            if strategy == ResponseStrategy.TOOL_ASSISTED and self.caller:
+            if strategy in (ResponseStrategy.TOOL_ASSISTED, ResponseStrategy.HYBRID) and self.caller:
                 if trace:
                     self._add_step("tools", "Executing tools", trace)
                 
@@ -449,6 +483,21 @@ class MasterOrchestrator:
                 
                 if trace:
                     self._complete_step(trace, f"Executed {len(result.tool_calls)} tool(s)")
+                
+                # For HYBRID, enhance the response with tool results
+                if strategy == ResponseStrategy.HYBRID and context.tool_results and self.llm_func:
+                    # Build enriched prompt with tool results
+                    tool_context = "\n".join([
+                        f"Tool: {tc['tool_name']}\nResult: {tc.get('result', 'N/A')}"
+                        for tc in context.tool_results if not tc.get('error')
+                    ])
+                    
+                    if tool_context:
+                        enhanced_prompt = HYBRID_SYNTHESIS_PROMPT_TEMPLATE.format(
+                            query=query,
+                            tool_context=tool_context
+                        )
+                        response_text = await self.llm_func(enhanced_prompt, HYBRID_SYNTHESIS_SYSTEM)
             
             elif strategy == ResponseStrategy.MEMORY_RECALL and self.memory:
                 if trace:

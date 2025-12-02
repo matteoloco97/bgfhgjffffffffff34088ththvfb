@@ -2567,6 +2567,64 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     return {"reply": reply_text}
 
 
+# ========================= /unified endpoint (Master Orchestrator) =========================
+@app.post("/unified")
+async def unified_endpoint(payload: dict = Body(...)) -> Dict[str, Any]:
+    """
+    Unified endpoint using Master Orchestrator.
+    Automatically decides whether to use tools/web or direct LLM.
+    
+    Payload:
+        - q: query string (required)
+        - source: source identifier (default: "api")
+        - source_id: user/chat identifier (required)
+    """
+    try:
+        # Import master orchestrator
+        from core.master_orchestrator import get_master_orchestrator
+        from core.chat_engine import reply_with_llm
+        
+        # Extract params
+        query = (payload.get("q") or "").strip()
+        source = payload.get("source", "api")
+        source_id = str(payload.get("source_id") or "default")
+        
+        if not query:
+            return {
+                "error": "q parameter is required",
+                "success": False,
+            }
+        
+        # Get orchestrator instance with LLM function
+        orchestrator = get_master_orchestrator(llm_func=reply_with_llm)
+        
+        # Process through orchestrator
+        result = await orchestrator.process(
+            query=query,
+            source=source,
+            source_id=source_id,
+            show_reasoning=True,
+            create_artifacts=False,  # Disable artifacts for now
+        )
+        
+        # Return response in format compatible with telegram bot
+        return {
+            "reply": result.response,
+            "query_type": result.context.query_type.value,
+            "strategy": result.context.strategy.value,
+            "tool_results": result.context.tool_results,
+            "duration_ms": result.duration_ms,
+            "success": result.success,
+        }
+        
+    except Exception as e:
+        log.error(f"/unified error: {e}")
+        return {
+            "error": str(e),
+            "success": False,
+        }
+
+
 @app.post("/persona/set")
 async def persona_set(payload: dict = Body(...)) -> Dict[str, Any]:
     src = payload.get("source", "tg")
