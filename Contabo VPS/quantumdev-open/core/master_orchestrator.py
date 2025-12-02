@@ -420,10 +420,15 @@ class MasterOrchestrator:
                 query_type, strategy = self.analyzer.analyze(query)
             else:
                 # Determine strategy based on LLM classification
+                # Note: analyze() already sets correct strategies, but we ensure consistency
                 if query_type == QueryType.RESEARCH:
                     strategy = ResponseStrategy.HYBRID  # Use HYBRID for research to get tools + LLM
-                elif query_type in (QueryType.CODE, QueryType.CALCULATION, QueryType.MEMORY):
+                elif query_type == QueryType.CODE:
+                    strategy = ResponseStrategy.DIRECT_LLM
+                elif query_type == QueryType.CALCULATION:
                     strategy = ResponseStrategy.TOOL_ASSISTED
+                elif query_type == QueryType.MEMORY:
+                    strategy = ResponseStrategy.MEMORY_RECALL
                 else:
                     strategy = ResponseStrategy.DIRECT_LLM
             

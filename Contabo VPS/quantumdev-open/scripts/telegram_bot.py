@@ -216,8 +216,8 @@ async def call_chat(text: str, http: aiohttp.ClientSession, chat_id: int) -> dic
         status, data, txt = await _post_json_retry(http, QUANTUM_UNIFIED_URL, payload)
         if status == 200 and isinstance(data, dict):
             return data
-    except Exception:
-        pass  # Fallback to /chat
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        log.warning(f"Unified endpoint failed, falling back to /chat: {e}")
     
     # Fallback to legacy /chat endpoint
     payload = {"source": "tg", "source_id": str(chat_id), "text": text}

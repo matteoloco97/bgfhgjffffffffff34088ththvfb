@@ -2590,7 +2590,10 @@ async def unified_endpoint(payload: dict = Body(...)) -> Dict[str, Any]:
         source_id = str(payload.get("source_id") or "default")
         
         if not query:
-            return {"error": "q parameter is required"}
+            return {
+                "error": "q parameter is required",
+                "success": False,
+            }
         
         # Get orchestrator instance with LLM function
         orchestrator = get_master_orchestrator(llm_func=reply_with_llm)
