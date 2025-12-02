@@ -352,9 +352,13 @@ def _find_similar_cities(city: str) -> List[str]:
     city_lower = city.lower().strip()
     suggestions = []
     
+    # Skip if city is too short for prefix matching
+    min_prefix_len = 3
+    can_prefix_match = len(city_lower) >= min_prefix_len
+    
     for known_city in _COMMON_CITIES.keys():
-        # Match per prefisso
-        if known_city.startswith(city_lower[:3]) if len(city_lower) >= 3 else False:
+        # Match per prefisso (solo se la query è abbastanza lunga)
+        if can_prefix_match and known_city.startswith(city_lower[:min_prefix_len]):
             suggestions.append(_COMMON_CITIES[known_city][2])  # Nome formattato
         # Match per contenimento
         elif city_lower in known_city or known_city in city_lower:

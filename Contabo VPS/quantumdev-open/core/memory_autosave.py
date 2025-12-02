@@ -17,47 +17,33 @@ _BETTING_KV_RE = re.compile(
 )
 
 # ===================== USER PREFERENCE KEYS =====================
-# Chiavi per preferenze utente estese
-_PREF_KEYS = {
-    # Località
-    "città", "city", "vivo a", "abito a", "casa mia",
-    # Trading/Crypto
-    "exchange", "broker", "wallet",
-    # Rischio
-    "rischio", "risk", "risk tolerance", "tolleranza rischio",
-    # Orizzonte
-    "orizzonte", "horizon", "orizzonte investimento",
-    # Capitali
-    "capitale", "bankroll", "budget",
-    # Focus
-    "focus", "strategia", "strategy",
-}
+# Pattern pre-compilati per estrarre preferenze utente
+# (Chiave: subject in Chroma, Valore: regex pattern compilato)
 
-# Pattern per estrarre preferenze
-_PREF_PATTERNS = [
+_PREF_PATTERNS_COMPILED = [
     # Città/Residenza
-    (r"(?:vivo|abito|sono)\s+(?:a|in)\s+([A-Za-z\s]+)", "user.city"),
-    (r"casa\s+(?:mia|nostra)\s+(?:è|sta)\s+(?:a|in)\s+([A-Za-z\s]+)", "user.city"),
-    (r"città[:\s]+([A-Za-z\s]+)", "user.city"),
-    (r"city[:\s]+([A-Za-z\s]+)", "user.city"),
+    (re.compile(r"(?:vivo|abito|sono)\s+(?:a|in)\s+([A-Za-z\s]+)"), "user.city"),
+    (re.compile(r"casa\s+(?:mia|nostra)\s+(?:è|sta)\s+(?:a|in)\s+([A-Za-z\s]+)"), "user.city"),
+    (re.compile(r"città[:\s]+([A-Za-z\s]+)"), "user.city"),
+    (re.compile(r"city[:\s]+([A-Za-z\s]+)"), "user.city"),
     
     # Exchange/Broker
-    (r"(?:uso|utilizzo|il mio)\s+exchange\s+(?:è|principale)?\s*[:\s]*([A-Za-z0-9\s]+)", "user.exchange"),
-    (r"exchange[:\s]+([A-Za-z0-9\s]+)", "user.exchange"),
-    (r"broker[:\s]+([A-Za-z0-9\s]+)", "user.broker"),
+    (re.compile(r"(?:uso|utilizzo|il mio)\s+exchange\s+(?:è|principale)?\s*[:\s]*([A-Za-z0-9\s]+)"), "user.exchange"),
+    (re.compile(r"exchange[:\s]+([A-Za-z0-9\s]+)"), "user.exchange"),
+    (re.compile(r"broker[:\s]+([A-Za-z0-9\s]+)"), "user.broker"),
     
     # Rischio
-    (r"(?:tolleranza|livello)\s+(?:di\s+)?rischio[:\s]+([A-Za-z0-9%\s]+)", "user.risk_tolerance"),
-    (r"(?:non\s+voglio\s+rischiare\s+più\s+del?)\s+([0-9]+%?)", "user.max_risk"),
-    (r"risk[:\s]+([A-Za-z0-9%\s]+)", "user.risk_tolerance"),
+    (re.compile(r"(?:tolleranza|livello)\s+(?:di\s+)?rischio[:\s]+([A-Za-z0-9%\s]+)"), "user.risk_tolerance"),
+    (re.compile(r"(?:non\s+voglio\s+rischiare\s+più\s+del?)\s+([0-9]+%?)"), "user.max_risk"),
+    (re.compile(r"risk[:\s]+([A-Za-z0-9%\s]+)"), "user.risk_tolerance"),
     
     # Orizzonte
-    (r"orizzonte\s+(?:di\s+)?(?:investimento)?[:\s]+([0-9]+\s*(?:anni|mesi|anni?|months?|years?))", "user.investment_horizon"),
-    (r"horizon[:\s]+([0-9]+\s*(?:years?|months?))", "user.investment_horizon"),
+    (re.compile(r"orizzonte\s+(?:di\s+)?(?:investimento)?[:\s]+([0-9]+\s*(?:anni|mesi|anni?|months?|years?))"), "user.investment_horizon"),
+    (re.compile(r"horizon[:\s]+([0-9]+\s*(?:years?|months?))"), "user.investment_horizon"),
     
     # Focus/Strategia
-    (r"(?:sono\s+focalizzato|focus)\s+(?:su|on)[:\s]+([A-Za-z0-9\s,]+)", "user.focus"),
-    (r"strategia[:\s]+([A-Za-z0-9\s,]+)", "user.strategy"),
+    (re.compile(r"(?:sono\s+focalizzato|focus)\s+(?:su|on)[:\s]+([A-Za-z0-9\s,]+)"), "user.focus"),
+    (re.compile(r"strategia[:\s]+([A-Za-z0-9\s,]+)"), "user.strategy"),
 ]
 
 
@@ -83,7 +69,7 @@ def _extract_betting_kv(text: str) -> Dict[str, str]:
 
 def _extract_user_prefs(text: str) -> List[Dict[str, str]]:
     """
-    Estrae preferenze utente dal testo usando pattern matching.
+    Estrae preferenze utente dal testo usando pattern matching pre-compilati.
     Ritorna lista di dict con {'key': subject, 'value': valore}.
     """
     if not text:
@@ -91,9 +77,14 @@ def _extract_user_prefs(text: str) -> List[Dict[str, str]]:
     
     prefs: List[Dict[str, str]] = []
     text_lower = text.lower()
+    seen_subjects: set = set()  # Evita duplicati per stesso subject
     
-    for pattern, subject in _PREF_PATTERNS:
-        match = re.search(pattern, text_lower)
+    for compiled_pattern, subject in _PREF_PATTERNS_COMPILED:
+        # Skip se già trovato un valore per questo subject
+        if subject in seen_subjects:
+            continue
+            
+        match = compiled_pattern.search(text_lower)
         if match:
             value = match.group(1).strip()
             # Pulisci valore da punteggiatura finale
@@ -103,6 +94,7 @@ def _extract_user_prefs(text: str) -> List[Dict[str, str]]:
             
             if value and len(value) > 1:
                 prefs.append({"key": subject, "value": value})
+                seen_subjects.add(subject)
     
     return prefs
 
@@ -168,13 +160,15 @@ def _save_user_prefs(prefs: List[Dict[str, str]], source: str) -> List[str]:
                 metadata={"category": "user_preference"}
             )
             saved_ids.append(_id)
-        except Exception:
-            # Fallback: salva come fact
+        except (ValueError, TypeError, RuntimeError) as e:
+            # Fallback: salva come fact se add_pref non è disponibile o fallisce
+            import logging
+            logging.getLogger(__name__).debug(f"add_pref failed for {key}, trying fact: {e}")
             try:
                 _id = add_fact(key, value, source=source)
                 saved_ids.append(_id)
-            except Exception:
-                pass
+            except Exception as inner_e:
+                logging.getLogger(__name__).warning(f"Failed to save pref {key}: {inner_e}")
     
     return saved_ids
 
