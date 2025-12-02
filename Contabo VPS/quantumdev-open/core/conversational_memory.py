@@ -34,6 +34,21 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+# Import vector memory (lazy to avoid circular dependencies)
+_vector_memory = None
+
+def _get_vector_memory():
+    """Lazy import of vector_memory module."""
+    global _vector_memory
+    if _vector_memory is None:
+        try:
+            from core import vector_memory
+            _vector_memory = vector_memory
+        except Exception as e:
+            log.warning(f"Vector memory not available: {e}")
+            _vector_memory = False
+    return _vector_memory if _vector_memory is not False else None
+
 # === ENV Configuration ===
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name, str(default)) or str(default)
@@ -57,6 +72,11 @@ SLIDING_WINDOW_SIZE = _env_int("SLIDING_WINDOW_SIZE", 10)
 SUMMARIZATION_THRESHOLD = _env_int("SUMMARIZATION_THRESHOLD", 20)
 SESSION_TTL = _env_int("SESSION_TTL", 604800)  # 7 days in seconds
 SUMMARIZATION_TOKEN_LIMIT = _env_int("SUMMARIZATION_TOKEN_LIMIT", 2000)  # Max tokens for summarization
+
+# Extended persistence configuration
+CONVERSATION_TTL_DAYS = _env_int("CONVERSATION_TTL_DAYS", 7)
+PERSIST_ARCHIVE_ENABLED = _env_bool("PERSIST_ARCHIVE_ENABLED", False)
+ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "./data/archive")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = _env_int("REDIS_PORT", 6379)
@@ -274,19 +294,67 @@ class ConversationalMemory:
         return session
     
     async def _save_session(self, session: ConversationSession) -> bool:
-        """Save session to Redis."""
+        """Save session to Redis and optionally to archive."""
         key = self._session_key(session.source, session.source_id)
+        
+        # Calculate TTL from days
+        ttl_seconds = CONVERSATION_TTL_DAYS * 86400
+        
         try:
             redis_client = _get_redis()
             redis_client.setex(
                 key,
-                SESSION_TTL,
+                ttl_seconds,
                 json.dumps(session.to_dict()),
             )
+            
+            # Archive if enabled
+            if PERSIST_ARCHIVE_ENABLED:
+                await self._archive_session(session)
+            
             return True
         except Exception as e:
             log.error(f"Redis save session error: {e}")
             return False
+    
+    async def _archive_session(self, session: ConversationSession) -> bool:
+        """Save session to JSON archive."""
+        try:
+            # Create archive directory if needed
+            os.makedirs(ARCHIVE_DIR, exist_ok=True)
+            
+            # Archive filename
+            archive_path = os.path.join(ARCHIVE_DIR, f"{session.session_id}.json")
+            
+            # Write to file
+            with open(archive_path, 'w', encoding='utf-8') as f:
+                json.dump(session.to_dict(), f, indent=2, ensure_ascii=False)
+            
+            log.debug(f"Session archived to {archive_path}")
+            return True
+            
+        except Exception as e:
+            log.error(f"Failed to archive session: {e}")
+            return False
+    
+    async def _load_from_archive(self, session_id: str) -> Optional[ConversationSession]:
+        """Load session from JSON archive."""
+        try:
+            archive_path = os.path.join(ARCHIVE_DIR, f"{session_id}.json")
+            
+            if not os.path.exists(archive_path):
+                return None
+            
+            with open(archive_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            session = ConversationSession.from_dict(data)
+            log.info(f"Session loaded from archive: {session_id}")
+            return session
+            
+        except Exception as e:
+            log.error(f"Failed to load from archive: {e}")
+            return None
     
     async def add_turn(
         self,
@@ -316,6 +384,25 @@ class ConversationalMemory:
         # Add messages
         session.add_message("user", user_message, user_metadata)
         session.add_message("assistant", assistant_response, assistant_metadata)
+        
+        # Store in vector memory if available
+        vm = _get_vector_memory()
+        if vm:
+            try:
+                # Store user message
+                vm.add_document(
+                    session.session_id,
+                    user_message,
+                    {"role": "user", "turn": session.turn_count}
+                )
+                # Store assistant response
+                vm.add_document(
+                    session.session_id,
+                    assistant_response,
+                    {"role": "assistant", "turn": session.turn_count}
+                )
+            except Exception as e:
+                log.warning(f"Failed to store in vector memory: {e}")
         
         # Check if summarization needed
         if session.needs_summarization() and self.llm_func:
@@ -371,6 +458,18 @@ class ConversationalMemory:
             )
             
             if summary:
+                # Store summary in vector memory if available
+                vm = _get_vector_memory()
+                if vm:
+                    try:
+                        vm.add_document(
+                            session.session_id,
+                            summary,
+                            {"role": "summary", "turn_range": f"{session.turn_count - len(to_summarize)}-{session.turn_count}"}
+                        )
+                    except Exception as e:
+                        log.warning(f"Failed to store summary in vector memory: {e}")
+                
                 # Combine with existing summary
                 if session.summary:
                     combined = f"{session.summary}\n\n---\n\n{summary}"
@@ -483,6 +582,43 @@ class ConversationalMemory:
         scored_messages.sort(key=lambda x: x[0], reverse=True)
         
         return [msg for _, msg in scored_messages[:top_k]]
+    
+    async def search_memory(
+        self,
+        source: str,
+        source_id: str,
+        query: str,
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Search conversation memory using semantic vector search.
+        Falls back to keyword search if vector memory is unavailable.
+        
+        Args:
+            source: Source identifier
+            source_id: User/chat identifier
+            query: Search query
+            top_k: Number of results to return
+            
+        Returns:
+            List of relevant messages/summaries with metadata
+        """
+        # Get session to find session_id
+        session = await self.get_or_create_session(source, source_id)
+        
+        # Try vector memory first
+        vm = _get_vector_memory()
+        if vm:
+            try:
+                results = vm.query_documents(session.session_id, query, top_k)
+                log.debug(f"Vector search returned {len(results)} results")
+                return results
+            except Exception as e:
+                log.warning(f"Vector search failed: {e}")
+        
+        # Fallback: return empty list (caller can use search_history)
+        log.debug("Vector memory not available, returning empty results")
+        return []
     
     async def clear_session(self, source: str, source_id: str) -> bool:
         """

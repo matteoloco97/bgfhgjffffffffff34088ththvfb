@@ -36,7 +36,7 @@ from core.function_calling import (
 # ============================================================================
 @register_tool(
     name="web_search",
-    description="Cerca informazioni su internet usando il motore di ricerca",
+    description="Cerca informazioni su internet usando il motore di ricerca (versione base, preferisci enhanced_web_search per ricerche avanzate)",
     category=ToolCategory.SEARCH,
     parameters=[
         ToolParameter("query", "string", "Query di ricerca"),
@@ -60,6 +60,78 @@ async def web_search_tool(query: str, k: int = 5) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"query": query, "error": str(e)}
+
+
+# ============================================================================
+# ENHANCED WEB SEARCH TOOL
+# ============================================================================
+@register_tool(
+    name="enhanced_web_search",
+    description="Ricerca web avanzata con estrazione contenuti e snippet migliorati (preferito)",
+    category=ToolCategory.SEARCH,
+    parameters=[
+        ToolParameter("query", "string", "Query di ricerca"),
+        ToolParameter("k", "number", "Numero di risultati", required=False, default=5),
+    ],
+    examples=[
+        "cerca informazioni dettagliate su intelligenza artificiale",
+        "trova articoli recenti su quantum computing",
+        "ricerca approfondita su climate change",
+    ],
+)
+async def enhanced_web_search_tool(query: str, k: int = 5) -> Dict[str, Any]:
+    """Enhanced web search with content extraction."""
+    try:
+        from core.enhanced_web import enhanced_search
+        results = await enhanced_search(query, k=k)
+        return {
+            "query": query,
+            "results": results,
+            "count": len(results),
+        }
+    except Exception as e:
+        log.error(f"Enhanced web search error: {e}")
+        return {"query": query, "error": str(e), "results": []}
+
+
+# ============================================================================
+# CODE EXECUTOR TOOL
+# ============================================================================
+@register_tool(
+    name="code_executor",
+    description="Esegue codice Python in modo sicuro e isolato",
+    category=ToolCategory.COMPUTATION,
+    parameters=[
+        ToolParameter("language", "string", "Linguaggio di programmazione (solo 'python' supportato)"),
+        ToolParameter("code", "string", "Codice da eseguire"),
+    ],
+    examples=[
+        "esegui print('Hello World')",
+        "calcola il fattoriale di 5",
+        "genera numeri casuali",
+    ],
+)
+async def code_executor_tool(language: str, code: str) -> Dict[str, Any]:
+    """Execute code safely."""
+    try:
+        from agents.code_execution import run_code
+        result = await run_code(language, code)
+        return {
+            "language": language,
+            "code": code[:200],  # Truncate for logging
+            "success": result.get("success", False),
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        log.error(f"Code executor error: {e}")
+        return {
+            "language": language,
+            "code": code[:200],
+            "success": False,
+            "error": str(e),
+        }
 
 
 # ============================================================================
@@ -294,6 +366,53 @@ async def datetime_info_tool(timezone: str = "Europe/Rome") -> Dict[str, Any]:
             "weekday": now.strftime("%A"),
             "timestamp": int(time.time()),
         }
+
+
+# ============================================================================
+# MEMORY SEARCH TOOL
+# ============================================================================
+@register_tool(
+    name="memory_search",
+    description="Cerca nella memoria delle conversazioni passate usando ricerca semantica (richiede contesto sessione)",
+    category=ToolCategory.MEMORY,
+    parameters=[
+        ToolParameter("query", "string", "Query di ricerca semantica"),
+        ToolParameter("k", "number", "Numero di risultati", required=False, default=3),
+    ],
+    examples=[
+        "cosa abbiamo detto sul progetto X",
+        "ricorda le preferenze dell'utente",
+        "trova informazioni su argomento Y",
+    ],
+)
+async def memory_search_tool(query: str, k: int = 3, **context) -> Dict[str, Any]:
+    """
+    Search conversation memory.
+    
+    Note: This tool requires session context (source, source_id) to work properly.
+    If called without context, it will search the first available session in cache.
+    """
+    try:
+        from core.conversational_memory import get_conversational_memory
+        
+        # Get memory instance
+        memory = get_conversational_memory()
+        
+        # Try to get source/source_id from context
+        source = context.get("source", "api")
+        source_id = context.get("source_id", "default")
+        
+        # Search using semantic vector search
+        results = await memory.search_memory(source, source_id, query, top_k=k)
+        
+        return {
+            "query": query,
+            "results": results,
+            "count": len(results),
+        }
+    except Exception as e:
+        log.error(f"Memory search error: {e}")
+        return {"query": query, "error": str(e), "results": []}
 
 
 # ============================================================================

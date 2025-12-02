@@ -90,6 +90,7 @@ ENABLE_CONVERSATIONAL_MEMORY = _env_bool("ENABLE_CONVERSATIONAL_MEMORY", True)
 ENABLE_FUNCTION_CALLING = _env_bool("ENABLE_FUNCTION_CALLING", True)
 ENABLE_REASONING_TRACES = _env_bool("ENABLE_REASONING_TRACES", True)
 ENABLE_ARTIFACTS = _env_bool("ENABLE_ARTIFACTS", True)
+ENABLE_PROACTIVE_SUGGESTIONS = _env_bool("ENABLE_PROACTIVE_SUGGESTIONS", False)
 
 MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 32000)
 
@@ -238,6 +239,57 @@ class QueryAnalyzer:
         return False
 
 
+async def classify_query_via_llm(query: str, llm_func: Optional[Callable] = None) -> Optional[QueryType]:
+    """
+    Classify query using LLM.
+    
+    Args:
+        query: User query
+        llm_func: Async LLM function
+        
+    Returns:
+        QueryType or None if classification fails
+    """
+    if not llm_func:
+        return None
+    
+    try:
+        prompt = (
+            f"Classifica questa query dell'utente in UNA delle seguenti categorie:\n\n"
+            f"- GENERAL: domande generali, conversazione\n"
+            f"- CODE: richieste di codice, programmazione, debug\n"
+            f"- RESEARCH: ricerca di informazioni, notizie, fatti\n"
+            f"- CALCULATION: calcoli matematici, elaborazioni numeriche\n"
+            f"- MEMORY: riferimenti a conversazioni passate, ricordi\n"
+            f"- CREATIVE: scrittura creativa, storie, poesie\n\n"
+            f"Query: \"{query}\"\n\n"
+            f"Rispondi SOLO con il nome della categoria (es: RESEARCH). Nient'altro."
+        )
+        
+        system = "Sei un classificatore di query. Rispondi solo con il nome della categoria."
+        
+        response = await llm_func(prompt, system)
+        
+        if not response:
+            return None
+        
+        # Parse response
+        response_upper = response.strip().upper()
+        
+        # Try to extract category from response
+        for qtype in QueryType:
+            if qtype.value.upper() in response_upper:
+                log.debug(f"LLM classified query as: {qtype.value}")
+                return qtype
+        
+        log.warning(f"Could not parse LLM classification: {response}")
+        return None
+        
+    except Exception as e:
+        log.warning(f"LLM classification failed: {e}")
+        return None
+
+
 # === Master Orchestrator ===
 class MasterOrchestrator:
     """
@@ -348,7 +400,25 @@ class MasterOrchestrator:
                 self._add_step("analysis", "Analyzing query", trace)
             
             # Step 2: Analyze query
-            query_type, strategy = self.analyzer.analyze(query)
+            # Try LLM classification first
+            query_type = None
+            if self.llm_func:
+                query_type = await classify_query_via_llm(query, self.llm_func)
+            
+            # Fallback to regex-based analysis
+            if query_type is None:
+                query_type, strategy = self.analyzer.analyze(query)
+            else:
+                # Determine strategy based on LLM classification
+                if query_type == QueryType.RESEARCH:
+                    strategy = ResponseStrategy.TOOL_ASSISTED
+                elif query_type == QueryType.CALCULATION:
+                    strategy = ResponseStrategy.TOOL_ASSISTED
+                elif query_type == QueryType.MEMORY:
+                    strategy = ResponseStrategy.MEMORY_RECALL
+                else:
+                    strategy = ResponseStrategy.DIRECT_LLM
+            
             context.query_type = query_type
             context.strategy = strategy
             
@@ -436,7 +506,7 @@ class MasterOrchestrator:
                 if trace:
                     self._add_step("save", "Saving to memory", trace)
                 
-                await self.memory.add_turn(
+                session = await self.memory.add_turn(
                     source, source_id,
                     query, response_text,
                     user_metadata={"query_type": query_type.value},
@@ -445,6 +515,17 @@ class MasterOrchestrator:
                 
                 if trace:
                     self._complete_step(trace, "Saved turn to memory")
+                
+                # Generate proactive suggestions if enabled
+                if ENABLE_PROACTIVE_SUGGESTIONS and self.llm_func:
+                    try:
+                        from core.proactive import generate_suggestions
+                        suggestions = await generate_suggestions(session, query, self.llm_func)
+                        if suggestions:
+                            context.metadata["proactive_suggestions"] = suggestions
+                            log.info(f"Generated {len(suggestions)} proactive suggestions")
+                    except Exception as e:
+                        log.warning(f"Failed to generate proactive suggestions: {e}")
             
             # Complete trace
             reasoning_dict = None

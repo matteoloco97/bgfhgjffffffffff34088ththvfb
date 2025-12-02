@@ -97,16 +97,83 @@ Sistema per tool orchestration autonoma:
 - Extensible tool registry
 
 **Tool Disponibili:**
-- `web_search` - Ricerca web
+- `web_search` - Ricerca web (base)
+- `enhanced_web_search` - Ricerca web avanzata con estrazione contenuti
 - `weather` - Meteo
 - `price_lookup` - Quotazioni
 - `calculator` - Calcoli
 - `code_generator` - Generazione codice
-- `memory_search` - Search ChromaDB
+- `code_executor` - Esecuzione sicura codice Python
+- `memory_search` - Ricerca semantica in ChromaDB
 
 ---
 
-### 3. Reasoning Traces (`core/reasoning_traces.py`)
+### 3. Vector Memory (`core/vector_memory.py`) ✨ NEW
+
+Sistema di memoria vettoriale con ChromaDB:
+- Semantic search su conversazioni
+- Embedding con sentence-transformers
+- Persistenza su disco
+- Ricerca per rilevanza semantica
+
+**Configurazione:**
+```bash
+CHROMA_PERSIST_DIR=./data/chroma_db
+CHROMA_COLLECTION=quantumdev_memory
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+---
+
+### 4. Enhanced Web Search (`core/enhanced_web.py`) ✨ NEW
+
+Ricerca web migliorata:
+- SerpAPI integration (opzionale)
+- Fallback a DuckDuckGo
+- Estrazione contenuti da pagine web
+- Snippet generati da contenuto reale
+
+**Configurazione:**
+```bash
+SERPAPI_KEY=your_api_key_here  # Opzionale
+ENHANCED_SEARCH_TIMEOUT=10
+MAX_SNIPPET_LENGTH=500
+```
+
+---
+
+### 5. Code Execution (`agents/code_execution.py`) ✨ NEW
+
+Esecuzione sicura di codice:
+- Subprocess isolato
+- Timeout enforcement (10s)
+- Security checks (blocco import pericolosi)
+- Solo Python supportato
+
+**Configurazione:**
+```bash
+CODE_EXEC_ENABLED=1
+CODE_EXEC_TIMEOUT=10
+```
+
+---
+
+### 6. Proactive Suggestions (`core/proactive.py`) ✨ NEW
+
+Suggerimenti proattivi basati su LLM:
+- Anticipa bisogni utente
+- Genera 3 suggerimenti
+- Context-aware
+
+**Configurazione:**
+```bash
+ENABLE_PROACTIVE_SUGGESTIONS=false  # Disabilitato di default
+MAX_PROACTIVE_SUGGESTIONS=3
+```
+
+---
+
+### 7. Reasoning Traces (`core/reasoning_traces.py`)
 
 Mostra il processo di pensiero dell'AI:
 - Step-by-step thinking
@@ -119,7 +186,7 @@ Mostra il processo di pensiero dell'AI:
 
 ---
 
-### 4. Artifacts (`core/artifacts.py`)
+### 8. Artifacts (`core/artifacts.py`)
 
 Contenuti strutturati persistenti:
 - Code snippets con syntax highlighting
@@ -130,16 +197,17 @@ Contenuti strutturati persistenti:
 
 ---
 
-### 5. Master Orchestrator (`core/master_orchestrator.py`)
+### 9. Master Orchestrator (`core/master_orchestrator.py`)
 
 Il cervello che coordina tutto:
 1. Load context from memory
-2. Analyze query
+2. Analyze query (LLM-based classification + regex fallback)
 3. Decide strategy (direct LLM vs tools)
 4. Execute tools if needed
 5. Generate response
 6. Create artifacts
 7. Save to memory
+8. Generate proactive suggestions (optional)
 
 ---
 
@@ -150,22 +218,30 @@ Il cervello che coordina tutto:
 - VPS Contabo (6 vCPU, 12GB RAM)
 - GPU Server (RTX 8000, 48GB VRAM)
 - Redis running
-- ChromaDB configured
+- ChromaDB configured (NEW)
 - Qwen 32B AWQ model
+- Python 3.10+
 
 ### Installation
 
 ```bash
-# 1. I moduli sono già in core/
-# - conversational_memory.py
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. I moduli sono già in core/
+# - conversational_memory.py (updated)
 # - function_calling.py
 # - reasoning_traces.py
 # - artifacts.py
-# - master_orchestrator.py
-# - register_tools.py
+# - master_orchestrator.py (updated)
+# - register_tools.py (updated)
+# - vector_memory.py (NEW)
+# - enhanced_web.py (NEW)
+# - proactive.py (NEW)
 
-# 2. Update .env (aggiungi queste variabili)
+# 3. Update .env (aggiungi queste variabili)
 cat >> .env << 'EOF'
+# Existing features
 ENABLE_CONVERSATIONAL_MEMORY=true
 ENABLE_FUNCTION_CALLING=true
 ENABLE_REASONING_TRACES=true
@@ -173,6 +249,18 @@ ENABLE_ARTIFACTS=true
 MAX_CONTEXT_TOKENS=32000
 SLIDING_WINDOW_SIZE=10
 SUMMARIZATION_THRESHOLD=20
+
+# NEW features
+ENABLE_PROACTIVE_SUGGESTIONS=false
+CONVERSATION_TTL_DAYS=7
+PERSIST_ARCHIVE_ENABLED=false
+ARCHIVE_DIR=./data/archive
+CHROMA_PERSIST_DIR=./data/chroma_db
+CHROMA_COLLECTION=quantumdev_memory
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+CODE_EXEC_ENABLED=1
+CODE_EXEC_TIMEOUT=10
+SERPAPI_KEY=  # Optional, for enhanced web search
 EOF
 
 # 3. Restart service

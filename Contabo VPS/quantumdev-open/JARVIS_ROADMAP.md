@@ -532,3 +532,376 @@ L'endpoint `/healthz` ora include lo stato di tutti i live agents:
   }
 }
 ```
+
+
+---
+
+## 🆕 Update v3.0 - QuantumDev Max AI Enhancements ✨
+
+**Release Date:** December 2024
+
+### New Features Implemented
+
+#### 1. Vector Memory & RAG (`core/vector_memory.py`) ✅ COMPLETED
+
+Sistema di memoria vettoriale avanzato con ChromaDB:
+
+- **Semantic Search:** Ricerca semantica su conversazioni passate
+- **Embedding Model:** sentence-transformers (all-MiniLM-L6-v2)
+- **Persistent Storage:** Database vettoriale su disco
+- **Session-based:** Documenti organizzati per sessione
+- **Metadata Support:** Metadata ricchi per ogni documento
+
+**Funzionalità:**
+- `add_document(session_id, text, metadata)` - Aggiunge documento al database vettoriale
+- `query_documents(session_id, query, top_k)` - Ricerca semantica con risultati ordinati per rilevanza
+- `delete_session_documents(session_id)` - Rimozione documenti di una sessione
+- `get_collection_stats()` - Statistiche sulla collezione
+
+**Integrazione:**
+- Automaticamente integrato in `conversational_memory.py`
+- Tool `memory_search` registrato per ricerca semantica
+- Salvataggio automatico di messaggi e riassunti
+
+**Configurazione:**
+```env
+CHROMA_PERSIST_DIR=./data/chroma_db
+CHROMA_COLLECTION=quantumdev_memory
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+---
+
+#### 2. Enhanced Web Search (`core/enhanced_web.py`) ✅ COMPLETED
+
+Ricerca web migliorata con estrazione contenuti:
+
+- **SerpAPI Integration:** Supporto per SerpAPI (opzionale, migliori risultati)
+- **DuckDuckGo Fallback:** Fallback automatico se SerpAPI non disponibile
+- **Content Extraction:** Estrazione testo da pagine web con BeautifulSoup
+- **Smart Snippets:** Snippet generati da contenuto reale (max 500 caratteri)
+- **Async Support:** Completamente asincrono
+
+**Funzionalità:**
+- `enhanced_search(query, k)` - Ricerca con estrazione contenuti
+- Rimozione automatica di script, style, e tag non necessari
+- Snippet intelligenti con boundary detection
+
+**Tool Registrato:**
+- `enhanced_web_search` - Preferito rispetto a `web_search` base
+- `web_search` - Mantenuto per compatibilità ma con descrizione aggiornata
+
+**Configurazione:**
+```env
+SERPAPI_KEY=  # Opzionale, migliora risultati
+ENHANCED_SEARCH_TIMEOUT=10
+MAX_SNIPPET_LENGTH=500
+```
+
+---
+
+#### 3. Code Execution (`agents/code_execution.py`) ✅ COMPLETED
+
+Esecuzione sicura di codice Python in ambiente isolato:
+
+- **Subprocess Isolation:** Codice eseguito in subprocess separato
+- **Timeout Enforcement:** Limite di 10 secondi (configurabile)
+- **Security Checks:** Blocco automatico di import/operazioni pericolose
+- **Error Handling:** Cattura e reporting di stdout, stderr, exit_code
+
+**Operazioni Bloccate (sicurezza):**
+- Import di `os`, `subprocess`, `sys`
+- Uso di `eval()`, `exec()`, `compile()`
+- Operazioni su file (`open()`, `file()`)
+- Input utente (`input()`, `raw_input()`)
+
+**Tool Registrato:**
+- `code_executor(language, code)` - Esegue codice Python
+
+**Configurazione:**
+```env
+CODE_EXEC_ENABLED=1
+CODE_EXEC_TIMEOUT=10
+```
+
+**Esempio:**
+```python
+code = """
+result = sum([1, 2, 3, 4, 5])
+print(f"Sum: {result}")
+"""
+result = await run_code("python", code)
+# Output: {"success": True, "stdout": "Sum: 15\n", ...}
+```
+
+---
+
+#### 4. Proactive Suggestions (`core/proactive.py`) ✅ COMPLETED
+
+Suggerimenti proattivi basati su LLM:
+
+- **Context-Aware:** Analizza query utente e contesto conversazione
+- **LLM-Driven:** Usa il modello LLM per generare suggerimenti pertinenti
+- **Actionable:** Suggerimenti pratici e specifici (non generici)
+- **Configurabile:** Numero massimo di suggerimenti configurabile
+
+**Funzionalità:**
+- `generate_suggestions(session, query, llm_func)` - Genera 3 suggerimenti
+- Parsing intelligente della risposta LLM
+- Integrato in `master_orchestrator.py`
+
+**Configurazione:**
+```env
+ENABLE_PROACTIVE_SUGGESTIONS=false  # Disabilitato di default
+MAX_PROACTIVE_SUGGESTIONS=3
+```
+
+**Quando attivo:**
+- Suggerimenti aggiunti a `metadata["proactive_suggestions"]` nella risposta
+- Visibili nel campo metadata della OrchestratorResponse
+
+---
+
+#### 5. LLM-based Query Classification ✅ COMPLETED
+
+Classificazione query migliorata con LLM:
+
+- **LLM Classification:** Classificazione primaria tramite LLM
+- **Regex Fallback:** Fallback a regex se LLM non disponibile
+- **Query Types:** GENERAL, CODE, RESEARCH, CALCULATION, MEMORY, CREATIVE
+- **Strategy Selection:** Scelta automatica della strategia ottimale
+
+**Funzionalità:**
+- `classify_query_via_llm(query, llm_func)` - Classificazione via LLM
+- Integrato in `master_orchestrator.analyze_query()`
+- Strategy mapping: RESEARCH → TOOL_ASSISTED, MEMORY → MEMORY_RECALL
+
+**Logica:**
+1. Tenta classificazione via LLM
+2. Se fallisce, usa regex patterns esistenti
+3. Seleziona strategy basata su query_type
+
+---
+
+#### 6. Extended Persistence ✅ COMPLETED
+
+Sistema di persistenza esteso per conversazioni:
+
+- **TTL Configurabile:** TTL in giorni invece che secondi fissi
+- **JSON Archive:** Salvataggio automatico in file JSON
+- **Archive Loading:** Caricamento da archive se Redis scaduto
+- **Automatic Archiving:** Archiviazione opzionale ad ogni update
+
+**Funzionalità:**
+- `_save_session()` - Salva su Redis + archive (opzionale)
+- `_archive_session()` - Salva sessione in JSON
+- `_load_from_archive()` - Carica da archive
+- Creazione automatica directory `./data/archive/`
+
+**Configurazione:**
+```env
+CONVERSATION_TTL_DAYS=7           # TTL in giorni
+PERSIST_ARCHIVE_ENABLED=false     # Abilita archiving JSON
+ARCHIVE_DIR=./data/archive        # Directory archivi
+```
+
+**Struttura Archive:**
+```
+./data/archive/
+  ├── sess_abc123.json
+  ├── sess_def456.json
+  └── ...
+```
+
+---
+
+### Updated Components
+
+#### `core/conversational_memory.py` - Updated
+
+**Modifiche:**
+- Integrazione vector_memory per semantic search
+- Metodo `search_memory(query, top_k)` per ricerca semantica
+- Salvataggio automatico in vector DB dopo ogni turn
+- Archiviazione JSON opzionale
+- TTL configurabile in giorni
+
+#### `core/master_orchestrator.py` - Updated
+
+**Modifiche:**
+- Classificazione query via LLM con fallback regex
+- Generazione proactive suggestions (opzionale)
+- Env var `ENABLE_PROACTIVE_SUGGESTIONS`
+- Strategy selection migliorata per RESEARCH queries
+
+#### `core/register_tools.py` - Updated
+
+**Nuovi Tool Registrati:**
+- `enhanced_web_search` - Ricerca web avanzata
+- `code_executor` - Esecuzione codice sicura
+- `memory_search` - Ricerca semantica memoria
+
+**Tool Aggiornati:**
+- `web_search` - Descrizione aggiornata (indica preferenza per enhanced version)
+
+---
+
+### Testing
+
+Aggiunti test completi in `tests/`:
+
+1. **`test_vector_memory.py`**
+   - Test add/query/delete documents
+   - Test semantic search
+   - Test collection stats
+   - Test edge cases (empty docs, session)
+
+2. **`test_enhanced_web.py`**
+   - Test HTML text extraction
+   - Test snippet generation
+   - Test enhanced search
+   - Test fallback mechanisms
+
+3. **`test_code_execution.py`**
+   - Test esecuzione codice semplice
+   - Test calcoli
+   - Test security blocks (os, subprocess, eval)
+   - Test timeout enforcement
+   - Test error handling (syntax, runtime)
+
+---
+
+### Dependencies Added
+
+Aggiunte a `requirements.txt`:
+
+```txt
+chromadb>=0.4.18
+sentence-transformers>=2.2.2
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+```
+
+**Opzionale:**
+```txt
+google-search-results>=2.4.2  # SerpAPI client
+```
+
+---
+
+### Migration Guide
+
+Per aggiornare da versioni precedenti:
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Update .env:**
+   ```bash
+   # Vector Memory
+   CHROMA_PERSIST_DIR=./data/chroma_db
+   CHROMA_COLLECTION=quantumdev_memory
+   
+   # Enhanced Web
+   SERPAPI_KEY=  # Optional
+   
+   # Code Execution
+   CODE_EXEC_ENABLED=1
+   
+   # Proactive (optional)
+   ENABLE_PROACTIVE_SUGGESTIONS=false
+   
+   # Persistence
+   CONVERSATION_TTL_DAYS=7
+   PERSIST_ARCHIVE_ENABLED=false
+   ```
+
+3. **Create data directories:**
+   ```bash
+   mkdir -p ./data/chroma_db
+   mkdir -p ./data/archive
+   ```
+
+4. **Restart service:**
+   ```bash
+   sudo systemctl restart quantum-api
+   ```
+
+---
+
+### Performance Impact
+
+**Memory:**
+- ChromaDB: ~100-500MB (dipende da numero documenti)
+- Sentence Transformers model: ~80MB
+
+**Disk:**
+- ChromaDB persistent storage: ~10-100MB
+- JSON archives: ~1KB per sessione
+
+**CPU:**
+- Embedding generation: moderato (cache interno ChromaDB)
+- Code execution: subprocess isolation (minimal overhead)
+
+---
+
+### Security Considerations
+
+**Code Execution:**
+- ✅ Subprocess isolation
+- ✅ Timeout enforcement
+- ✅ Dangerous imports blocked
+- ✅ No file/network access
+- ⚠️ Solo Python supportato (per design)
+
+**Web Search:**
+- ✅ Request timeout
+- ✅ Content sanitization (BeautifulSoup)
+- ⚠️ SerpAPI key in .env (non commitare!)
+
+**Vector Memory:**
+- ✅ Session-based isolation
+- ✅ Persistent storage locale
+- ⚠️ Nessuna encryption dati (TODO future)
+
+---
+
+### Known Limitations
+
+1. **Code Execution:**
+   - Solo Python supportato
+   - Nessun supporto per librerie esterne
+   - Timeout fisso (non dinamico)
+
+2. **Vector Memory:**
+   - Nessuna compressione vettori
+   - Nessun cleanup automatico sessioni vecchie
+   - Embedding model fisso (non configurabile runtime)
+
+3. **Enhanced Web:**
+   - SerpAPI richiede API key (fallback a DDG)
+   - Timeout fisso per fetch
+   - Nessun retry automatico
+
+---
+
+### Future Improvements (TODO)
+
+- [ ] Supporto multi-lingua per embedding
+- [ ] Code execution per JavaScript/TypeScript
+- [ ] Cleanup automatico vector DB (sessioni > 30 giorni)
+- [ ] Encryption at rest per archives
+- [ ] Retry logic per enhanced web search
+- [ ] Dynamic timeout per code execution
+- [ ] Proactive suggestions caching
+
+---
+
+**Status:** ✅ PRODUCTION READY
+
+**Version:** 3.0.0
+
+**Contributors:** Matteo (QuantumDev)
+
