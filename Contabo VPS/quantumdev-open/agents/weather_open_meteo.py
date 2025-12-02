@@ -16,7 +16,7 @@ Vantaggi rispetto a SERP + LLM:
 import asyncio
 import logging
 import re
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
@@ -260,6 +260,35 @@ def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ===================== INPUT CLEANING =====================
+
+def clean_city_name(raw: str) -> str:
+    """
+    Pulisce il nome della città rimuovendo punteggiatura finale,
+    spazi extra e normalizzando il formato.
+    
+    Es: "roma?" → "roma"
+        "Milano!" → "milano"
+        "  napoli  " → "napoli"
+        "Roma, Italia" → "roma, italia"
+    """
+    if not raw:
+        return ""
+    
+    # Strip spazi iniziali e finali
+    name = raw.strip()
+    
+    # Rimuovi punteggiatura finale (?, !, ., ,, ;, :)
+    while name and name[-1] in "?!.,;:":
+        name = name[:-1]
+    
+    # Strip ancora dopo rimozione punteggiatura
+    name = name.strip()
+    
+    # Normalizza a lowercase per matching
+    return name.lower()
+
+
 # ===================== PUBLIC API =====================
 
 def extract_city_from_query(query: str) -> Optional[str]:
@@ -268,8 +297,10 @@ def extract_city_from_query(query: str) -> Optional[str]:
     Es: "meteo roma" → "roma"
         "che tempo fa a milano" → "milano"
         "previsioni napoli domani" → "napoli"
+        "meteo roma?" → "roma"  (gestisce punteggiatura)
     """
-    q = query.lower().strip()
+    # Prima pulisci l'input generale
+    q = clean_city_name(query)
     
     # Pattern comuni
     patterns = [
@@ -286,6 +317,8 @@ def extract_city_from_query(query: str) -> Optional[str]:
             city = match.group(1).strip()
             # Pulisci parole residue
             city = re.sub(r"\b(oggi|domani|dopodomani|settimana|prossimi|giorni)\b", "", city).strip()
+            # Pulisci anche punteggiatura dalla città estratta
+            city = clean_city_name(city)
             if city and len(city) > 1:
                 return city
     
@@ -301,13 +334,34 @@ def is_weather_query(query: str) -> bool:
     """
     Determina se la query è una richiesta meteo.
     """
-    q = query.lower().strip()
+    # Pulisci l'input prima del check
+    q = clean_city_name(query)
     weather_keywords = [
         "meteo", "che tempo", "previsioni", "weather",
         "temperatura", "pioggia", "neve", "nuvoloso",
         "sereno", "temporale", "grandine"
     ]
     return any(kw in q for kw in weather_keywords)
+
+
+def _find_similar_cities(city: str) -> List[str]:
+    """
+    Trova città simili nel database per suggerimenti.
+    Usa matching fuzzy semplice (prefisso/contenimento).
+    """
+    city_lower = city.lower().strip()
+    suggestions = []
+    
+    for known_city in _COMMON_CITIES.keys():
+        # Match per prefisso
+        if known_city.startswith(city_lower[:3]) if len(city_lower) >= 3 else False:
+            suggestions.append(_COMMON_CITIES[known_city][2])  # Nome formattato
+        # Match per contenimento
+        elif city_lower in known_city or known_city in city_lower:
+            suggestions.append(_COMMON_CITIES[known_city][2])
+    
+    # Rimuovi duplicati e limita a 3 suggerimenti
+    return list(dict.fromkeys(suggestions))[:3]
 
 
 async def get_weather_answer(city: str) -> str:
@@ -323,11 +377,23 @@ async def get_weather_answer(city: str) -> str:
     if not city:
         return "❌ Specifica una città. Es: `/web meteo Roma`"
     
+    # Pulisci il nome della città prima del geocoding
+    clean_city = clean_city_name(city)
+    
+    if not clean_city:
+        return "❌ Specifica una città valida. Es: `meteo Roma`, `meteo Milano`"
+    
     # 1. Geocoding
-    geo_result = await _geocode_city(city)
+    geo_result = await _geocode_city(clean_city)
     
     if not geo_result:
-        return f"❌ Città non trovata: {city}. Prova con un nome più specifico."
+        # Prova a trovare suggerimenti
+        suggestions = _find_similar_cities(clean_city)
+        if suggestions:
+            sugg_text = ", ".join(suggestions)
+            return f"❌ Città '{city}' non trovata. Forse intendevi: {sugg_text}?"
+        else:
+            return f"❌ Città '{city}' non trovata. Prova con un nome più specifico (es: 'Roma, Italia')."
     
     lat, lon, formatted_name = geo_result
     log.info(f"Weather request: {city} → {formatted_name} ({lat}, {lon})")

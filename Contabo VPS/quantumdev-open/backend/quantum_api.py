@@ -2314,6 +2314,53 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     except Exception as e:
         log.warning(f"AutoSave chat_user failed: {e}")
 
+    # =================== AUTO-WEB ROUTING ===================
+    # Intercetta query dinamiche (meteo, prezzi, news, sport) e usa gli agenti dedicati
+    # invece di passare al modello puro (che darebbe risposte generiche)
+    
+    if UNIFIED_WEB_HANDLER_AVAILABLE:
+        try:
+            from core.unified_web_handler import UnifiedIntentDetector, get_unified_web_handler
+            detector = UnifiedIntentDetector()
+            classification = detector.classify(text)
+            intent = classification.get("intent", "")
+            confidence = classification.get("confidence", 0)
+            
+            # Solo per intent con alta confidence e che richiedono dati live
+            live_intents = [
+                UnifiedIntentDetector.WEATHER,
+                UnifiedIntentDetector.PRICE,
+                UnifiedIntentDetector.SPORTS,
+                UnifiedIntentDetector.NEWS,
+                UnifiedIntentDetector.SCHEDULE,
+            ]
+            
+            if intent in live_intents and confidence >= 0.80:
+                log.info(f"[auto-web] Routing chat to {intent} agent (conf={confidence:.2f})")
+                
+                handler = get_unified_web_handler()
+                result = await handler.handle(text, source="chat")
+                
+                if result and result.get("response"):
+                    reply_text = result.get("response", "")
+                    
+                    # Autosave output
+                    try:
+                        asv_out = autosave(reply_text, source="chat_reply_autoweb")
+                        if any([asv_out.get("facts"), asv_out.get("prefs"), asv_out.get("bet")]):
+                            log.info(f"[autosave:chat_reply_autoweb] {asv_out}")
+                    except Exception as e:
+                        log.warning(f"AutoSave chat_reply_autoweb failed: {e}")
+                    
+                    return {
+                        "reply": reply_text,
+                        "auto_web": True,
+                        "intent": intent,
+                        "confidence": confidence,
+                    }
+        except Exception as e:
+            log.warning(f"Auto-web routing failed, falling back to LLM: {e}")
+
     # Persona di base
     try:
         persona_store = await get_persona(src, sid)

@@ -458,6 +458,27 @@ class UnifiedIntentDetector:
 # ===================== UNIFIED HANDLER =====================
 
 
+def clean_query_input(raw: str) -> str:
+    """
+    Pulisce l'input della query rimuovendo punteggiatura finale e spazi extra.
+    
+    Es: "meteo roma?" → "meteo roma"
+        "prezzo btc!" → "prezzo btc"
+        "  notizie su crypto  " → "notizie su crypto"
+    """
+    if not raw:
+        return ""
+    
+    # Strip spazi
+    query = raw.strip()
+    
+    # Rimuovi punteggiatura finale
+    while query and query[-1] in "?!.,;:":
+        query = query[:-1]
+    
+    return query.strip()
+
+
 class UnifiedWebHandler:
     """
     Handler unificato per richieste web.
@@ -514,8 +535,12 @@ class UnifiedWebHandler:
         """
         t_start = time.perf_counter()
         
-        # Classifica intent
-        classification = self.intent_detector.classify(query)
+        # ⚡ Pulisci l'input prima di processare
+        clean_q = clean_query_input(query)
+        original_query = query  # Per logging
+        
+        # Classifica intent (sulla query pulita)
+        classification = self.intent_detector.classify(clean_q)
         intent = classification["intent"]
         confidence = classification["confidence"]
         reason = classification["reason"]
@@ -524,10 +549,10 @@ class UnifiedWebHandler:
         if deep:
             intent = UnifiedIntentDetector.DEEP_RESEARCH
         
-        log.info(f"WebHandler: query='{query[:50]}...', intent={intent}, conf={confidence:.2f}")
+        log.info(f"WebHandler: query='{clean_q[:50]}...', intent={intent}, conf={confidence:.2f}, source={source}")
         
-        # Check cache
-        cache_key = self._cache_key(query, intent)
+        # Check cache (usa query pulita per matching)
+        cache_key = self._cache_key(clean_q, intent)
         ttl = self._cache_ttl.get(intent, 3600)
         cached = self._get_cached(cache_key, ttl)
         
@@ -541,8 +566,8 @@ class UnifiedWebHandler:
                 "latency_ms": int((time.perf_counter() - t_start) * 1000),
             }
         
-        # Route to appropriate handler
-        response = await self._route_to_handler(query, intent)
+        # Route to appropriate handler (usa query pulita)
+        response = await self._route_to_handler(clean_q, intent)
         
         # Cache result
         if response:

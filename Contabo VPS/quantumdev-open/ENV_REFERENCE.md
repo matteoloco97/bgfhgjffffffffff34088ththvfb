@@ -185,3 +185,24 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 # === Admin ===
 QUANTUM_SHARED_SECRET=your_secret_here
 ```
+
+---
+
+## Changelog
+
+### 2025-12-02: Migliorie Auto-Web e Input Cleaning
+
+#### Nuove funzionalità:
+1. **Input Cleaning**: Pulizia automatica della punteggiatura finale dalle query (`meteo roma?` → `meteo roma`)
+2. **Auto-Web Routing**: Il `/chat` ora instrada automaticamente le domande naturali (meteo, prezzi, news, sport) agli agenti specializzati
+3. **Memory estesa**: Supporto per preferenze utente oltre al betting (città, exchange, rischio, ecc.)
+4. **Error handling migliorato**: Messaggi di errore con suggerimenti fuzzy per città non trovate
+
+#### Comportamento aggiornato:
+- "Meteo roma?" → ora usa l'agente meteo (prima: risposta generica LLM)
+- "Che tempo fa a Milano" → routing automatico a weather agent
+- "Prezzo bitcoin?" → routing automatico a price agent
+- "/web meteo roma?" → pulizia input automatica, niente più errori
+
+#### Nessuna modifica .env richiesta
+Le nuove funzionalità usano le variabili esistenti.
