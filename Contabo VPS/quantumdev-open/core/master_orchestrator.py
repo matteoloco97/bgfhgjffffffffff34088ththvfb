@@ -94,6 +94,16 @@ ENABLE_PROACTIVE_SUGGESTIONS = _env_bool("ENABLE_PROACTIVE_SUGGESTIONS", False)
 
 MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 32000)
 
+# Prompt templates
+HYBRID_SYNTHESIS_PROMPT_TEMPLATE = (
+    "Query dell'utente: {query}\n\n"
+    "Dati raccolti dai tool:\n{tool_context}\n\n"
+    "Fornisci una risposta completa citando esplicitamente i dati dai tool. "
+    "Non dire frasi generiche come 'dovresti consultare un sito' quando abbiamo già i dati."
+)
+
+HYBRID_SYNTHESIS_SYSTEM = "Sei un assistente che sintetizza dati da fonti web e tool. Cita sempre le fonti dei dati."
+
 
 # === Enums ===
 class ResponseStrategy(str, Enum):
@@ -247,6 +257,27 @@ class QueryAnalyzer:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
         return False
+    
+    def get_strategy_for_type(self, query_type: QueryType) -> ResponseStrategy:
+        """
+        Get the appropriate strategy for a query type.
+        
+        Args:
+            query_type: The type of query
+            
+        Returns:
+            ResponseStrategy to use
+        """
+        strategy_map = {
+            QueryType.RESEARCH: ResponseStrategy.HYBRID,
+            QueryType.CALCULATION: ResponseStrategy.TOOL_ASSISTED,
+            QueryType.MEMORY: ResponseStrategy.MEMORY_RECALL,
+            QueryType.CODE: ResponseStrategy.DIRECT_LLM,
+            QueryType.CREATIVE: ResponseStrategy.DIRECT_LLM,
+            QueryType.CONVERSATIONAL: ResponseStrategy.DIRECT_LLM,
+            QueryType.GENERAL: ResponseStrategy.DIRECT_LLM,
+        }
+        return strategy_map.get(query_type, ResponseStrategy.DIRECT_LLM)
 
 
 async def classify_query_via_llm(query: str, llm_func: Optional[Callable] = None) -> Optional[QueryType]:
@@ -415,22 +446,12 @@ class MasterOrchestrator:
             if self.llm_func:
                 query_type = await classify_query_via_llm(query, self.llm_func)
             
-            # Fallback to regex-based analysis
+            # Fallback to regex-based analysis or get strategy from LLM-classified type
             if query_type is None:
                 query_type, strategy = self.analyzer.analyze(query)
             else:
-                # Determine strategy based on LLM classification
-                # Note: analyze() already sets correct strategies, but we ensure consistency
-                if query_type == QueryType.RESEARCH:
-                    strategy = ResponseStrategy.HYBRID  # Use HYBRID for research to get tools + LLM
-                elif query_type == QueryType.CODE:
-                    strategy = ResponseStrategy.DIRECT_LLM
-                elif query_type == QueryType.CALCULATION:
-                    strategy = ResponseStrategy.TOOL_ASSISTED
-                elif query_type == QueryType.MEMORY:
-                    strategy = ResponseStrategy.MEMORY_RECALL
-                else:
-                    strategy = ResponseStrategy.DIRECT_LLM
+                # Get appropriate strategy for LLM-classified query type
+                strategy = self.analyzer.get_strategy_for_type(query_type)
             
             context.query_type = query_type
             context.strategy = strategy
@@ -472,15 +493,11 @@ class MasterOrchestrator:
                     ])
                     
                     if tool_context:
-                        enhanced_prompt = (
-                            f"Query dell'utente: {query}\n\n"
-                            f"Dati raccolti dai tool:\n{tool_context}\n\n"
-                            "Fornisci una risposta completa citando esplicitamente i dati dai tool. "
-                            "Non dire frasi generiche come 'dovresti consultare un sito' quando abbiamo già i dati."
+                        enhanced_prompt = HYBRID_SYNTHESIS_PROMPT_TEMPLATE.format(
+                            query=query,
+                            tool_context=tool_context
                         )
-                        
-                        system = "Sei un assistente che sintetizza dati da fonti web e tool. Cita sempre le fonti dei dati."
-                        response_text = await self.llm_func(enhanced_prompt, system)
+                        response_text = await self.llm_func(enhanced_prompt, HYBRID_SYNTHESIS_SYSTEM)
             
             elif strategy == ResponseStrategy.MEMORY_RECALL and self.memory:
                 if trace:
