@@ -237,21 +237,29 @@ def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
         day_label = day_names[i] if i < len(day_names) else date
         
         t_max = max_temps[i] if i < len(max_temps) else "?"
-        t_min = min_temps[i] if i < len(min_temps) else "?"
+        t_min = min_temps[i] if i < len(min_temps) else None
         rain = precip[i] if i < len(precip) else 0
-        wind = wind_max[i] if i < len(wind_max) else "?"
+        wind = wind_max[i] if i < len(wind_max) else None
         code = weather_codes[i] if i < len(weather_codes) else 0
         
         weather_desc = _interpret_weather_code(code)
         
-        # Formatta linea - più concisa
-        line = f"• **{day_label}**: {int(t_min)}–{int(t_max)}°C, {weather_desc}"
+        # Formatta linea - più concisa con safe conversion
+        try:
+            temp_str = f"{int(t_min)}–{int(t_max)}°C" if t_min is not None and t_max is not None else "N/A"
+        except (ValueError, TypeError):
+            temp_str = "N/A"
+        
+        line = f"• **{day_label}**: {temp_str}, {weather_desc}"
         
         if rain and rain > 0.5:
             line += f", {rain:.0f}mm"
         
-        if wind and wind > 20:
-            line += f", vento {int(wind)}km/h"
+        try:
+            if wind is not None and wind > 20:
+                line += f", vento {int(wind)}km/h"
+        except (ValueError, TypeError):
+            pass
         
         lines.append(line)
     
@@ -260,10 +268,16 @@ def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
 
 # ===================== PUBLIC API =====================
 
+# Known punctuation to remove from city names
+_PUNCT_PATTERN = re.compile(r'[?!.,;:\"\'\(\)\[\]{}@#$%^&*+=<>|\\~`]')
+
 def _clean_city_name(city: str) -> str:
     """
     Pulisce il nome della città rimuovendo punteggiatura e caratteri indesiderati.
     Es: "roma?" → "roma", "milano!!" → "milano", "napoli..." → "napoli"
+    
+    Mantiene caratteri Unicode validi per nomi di città (accenti, ecc.)
+    usando un approccio whitelist: rimuove solo punteggiatura nota.
     """
     if not city:
         return ""
@@ -271,8 +285,8 @@ def _clean_city_name(city: str) -> str:
     # Rimuovi punteggiatura finale e iniziale
     city = re.sub(r'^[?!.,;:\s]+|[?!.,;:\s]+$', '', city)
     
-    # Rimuovi caratteri speciali interni (tranne spazi e apostrofi per città come "reggio nell'emilia")
-    city = re.sub(r"[^\w\s'àèéìòùáéíóú-]", '', city)
+    # Rimuovi solo punteggiatura nota (mantiene caratteri Unicode come accenti)
+    city = _PUNCT_PATTERN.sub('', city)
     
     # Rimuovi spazi multipli
     city = re.sub(r'\s+', ' ', city).strip()
