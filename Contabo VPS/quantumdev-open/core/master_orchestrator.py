@@ -179,6 +179,16 @@ class QueryAnalyzer:
         r'\b(ultime\s+notizie|breaking\s+news|latest)\b',
         r'\b(prezzo|price|quotazione|meteo|weather)\b',
         r'\b(come\s+funziona|how\s+does|spiegami|explain)\b.*\b(internet|web|online)\b',
+        # Weather patterns
+        r'\b(meteo|tempo|previsioni|che\s+tempo\s+fa|weather|forecast|temperatura|pioggia|neve)\b',
+        # Price/Value patterns
+        r'\b(prezzo|quotazione|quanto\s+vale|valore|tasso\s+di\s+cambio|cambio|borsa|azioni)\b',
+        # News patterns
+        r'\b(notizie|news|ultime\s+notizie|ultime\s+di\s+oggi|ANSA|breaking|oggi\s+cosa\s+è\s+successo)\b',
+        # Common crypto symbols
+        r'\b(BTC|bitcoin|ETH|ethereum|SOL|solana|ADA|cardano|USDT|tether|BNB|binance\s+coin)\b',
+        # Common stock symbols
+        r'\b(AAPL|apple\s+stock|NVDA|nvidia\s+stock|TSLA|tesla\s+stock|MSFT|microsoft\s+stock|GOOGL|google\s+stock)\b',
     ]
     
     MEMORY_PATTERNS = [
@@ -221,7 +231,7 @@ class QueryAnalyzer:
             return QueryType.CALCULATION, ResponseStrategy.TOOL_ASSISTED
         
         if self._matches_any(q_lower, self.RESEARCH_PATTERNS):
-            return QueryType.RESEARCH, ResponseStrategy.TOOL_ASSISTED
+            return QueryType.RESEARCH, ResponseStrategy.HYBRID  # Use HYBRID to get tools + LLM synthesis
         
         if self._matches_any(q_lower, self.MEMORY_PATTERNS):
             return QueryType.MEMORY, ResponseStrategy.MEMORY_RECALL
@@ -411,11 +421,9 @@ class MasterOrchestrator:
             else:
                 # Determine strategy based on LLM classification
                 if query_type == QueryType.RESEARCH:
+                    strategy = ResponseStrategy.HYBRID  # Use HYBRID for research to get tools + LLM
+                elif query_type in (QueryType.CODE, QueryType.CALCULATION, QueryType.MEMORY):
                     strategy = ResponseStrategy.TOOL_ASSISTED
-                elif query_type == QueryType.CALCULATION:
-                    strategy = ResponseStrategy.TOOL_ASSISTED
-                elif query_type == QueryType.MEMORY:
-                    strategy = ResponseStrategy.MEMORY_RECALL
                 else:
                     strategy = ResponseStrategy.DIRECT_LLM
             
@@ -439,7 +447,7 @@ class MasterOrchestrator:
             # Step 4: Execute strategy
             response_text = ""
             
-            if strategy == ResponseStrategy.TOOL_ASSISTED and self.caller:
+            if strategy in (ResponseStrategy.TOOL_ASSISTED, ResponseStrategy.HYBRID) and self.caller:
                 if trace:
                     self._add_step("tools", "Executing tools", trace)
                 
@@ -449,6 +457,25 @@ class MasterOrchestrator:
                 
                 if trace:
                     self._complete_step(trace, f"Executed {len(result.tool_calls)} tool(s)")
+                
+                # For HYBRID, enhance the response with tool results
+                if strategy == ResponseStrategy.HYBRID and context.tool_results and self.llm_func:
+                    # Build enriched prompt with tool results
+                    tool_context = "\n".join([
+                        f"Tool: {tc['tool_name']}\nResult: {tc.get('result', 'N/A')}"
+                        for tc in context.tool_results if not tc.get('error')
+                    ])
+                    
+                    if tool_context:
+                        enhanced_prompt = (
+                            f"Query dell'utente: {query}\n\n"
+                            f"Dati raccolti dai tool:\n{tool_context}\n\n"
+                            "Fornisci una risposta completa citando esplicitamente i dati dai tool. "
+                            "Non dire frasi generiche come 'dovresti consultare un sito' quando abbiamo già i dati."
+                        )
+                        
+                        system = "Sei un assistente che sintetizza dati da fonti web e tool. Cita sempre le fonti dei dati."
+                        response_text = await self.llm_func(enhanced_prompt, system)
             
             elif strategy == ResponseStrategy.MEMORY_RECALL and self.memory:
                 if trace:
