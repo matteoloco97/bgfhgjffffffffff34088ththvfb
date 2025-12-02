@@ -373,7 +373,7 @@ async def datetime_info_tool(timezone: str = "Europe/Rome") -> Dict[str, Any]:
 # ============================================================================
 @register_tool(
     name="memory_search",
-    description="Cerca nella memoria delle conversazioni passate usando ricerca semantica",
+    description="Cerca nella memoria delle conversazioni passate usando ricerca semantica (richiede contesto sessione)",
     category=ToolCategory.MEMORY,
     parameters=[
         ToolParameter("query", "string", "Query di ricerca semantica"),
@@ -385,16 +385,25 @@ async def datetime_info_tool(timezone: str = "Europe/Rome") -> Dict[str, Any]:
         "trova informazioni su argomento Y",
     ],
 )
-async def memory_search_tool(query: str, k: int = 3) -> Dict[str, Any]:
-    """Search conversation memory."""
+async def memory_search_tool(query: str, k: int = 3, **context) -> Dict[str, Any]:
+    """
+    Search conversation memory.
+    
+    Note: This tool requires session context (source, source_id) to work properly.
+    If called without context, it will search the first available session in cache.
+    """
     try:
         from core.conversational_memory import get_conversational_memory
         
         # Get memory instance
         memory = get_conversational_memory()
         
+        # Try to get source/source_id from context
+        source = context.get("source", "api")
+        source_id = context.get("source_id", "default")
+        
         # Search using semantic vector search
-        results = await memory.search_memory(query, top_k=k)
+        results = await memory.search_memory(source, source_id, query, top_k=k)
         
         return {
             "query": query,

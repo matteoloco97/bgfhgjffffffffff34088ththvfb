@@ -49,9 +49,14 @@ def _get_embedding_function():
             log.info(f"Embedding function initialized: {EMBEDDING_MODEL}")
         except Exception as e:
             log.error(f"Failed to initialize embedding function: {e}")
-            # Fallback to default
-            import chromadb.utils.embedding_functions as ef
-            _embedding_function = ef.DefaultEmbeddingFunction()
+            # Simple fallback - use default ChromaDB embedding
+            try:
+                import chromadb
+                _embedding_function = chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
+            except:
+                # Last resort - None will cause collection creation to use default
+                log.warning("Using ChromaDB default embedding function")
+                _embedding_function = None
     return _embedding_function
 
 

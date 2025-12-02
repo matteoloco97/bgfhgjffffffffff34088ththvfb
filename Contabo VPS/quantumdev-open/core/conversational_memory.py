@@ -585,6 +585,8 @@ class ConversationalMemory:
     
     async def search_memory(
         self,
+        source: str,
+        source_id: str,
         query: str,
         top_k: int = 3
     ) -> List[Dict[str, Any]]:
@@ -593,28 +595,26 @@ class ConversationalMemory:
         Falls back to keyword search if vector memory is unavailable.
         
         Args:
+            source: Source identifier
+            source_id: User/chat identifier
             query: Search query
             top_k: Number of results to return
             
         Returns:
             List of relevant messages/summaries with metadata
         """
+        # Get session to find session_id
+        session = await self.get_or_create_session(source, source_id)
+        
         # Try vector memory first
         vm = _get_vector_memory()
-        if vm and hasattr(self, '_memory') and self._memory:
-            # Get current session if available
-            session_id = None
-            for key, session in self._sessions_cache.items():
-                session_id = session.session_id
-                break
-            
-            if session_id:
-                try:
-                    results = vm.query_documents(session_id, query, top_k)
-                    log.debug(f"Vector search returned {len(results)} results")
-                    return results
-                except Exception as e:
-                    log.warning(f"Vector search failed: {e}")
+        if vm:
+            try:
+                results = vm.query_documents(session.session_id, query, top_k)
+                log.debug(f"Vector search returned {len(results)} results")
+                return results
+            except Exception as e:
+                log.warning(f"Vector search failed: {e}")
         
         # Fallback: return empty list (caller can use search_history)
         log.debug("Vector memory not available, returning empty results")
