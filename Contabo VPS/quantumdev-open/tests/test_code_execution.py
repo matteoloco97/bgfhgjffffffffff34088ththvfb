@@ -81,10 +81,11 @@ print(f"Result: {result}")
     def test_timeout(self):
         """Test timeout enforcement."""
         async def run_test():
+            # Use a busy loop that will definitely timeout (no early termination)
             code = """
-import time
-time.sleep(15)
-print('Should not print')
+# Infinite loop that will timeout
+while True:
+    pass
 """
             result = await run_code("python", code)
             

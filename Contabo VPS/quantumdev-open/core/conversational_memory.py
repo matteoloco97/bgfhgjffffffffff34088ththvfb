@@ -271,7 +271,6 @@ class ConversationalMemory:
             return self._sessions_cache[key]
         
         # Try Redis
-        session_id = None
         try:
             redis_client = _get_redis()
             data = redis_client.get(key)
@@ -280,21 +279,8 @@ class ConversationalMemory:
                 self._sessions_cache[key] = session
                 log.debug(f"Session loaded from Redis: {session.session_id}")
                 return session
-            else:
-                # Store session_id from key for archive lookup
-                # Extract from potential previous sessions
-                pass
         except Exception as e:
             log.warning(f"Redis get session error: {e}")
-        
-        # Try loading from archive if enabled
-        if PERSIST_ARCHIVE_ENABLED and session_id:
-            archived = await self._load_from_archive(session_id)
-            if archived:
-                self._sessions_cache[key] = archived
-                # Re-save to Redis
-                await self._save_session(archived)
-                return archived
         
         # Create new session
         session = ConversationSession(

@@ -245,33 +245,44 @@ async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
         log.warning("No search results found")
         return []
     
-    # Enhance results by fetching content
-    enhanced_results = []
-    
-    for result in results:
+    # Enhance results by fetching content asynchronously
+    async def fetch_and_enhance(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Fetch and enhance a single result."""
         url = result.get("url", "")
         if not url:
-            continue
+            return None
         
-        # Fetch page content
-        text = _fetch_url_content(url, timeout=SEARCH_TIMEOUT)
+        # Run sync request in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        text = await loop.run_in_executor(None, _fetch_url_content, url, SEARCH_TIMEOUT)
         
         if text:
             # Create enhanced snippet from actual content
             snippet = _create_snippet(text)
-            
-            enhanced_results.append({
+            return {
                 "title": result.get("title", ""),
                 "url": url,
                 "snippet": snippet or result.get("snippet", ""),
-            })
+            }
         else:
             # Use original snippet if fetch failed
-            enhanced_results.append({
+            return {
                 "title": result.get("title", ""),
                 "url": url,
                 "snippet": result.get("snippet", ""),
-            })
+            }
     
-    log.info(f"Enhanced search returned {len(enhanced_results)} results")
-    return enhanced_results
+    # Fetch all results concurrently
+    tasks = [fetch_and_enhance(result) for result in results]
+    enhanced_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Filter out errors and None values
+    final_results = []
+    for result in enhanced_results:
+        if isinstance(result, dict) and result:
+            final_results.append(result)
+        elif isinstance(result, Exception):
+            log.warning(f"Error enhancing result: {result}")
+    
+    log.info(f"Enhanced search returned {len(final_results)} results")
+    return final_results
