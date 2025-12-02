@@ -214,7 +214,7 @@ async def _fetch_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
 
 def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
     """
-    Formatta i dati meteo in una risposta leggibile per Telegram.
+    Formatta i dati meteo in una risposta concisa per Telegram.
     """
     daily = data.get("daily", {})
     
@@ -228,8 +228,8 @@ def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
     if not dates:
         return f"Dati meteo non disponibili per {city_name}."
     
-    # Formatta ogni giorno
-    lines = [f"🌍 **Meteo {city_name}** – prossimi 3 giorni\n"]
+    # Formatta ogni giorno - versione concisa
+    lines = [f"🌍 **Meteo {city_name}**\n"]
     
     day_names = ["Oggi", "Domani", "Dopodomani"]
     
@@ -244,32 +244,53 @@ def _format_weather_response(city_name: str, data: Dict[str, Any]) -> str:
         
         weather_desc = _interpret_weather_code(code)
         
-        # Formatta linea
-        line = f"• **{day_label}**: {t_min}–{t_max}°C, {weather_desc}"
+        # Formatta linea - più concisa
+        line = f"• **{day_label}**: {int(t_min)}–{int(t_max)}°C, {weather_desc}"
         
         if rain and rain > 0.5:
-            line += f", pioggia ~{rain:.1f}mm"
+            line += f", {rain:.0f}mm"
         
-        if wind and wind > 15:
-            line += f", vento max {wind:.0f} km/h"
+        if wind and wind > 20:
+            line += f", vento {int(wind)}km/h"
         
         lines.append(line)
-    
-    lines.append(f"\n📡 Fonte: Open-Meteo (dati aggiornati)")
     
     return "\n".join(lines)
 
 
 # ===================== PUBLIC API =====================
 
+def _clean_city_name(city: str) -> str:
+    """
+    Pulisce il nome della città rimuovendo punteggiatura e caratteri indesiderati.
+    Es: "roma?" → "roma", "milano!!" → "milano", "napoli..." → "napoli"
+    """
+    if not city:
+        return ""
+    
+    # Rimuovi punteggiatura finale e iniziale
+    city = re.sub(r'^[?!.,;:\s]+|[?!.,;:\s]+$', '', city)
+    
+    # Rimuovi caratteri speciali interni (tranne spazi e apostrofi per città come "reggio nell'emilia")
+    city = re.sub(r"[^\w\s'àèéìòùáéíóú-]", '', city)
+    
+    # Rimuovi spazi multipli
+    city = re.sub(r'\s+', ' ', city).strip()
+    
+    return city
+
+
 def extract_city_from_query(query: str) -> Optional[str]:
     """
     Estrae il nome della città da una query meteo.
     Es: "meteo roma" → "roma"
+        "meteo roma?" → "roma"
         "che tempo fa a milano" → "milano"
         "previsioni napoli domani" → "napoli"
     """
+    # Pre-pulizia: rimuovi punteggiatura dalla query
     q = query.lower().strip()
+    q = re.sub(r'[?!.,;:]+$', '', q)  # Rimuovi punteggiatura finale
     
     # Pattern comuni
     patterns = [
@@ -286,12 +307,15 @@ def extract_city_from_query(query: str) -> Optional[str]:
             city = match.group(1).strip()
             # Pulisci parole residue
             city = re.sub(r"\b(oggi|domani|dopodomani|settimana|prossimi|giorni)\b", "", city).strip()
+            # Pulisci punteggiatura residua
+            city = _clean_city_name(city)
             if city and len(city) > 1:
                 return city
     
     # Fallback: prova a trovare una città conosciuta nel testo
+    q_cleaned = _clean_city_name(q)
     for city_key in _COMMON_CITIES:
-        if city_key in q:
+        if city_key in q_cleaned:
             return city_key
     
     return None
@@ -321,22 +345,27 @@ async def get_weather_answer(city: str) -> str:
         Stringa formattata con le previsioni meteo o messaggio di errore.
     """
     if not city:
-        return "❌ Specifica una città. Es: `/web meteo Roma`"
+        return "❌ Specifica una città, es: `meteo Roma`"
+    
+    # Pulisci il nome città da punteggiatura
+    city_cleaned = _clean_city_name(city)
+    if not city_cleaned:
+        return "❌ Specifica una città valida"
     
     # 1. Geocoding
-    geo_result = await _geocode_city(city)
+    geo_result = await _geocode_city(city_cleaned)
     
     if not geo_result:
-        return f"❌ Città non trovata: {city}. Prova con un nome più specifico."
+        return f"❌ Città '{city_cleaned}' non trovata"
     
     lat, lon, formatted_name = geo_result
-    log.info(f"Weather request: {city} → {formatted_name} ({lat}, {lon})")
+    log.info(f"Weather request: {city_cleaned} → {formatted_name} ({lat}, {lon})")
     
     # 2. Fetch meteo
     weather_data = await _fetch_weather(lat, lon)
     
     if not weather_data:
-        return f"❌ Impossibile recuperare dati meteo per {formatted_name}. Riprova tra poco."
+        return f"❌ Dati meteo non disponibili per {formatted_name}"
     
     # 3. Formatta risposta
     return _format_weather_response(formatted_name, weather_data)
@@ -353,6 +382,6 @@ async def get_weather_for_query(query: str) -> Optional[str]:
     city = extract_city_from_query(query)
     
     if not city:
-        return "❌ Non ho capito quale città. Prova: `meteo Roma` o `che tempo fa a Milano`"
+        return "❌ Indica una città, es: `meteo Roma`"
     
     return await get_weather_answer(city)
