@@ -2,6 +2,39 @@
 
 Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jarvis/QuantumDev.
 
+> **Version 2.0.0 - QuantumDev Max** 🚀
+
+---
+
+## QuantumDev Max Features (NEW)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_CONVERSATIONAL_MEMORY` | `true` | Abilita memoria conversazionale 32K |
+| `ENABLE_FUNCTION_CALLING` | `true` | Abilita orchestrazione tool autonoma |
+| `ENABLE_REASONING_TRACES` | `true` | Abilita tracciamento ragionamento |
+| `ENABLE_ARTIFACTS` | `true` | Abilita sistema artifacts |
+| `VERBOSE_REASONING` | `false` | Mostra log dettagliati reasoning |
+
+## Context Management (NEW)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_CONTEXT_TOKENS` | `32000` | Finestra contesto massima (32K) |
+| `SLIDING_WINDOW_SIZE` | `10` | Ultimi N turni in sliding window |
+| `SUMMARIZATION_THRESHOLD` | `20` | Turni prima di auto-summarization |
+| `SESSION_TTL` | `604800` | TTL sessioni in secondi (7 giorni) |
+| `ARTIFACT_TTL` | `604800` | TTL artifacts in secondi (7 giorni) |
+
+## Tool Orchestration (NEW)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_ORCHESTRATION_TURNS` | `5` | Max turni orchestrazione multi-tool |
+| `TOOL_TIMEOUT_S` | `30` | Timeout singolo tool (secondi) |
+
+---
+
 ## LLM Configuration
 
 | Variable | Default | Description |
@@ -159,6 +192,23 @@ LLM_MAX_TOKENS=512
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
+
+# === QuantumDev Max Features (NEW) ===
+ENABLE_CONVERSATIONAL_MEMORY=true
+ENABLE_FUNCTION_CALLING=true
+ENABLE_REASONING_TRACES=true
+ENABLE_ARTIFACTS=true
+
+# === Context Management (NEW) ===
+MAX_CONTEXT_TOKENS=32000
+SLIDING_WINDOW_SIZE=10
+SUMMARIZATION_THRESHOLD=20
+SESSION_TTL=604800
+ARTIFACT_TTL=604800
+
+# === Tool Orchestration (NEW) ===
+MAX_ORCHESTRATION_TURNS=5
+TOOL_TIMEOUT_S=30
 
 # === API Keys ===
 ALPHA_VANTAGE_API_KEY=your_key_here
