@@ -529,23 +529,83 @@ def get_function_caller(llm_func: Optional[Callable] = None) -> FunctionCaller:
     examples=["2 + 2", "sqrt(16)", "100 * 0.15"],
 )
 async def calculator_tool(expression: str) -> Dict[str, Any]:
-    """Safe calculator tool."""
+    """Safe calculator tool using AST for expression evaluation."""
+    import ast
+    import operator
     import math
     
-    # Whitelist of allowed names
-    allowed_names = {
-        k: v for k, v in math.__dict__.items()
-        if not k.startswith("_")
+    # Supported operators
+    operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
     }
-    allowed_names.update({
-        "abs": abs, "round": round, "min": min, "max": max,
-        "sum": sum, "pow": pow, "int": int, "float": float,
-    })
+    
+    # Supported math functions
+    functions = {
+        'abs': abs,
+        'round': round,
+        'min': min,
+        'max': max,
+        'pow': pow,
+        'sqrt': math.sqrt,
+        'sin': math.sin,
+        'cos': math.cos,
+        'tan': math.tan,
+        'log': math.log,
+        'log10': math.log10,
+        'exp': math.exp,
+        'floor': math.floor,
+        'ceil': math.ceil,
+    }
+    
+    # Supported constants
+    constants = {
+        'pi': math.pi,
+        'e': math.e,
+    }
+    
+    def safe_eval_node(node):
+        """Safely evaluate an AST node."""
+        if isinstance(node, ast.Constant):  # Python 3.8+
+            return node.value
+        elif isinstance(node, ast.Num):  # Python 3.7 compatibility
+            return node.n
+        elif isinstance(node, ast.BinOp):
+            left = safe_eval_node(node.left)
+            right = safe_eval_node(node.right)
+            op = operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op(left, right)
+        elif isinstance(node, ast.UnaryOp):
+            operand = safe_eval_node(node.operand)
+            op = operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+            return op(operand)
+        elif isinstance(node, ast.Call):
+            func_name = node.func.id if isinstance(node.func, ast.Name) else None
+            if func_name not in functions:
+                raise ValueError(f"Unsupported function: {func_name}")
+            args = [safe_eval_node(arg) for arg in node.args]
+            return functions[func_name](*args)
+        elif isinstance(node, ast.Name):
+            if node.id in constants:
+                return constants[node.id]
+            raise ValueError(f"Unknown variable: {node.id}")
+        else:
+            raise ValueError(f"Unsupported expression type: {type(node).__name__}")
     
     try:
-        # Clean expression
-        clean_expr = re.sub(r'[^0-9+\-*/().%\s\w]', '', expression)
-        result = eval(clean_expr, {"__builtins__": {}}, allowed_names)
+        # Parse expression
+        tree = ast.parse(expression, mode='eval')
+        result = safe_eval_node(tree.body)
         return {"expression": expression, "result": result}
     except Exception as e:
         return {"expression": expression, "error": str(e)}

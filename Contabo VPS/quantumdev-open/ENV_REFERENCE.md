@@ -23,8 +23,10 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | `MAX_CONTEXT_TOKENS` | `32000` | Finestra contesto massima (32K) |
 | `SLIDING_WINDOW_SIZE` | `10` | Ultimi N turni in sliding window |
 | `SUMMARIZATION_THRESHOLD` | `20` | Turni prima di auto-summarization |
+| `SUMMARIZATION_TOKEN_LIMIT` | `2000` | Max token per summarization |
 | `SESSION_TTL` | `604800` | TTL sessioni in secondi (7 giorni) |
 | `ARTIFACT_TTL` | `604800` | TTL artifacts in secondi (7 giorni) |
+| `MAX_ARTIFACTS_PER_USER` | `100` | Max artifacts salvati per utente |
 
 ## Tool Orchestration (NEW)
 

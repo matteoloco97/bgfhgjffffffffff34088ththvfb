@@ -51,6 +51,7 @@ def _env_int(name: str, default: int) -> int:
 
 ENABLE_ARTIFACTS = _env_bool("ENABLE_ARTIFACTS", True)
 ARTIFACT_TTL = _env_int("ARTIFACT_TTL", 604800)  # 7 days
+MAX_ARTIFACTS_PER_USER = _env_int("MAX_ARTIFACTS_PER_USER", 100)  # Max artifacts per user
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = _env_int("REDIS_PORT", 6379)
@@ -486,7 +487,7 @@ class ArtifactsManager:
             redis_client = _get_redis()
             key = self._user_index_key(source, source_id)
             redis_client.lpush(key, artifact_id)
-            redis_client.ltrim(key, 0, 99)  # Keep last 100
+            redis_client.ltrim(key, 0, MAX_ARTIFACTS_PER_USER - 1)  # Keep max configured
             redis_client.expire(key, ARTIFACT_TTL)
         except Exception as e:
             log.warning(f"Redis add to index error: {e}")

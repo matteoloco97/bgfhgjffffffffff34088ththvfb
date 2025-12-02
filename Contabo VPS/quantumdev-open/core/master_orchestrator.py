@@ -21,7 +21,7 @@ import json
 import time
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Callable, Union
+from typing import Dict, Any, Optional, List, Callable, Union, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -197,7 +197,7 @@ class QueryAnalyzer:
         r'^(ok|okay|grazie|thanks|perfetto|perfect)\s*[!.]?$',
     ]
     
-    def analyze(self, query: str) -> tuple[QueryType, ResponseStrategy]:
+    def analyze(self, query: str) -> Tuple[QueryType, ResponseStrategy]:
         """
         Analyze query to determine type and strategy.
         

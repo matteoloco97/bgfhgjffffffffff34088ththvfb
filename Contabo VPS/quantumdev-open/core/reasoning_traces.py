@@ -73,6 +73,7 @@ class ThinkingStep:
     status: StepStatus = StepStatus.PENDING
     duration_ms: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    _start_perf_counter: float = field(default=0.0, repr=False)
     timestamp: int = field(default_factory=lambda: int(time.time()))
     
     def to_dict(self) -> Dict[str, Any]:
@@ -263,6 +264,7 @@ class ReasoningTracer:
             content=content,
             status=StepStatus.IN_PROGRESS,
             metadata=metadata or {},
+            _start_perf_counter=time.perf_counter(),
         )
         
         self._current_trace.steps.append(step)
@@ -290,7 +292,9 @@ class ReasoningTracer:
             step.content = content
         
         step.status = StepStatus.COMPLETED if success else StepStatus.FAILED
-        step.duration_ms = int((time.time() - step.timestamp) * 1000)
+        # Use perf_counter for accurate duration
+        if step._start_perf_counter > 0:
+            step.duration_ms = int((time.perf_counter() - step._start_perf_counter) * 1000)
         
         if self.enabled and VERBOSE_REASONING:
             status = "✅" if success else "❌"

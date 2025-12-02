@@ -56,6 +56,7 @@ MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 32000)
 SLIDING_WINDOW_SIZE = _env_int("SLIDING_WINDOW_SIZE", 10)
 SUMMARIZATION_THRESHOLD = _env_int("SUMMARIZATION_THRESHOLD", 20)
 SESSION_TTL = _env_int("SESSION_TTL", 604800)  # 7 days in seconds
+SUMMARIZATION_TOKEN_LIMIT = _env_int("SUMMARIZATION_TOKEN_LIMIT", 2000)  # Max tokens for summarization
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = _env_int("REDIS_PORT", 6379)
@@ -349,8 +350,8 @@ class ConversationalMemory:
             for m in to_summarize
         ])
         
-        # Limit total text
-        conv_text = trim_to_tokens(conv_text, 2000)
+        # Limit total text using configurable limit
+        conv_text = trim_to_tokens(conv_text, SUMMARIZATION_TOKEN_LIMIT)
         
         summarize_prompt = (
             "Riassumi questa conversazione in modo CONCISO (max 500 parole).\n"
@@ -373,8 +374,8 @@ class ConversationalMemory:
                 # Combine with existing summary
                 if session.summary:
                     combined = f"{session.summary}\n\n---\n\n{summary}"
-                    # Trim if too long
-                    session.summary = trim_to_tokens(combined, 2000)
+                    # Trim if too long using configurable limit
+                    session.summary = trim_to_tokens(combined, SUMMARIZATION_TOKEN_LIMIT)
                 else:
                     session.summary = summary
                 
