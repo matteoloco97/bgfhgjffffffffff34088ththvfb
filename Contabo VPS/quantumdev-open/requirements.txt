@@ -1,0 +1,32 @@
+# QuantumDev Max - Core Dependencies
+# Python 3.10+
+
+# Web framework and API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+
+# LLM and AI
+openai>=1.3.0
+python-dotenv>=1.0.0
+
+# Database and caching
+redis>=5.0.0
+chromadb>=0.4.18
+sentence-transformers>=2.2.2
+
+# Web scraping and search
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+aiohttp>=3.9.0
+
+# Data processing
+pyyaml>=6.0.0
+python-dateutil>=2.8.0
+
+# Utilities
+typing-extensions>=4.8.0
+
+# Optional API integrations (for enhanced search)
+# google-search-results>=2.4.2  # SerpAPI client
