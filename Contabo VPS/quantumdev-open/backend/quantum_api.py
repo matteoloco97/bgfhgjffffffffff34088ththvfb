@@ -2267,7 +2267,7 @@ async def generate(
 @app.post("/chat")
 async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     """
-    Chat avanzata (v2).
+    Chat avanzata (v2) with Personal Memory System.
     """
     global _SEMCACHE
 
@@ -2309,7 +2309,20 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     if not sid:
         sid = "default"
 
-    # Autosave input utente
+    # Determine conversation_id and user_id for memory
+    conversation_id = f"{src}:{sid}"
+    user_id = os.getenv("DEFAULT_USER_ID", "matteo")  # Can be extended for multi-user
+
+    # =================== NEW: Process "remember" statements ===================
+    try:
+        from core.memory_manager import process_user_message
+        memory_process = await process_user_message(user_id, conversation_id, text)
+        if memory_process.get("fact_saved"):
+            log.info(f"[memory] Saved user profile fact: {memory_process.get('fact_id')}")
+    except Exception as e:
+        log.warning(f"Memory processing failed: {e}")
+
+    # Autosave input utente (existing legacy system)
     try:
         asv_in = autosave(text, source="chat_user")
         if any([asv_in.get("facts"), asv_in.get("prefs"), asv_in.get("bet")]):
@@ -2422,13 +2435,25 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
             k in s for k in jarvis_keywords
         )
 
-    # =================== Memory search (Chroma) ===================
+    # =================== Memory search (Chroma - OLD SYSTEM) ===================
     mem_items: List[Dict[str, Any]] = []
     try:
         mem_items = search_topk(text, k=10, half_life_days=MEM_HALF_LIFE_D)
     except Exception as e:
         log.warning(f"memory search in /chat failed: {e}")
         mem_items = []
+
+    # =================== NEW: Gather Personal Memory Context ===================
+    memory_context_dict = {"profile_context": "", "episodic_context": ""}
+    try:
+        from core.memory_manager import gather_memory_context
+        memory_context_dict = await gather_memory_context(user_id, conversation_id, text)
+        if memory_context_dict.get("profile_context"):
+            log.info(f"[memory] Retrieved {len(memory_context_dict['profile_context'])} chars of profile context")
+        if memory_context_dict.get("episodic_context"):
+            log.info(f"[memory] Retrieved {len(memory_context_dict['episodic_context'])} chars of episodic context")
+    except Exception as e:
+        log.warning(f"Gather memory context failed: {e}")
 
     # Estrazione facts specifici su hardware Jarvis (CPU/GPU)
     cpu_val: Optional[str] = None
@@ -2496,10 +2521,10 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
 
         return {"reply": reply_hw}
 
-    # =================== Costruzione contesto dai facts ===================
+    # =================== Costruzione contesto dai facts (OLD LEGACY SYSTEM) ===================
     mem_context = ""
     if mem_items:
-        lines: List[Dict[str, Any]] = []
+        lines: List[str] = []
         for it in mem_items[:5]:
             md = (it.get("metadata") or {}) or {}
             subj = (
@@ -2519,11 +2544,11 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
             else:
                 lines.append(f"- {content}")
         if lines:
-            mem_context = "Facts interni (Chroma) rilevanti:\n" + "\n".join(
+            mem_context = "Facts interni (Chroma - legacy) rilevanti:\n" + "\n".join(
                 lines
             )
 
-    # =================== System prompt finale ===================
+    # =================== System prompt finale (WITH NEW MEMORY) ===================
     full_sys = (
         base_sys.strip()
         + "\n\n"
@@ -2531,6 +2556,15 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
         + "\n\n"
         + strict_rules
     )
+    
+    # Add NEW personal memory contexts
+    if memory_context_dict.get("profile_context"):
+        full_sys += "\n\n" + memory_context_dict["profile_context"]
+    
+    if memory_context_dict.get("episodic_context"):
+        full_sys += "\n\n" + memory_context_dict["episodic_context"]
+    
+    # Add legacy memory context (for backward compatibility)
     if mem_context:
         full_sys += "\n\n" + mem_context
 
@@ -2538,6 +2572,21 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
 
     # =================== Chiamata LLM ===================
     reply_text = await reply_with_llm(text, sys_trim)
+
+    # =================== NEW: Record conversation turn for episodic memory ===================
+    try:
+        from core.memory_manager import record_conversation_turn
+        record_result = await record_conversation_turn(
+            conversation_id=conversation_id,
+            user_message=text,
+            assistant_message=reply_text,
+            user_id=user_id,
+            llm_func=reply_with_llm
+        )
+        if record_result.get("summarized"):
+            log.info(f"[memory] Created conversation summary for {conversation_id}")
+    except Exception as e:
+        log.warning(f"Record conversation turn failed: {e}")
 
     # Autosave output
     try:
@@ -3448,6 +3497,128 @@ def memory_reembed(req: Optional[ReembedReq] = None) -> Dict[str, Any]:
             return {"ok": True, "reembedded": processed}
         count = reembed_collection(req.name, batch=req.batch)
         return {"ok": True, "collection": req.name, "count": count}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= NEW: Personal Memory API =======================
+@app.get("/memory/debug_state")
+def memory_debug_state(
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Debug endpoint to inspect personal memory system state.
+    Returns counts and status for user profile and episodic memory.
+    """
+    try:
+        from core.memory_manager import get_memory_stats
+        
+        # Use defaults if not provided
+        if not user_id:
+            user_id = os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        stats = get_memory_stats(user_id=user_id, conversation_id=conversation_id)
+        
+        # Also include legacy Chroma collections info
+        legacy_debug = _light_debug_dump()
+        
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "personal_memory": stats,
+            "legacy_chroma": legacy_debug,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class UserProfileFactReq(BaseModel):
+    user_id: Optional[str] = None
+    fact_text: str = Field(..., description="The fact content to save")
+    category: Optional[str] = Field(None, description="Category (bio/goal/preference/project/misc)")
+
+
+@app.post("/memory/user_profile/save")
+def memory_save_user_profile_fact(req: UserProfileFactReq) -> Dict[str, Any]:
+    """Save a user profile fact manually."""
+    try:
+        from core.user_profile_memory import save_user_profile_fact
+        
+        user_id = req.user_id or os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        fact_id = save_user_profile_fact(
+            user_id=user_id,
+            fact_text=req.fact_text,
+            category=req.category
+        )
+        
+        if fact_id:
+            return {"ok": True, "fact_id": fact_id, "user_id": user_id}
+        else:
+            return {"ok": False, "error": "Failed to save fact"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/user_profile/list")
+def memory_list_user_profile(user_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    """List all user profile facts."""
+    try:
+        from core.user_profile_memory import get_all_user_facts
+        
+        user_id = user_id or os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        facts = get_all_user_facts(user_id=user_id, limit=limit)
+        
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "count": len(facts),
+            "facts": facts
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/episodic/summaries")
+def memory_list_episodic_summaries(
+    conversation_id: str,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List episodic conversation summaries."""
+    try:
+        from core.episodic_memory import get_recent_conversation_summaries
+        
+        summaries = get_recent_conversation_summaries(
+            conversation_id=conversation_id,
+            limit=limit
+        )
+        
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "count": len(summaries),
+            "summaries": summaries
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/episodic/buffer_status")
+def memory_episodic_buffer_status(conversation_id: str) -> Dict[str, Any]:
+    """Get current buffer status for a conversation."""
+    try:
+        from core.episodic_memory import get_current_buffer_status
+        
+        status = get_current_buffer_status(conversation_id)
+        
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "status": status
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
