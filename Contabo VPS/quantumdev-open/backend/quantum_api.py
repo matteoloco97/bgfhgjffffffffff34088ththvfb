@@ -1417,6 +1417,60 @@ def healthz() -> Dict[str, Any]:
     }
 
 
+# --------- System Status ---------
+@app.get("/system/status")
+def system_status() -> Dict[str, Any]:
+    """
+    Get real-time system metrics (CPU, RAM, disk, GPU, uptime).
+    
+    Returns:
+        JSON with ok status, timestamp, and metrics for all subsystems.
+    """
+    try:
+        from core.system_status import get_system_status
+        return get_system_status()
+    except Exception as e:
+        log.error(f"System status endpoint failed: {e}")
+        return {
+            "ok": False,
+            "error": f"system_status_failed: {str(e)}",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+
+# --------- AutoBug Health Checks ---------
+@app.post("/autobug/run")
+def autobug_run() -> Dict[str, Any]:
+    """
+    Run comprehensive health checks on all subsystems.
+    
+    Returns:
+        JSON with check results, summary, and optional system status.
+    """
+    try:
+        from core.autobug import run_autobug_checks
+        result = run_autobug_checks()
+        
+        # Log summary
+        summary = result.get("summary", {})
+        duration_ms = result.get("duration_ms", 0)
+        log.info(
+            f"AutoBug run completed: {summary.get('passed', 0)}/{summary.get('total', 0)} passed, "
+            f"duration: {duration_ms:.0f}ms"
+        )
+        
+        return result
+    except Exception as e:
+        log.error(f"AutoBug endpoint failed: {e}")
+        return {
+            "ok": False,
+            "error": f"autobug_failed: {str(e)}",
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "checks": [],
+        }
+
+
 # --------- Cache stats (ns / all) + flush ---------
 @app.get("/stats/cache")
 def cache_stats(ns: Optional[str] = None, all: bool = False) -> Dict[str, Any]:  # noqa: A002

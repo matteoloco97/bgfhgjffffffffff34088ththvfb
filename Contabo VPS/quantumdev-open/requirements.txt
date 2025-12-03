@@ -28,5 +28,9 @@ python-dateutil>=2.8.0
 # Utilities
 typing-extensions>=4.8.0
 
+# System monitoring
+psutil>=5.9.0
+nvidia-ml-py>=12.535.0  # pynvml - optional for GPU monitoring
+
 # Optional API integrations (for enhanced search)
 # google-search-results>=2.4.2  # SerpAPI client
