@@ -4,11 +4,11 @@
 core/autobug.py — AutoBug Health Checks
 
 Systematic health checks for all major subsystems:
-- LLM inference
-- Web search
-- Redis cache
-- ChromaDB
-- System status
+  - LLM inference
+  - Web search
+  - Redis cache
+  - ChromaDB
+  - System status
 
 Each check is isolated and never crashes the entire process.
 """
@@ -278,22 +278,20 @@ def check_redis() -> CheckResult:
             latency_ms=round(latency_ms, 2),
             error=f"redis_not_installed: {str(e)}",
         )
-    except redis.ConnectionError as e:
-        latency_ms = (time.monotonic() - start) * 1000
-        return CheckResult(
-            name="redis",
-            ok=False,
-            latency_ms=round(latency_ms, 2),
-            error=f"connection_failed: {str(e)}",
-        )
     except Exception as e:
         latency_ms = (time.monotonic() - start) * 1000
-        log.error(f"Redis check failed: {e}")
+        # Handle all exceptions including connection errors
+        error_type = type(e).__name__
+        if "Connection" in error_type or "Timeout" in error_type:
+            error_msg = f"connection_failed: {str(e)}"
+        else:
+            error_msg = f"redis_operation_failed: {str(e)}"
+        
         return CheckResult(
             name="redis",
             ok=False,
             latency_ms=round(latency_ms, 2),
-            error=f"redis_operation_failed: {str(e)}",
+            error=error_msg,
         )
 
 
