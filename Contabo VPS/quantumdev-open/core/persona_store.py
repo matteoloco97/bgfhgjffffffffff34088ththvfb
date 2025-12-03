@@ -36,10 +36,13 @@ def _k(src: str, sid: str) -> str: return _KEY.format(src=src, sid=sid)
 
 # ——— Riassunto capability condiviso ———
 CAPABILITIES_BRIEF = (
-    "Rispondo diretto quando basta conoscenza generale; uso il web solo per dati live "
-    "(meteo, prezzi, risultati, orari, breaking news) e cito almeno una fonte. "
-    "Non accedo a file o dispositivi dell’utente."
+    "Posso accedere al web quando serve per dati aggiornati (meteo, prezzi, notizie, risultati sportivi, ecc.) "
+    "tramite il comando /web o automaticamente per query live. "
+    "Ho memoria a lungo termine via ChromaDB (facts, preferenze, betting history) e cache Redis. "
+    "Uso il web in modo selettivo: solo quando necessario, non per ogni domanda. "
+    "Non accedo a file o dispositivi dell'utente."
 )
+
 
 # Pattern utili per instradamento meta (facoltativi; la quantum_api ha già un suo set)
 META_IGNORE_PATTERNS = [
