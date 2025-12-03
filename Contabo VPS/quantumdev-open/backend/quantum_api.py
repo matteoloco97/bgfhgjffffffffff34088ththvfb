@@ -3322,7 +3322,6 @@ async def files_upload(
         mime_type = file.content_type or "application/octet-stream"
         
         # Generate file_id
-        import hashlib
         file_id = hashlib.sha256(content).hexdigest()[:16]
         
         # Extract text

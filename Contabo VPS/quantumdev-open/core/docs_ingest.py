@@ -41,7 +41,7 @@ from utils.chroma_handler import get_client, _embedder
 
 log = logging.getLogger(__name__)
 
-# Configuration
+# === Configuration ===
 USER_DOCS_COLLECTION = os.getenv("CHROMA_COLLECTION_USER_DOCS", "user_docs")
 DEFAULT_CHUNK_SIZE = int(os.getenv("DOCS_CHUNK_SIZE", "1000"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("DOCS_CHUNK_OVERLAP", "200"))
@@ -265,10 +265,15 @@ def index_document(
                 "num_chunks": 0,
             }
         
+        # Track if chunks were truncated
+        total_chunks = len(chunks)
+        truncated = False
+        
         # Apply max_chunks limit if specified
         if max_chunks and len(chunks) > max_chunks:
             log.warning(f"Document has {len(chunks)} chunks, limiting to {max_chunks}")
             chunks = chunks[:max_chunks]
+            truncated = True
         
         # Get ChromaDB collection
         client = get_client()
@@ -306,12 +311,19 @@ def index_document(
         
         log.info(f"Indexed {len(chunks)} chunks for file {file_id} (user {user_id})")
         
-        return {
+        result = {
             "ok": True,
             "num_chunks": len(chunks),
             "file_id": file_id,
             "filename": filename,
         }
+        
+        # Add truncation info if applicable
+        if truncated:
+            result["truncated"] = True
+            result["total_chunks"] = total_chunks
+        
+        return result
         
     except Exception as e:
         log.error(f"Document indexing failed: {e}")
