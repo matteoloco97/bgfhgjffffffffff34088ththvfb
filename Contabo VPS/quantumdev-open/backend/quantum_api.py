@@ -1439,18 +1439,79 @@ def system_status() -> Dict[str, Any]:
     """
     Get real-time system metrics (CPU, RAM, disk, GPU, uptime).
     
-    Returns:
-        JSON with ok status, timestamp, and metrics for all subsystems.
+    Returns ALWAYS a JSON-safe dict with this structure:
+    {
+        "ok": bool,                      # true if psutil/core metrics available
+        "psutil_available": bool,
+        "pynvml_available": bool,
+        "cpu": {
+            "percent": float,
+            "load_average": [float, float, float],
+            "cores_logical": int,
+            "cores_physical": int
+        },
+        "memory": {
+            "total": int,
+            "used": int,
+            "percent": float,
+            "swap_total": int,
+            "swap_used": int,
+            "swap_percent": float
+        },
+        "disk": {
+            "total": int,
+            "used": int,
+            "percent": float
+        },
+        "gpu": {
+            "gpus": [...],
+            "error": str | None
+        },
+        "uptime": {
+            "seconds": int
+        }
+    }
+    
+    HTTP 200 always, even if ok=false.
     """
     try:
         from core.system_status import get_system_status
         return get_system_status()
     except Exception as e:
         log.error(f"System status endpoint failed: {e}")
+        # Return fallback structure on catastrophic failure
         return {
             "ok": False,
-            "error": f"system_status_failed: {str(e)}",
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "error": "system_status_exception",
+            "detail": str(e),
+            "psutil_available": False,
+            "pynvml_available": False,
+            "cpu": {
+                "percent": 0.0,
+                "load_average": [0.0, 0.0, 0.0],
+                "cores_logical": 0,
+                "cores_physical": 0,
+            },
+            "memory": {
+                "total": 0,
+                "used": 0,
+                "percent": 0.0,
+                "swap_total": 0,
+                "swap_used": 0,
+                "swap_percent": 0.0,
+            },
+            "disk": {
+                "total": 0,
+                "used": 0,
+                "percent": 0.0,
+            },
+            "gpu": {
+                "gpus": [],
+                "error": "system_status_exception",
+            },
+            "uptime": {
+                "seconds": 0,
+            },
         }
 
 
@@ -1460,11 +1521,58 @@ def autobug_run() -> Dict[str, Any]:
     """
     Run comprehensive health checks on all subsystems.
     
+    Environment variables (all default to True if not set):
+    - AUTOBUG_ENABLED: Master switch for autobug
+    - AUTOBUG_ENABLE_LLM: Enable LLM check
+    - AUTOBUG_ENABLE_WEB_SEARCH: Enable web search check
+    - AUTOBUG_ENABLE_REDIS: Enable Redis check
+    - AUTOBUG_ENABLE_CHROMA: Enable ChromaDB check
+    - AUTOBUG_ENABLE_SYSTEM: Enable system status check
+    - AUTOBUG_LLM_TIMEOUT_S: LLM check timeout (default: 15.0s)
+    - AUTOBUG_WEB_TIMEOUT_S: Web search timeout (default: 10.0s)
+    - AUTOBUG_REDIS_TIMEOUT_S: Redis timeout (default: 5.0s)
+    - AUTOBUG_CHROMA_TIMEOUT_S: ChromaDB timeout (default: 10.0s)
+    
     Returns:
-        JSON with check results, summary, and optional system status.
+        JSON with check results:
+        {
+            "ok": bool,                 # true if ALL enabled checks passed
+            "started_at": str,          # ISO timestamp
+            "finished_at": str,         # ISO timestamp
+            "duration_ms": float,
+            "checks": [
+                {
+                    "name": str,        # "llm", "web", "redis", "chroma", "system"
+                    "enabled": bool,    # from AUTOBUG_ENABLE_* flag
+                    "ok": bool,
+                    "latency_ms": float | None,
+                    "error": str | None,
+                    "details": dict | None
+                },
+                ...
+            ],
+            "summary": {
+                "total": int,
+                "passed": int,
+                "failed": int
+            }
+        }
+        
+        HTTP 503 if AUTOBUG_ENABLED is False, HTTP 200 otherwise.
     """
     try:
-        from core.autobug import run_autobug_checks
+        from core.autobug import run_autobug_checks, AUTOBUG_ENABLED
+        
+        # Check if autobug is disabled
+        if not AUTOBUG_ENABLED:
+            log.warning("AutoBug run requested but AUTOBUG_ENABLED=False")
+            return {
+                "ok": False,
+                "error": "autobug_disabled",
+                "detail": "AutoBug is disabled via environment variable AUTOBUG_ENABLED"
+            }, 503
+        
+        # Run the checks
         result = run_autobug_checks()
         
         # Log summary
@@ -1475,15 +1583,35 @@ def autobug_run() -> Dict[str, Any]:
             f"duration: {duration_ms:.0f}ms"
         )
         
+        # Log any failures
+        if not result.get("ok", False):
+            checks = result.get("checks", [])
+            for check in checks:
+                if not check.get("ok", False):
+                    log.warning(
+                        f"AutoBug check '{check.get('name')}' failed: {check.get('error', 'unknown error')}"
+                    )
+        
         return result
+        
     except Exception as e:
-        log.error(f"AutoBug endpoint failed: {e}")
+        log.error(f"AutoBug endpoint failed: {e}", exc_info=True)
+        import time
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         return {
             "ok": False,
-            "error": f"autobug_failed: {str(e)}",
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "error": "autobug_exception",
+            "detail": str(e),
+            "started_at": now,
+            "finished_at": now,
+            "duration_ms": 0.0,
             "checks": [],
+            "summary": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+            }
         }
 
 
