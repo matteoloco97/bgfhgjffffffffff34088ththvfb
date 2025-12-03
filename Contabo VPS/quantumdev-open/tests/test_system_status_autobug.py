@@ -24,18 +24,46 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_system_status()
         
-        # Check top-level keys
+        # Check top-level keys (NEW STRUCTURE)
         self.assertIn("ok", result)
-        self.assertIn("timestamp", result)
-        self.assertIn("metrics", result)
+        self.assertIn("psutil_available", result)
+        self.assertIn("pynvml_available", result)
+        self.assertIn("cpu", result)
+        self.assertIn("memory", result)
+        self.assertIn("disk", result)
+        self.assertIn("uptime", result)
+        self.assertIn("gpu", result)
         
-        # Check metrics structure
-        metrics = result["metrics"]
-        self.assertIn("cpu", metrics)
-        self.assertIn("memory", metrics)
-        self.assertIn("disk", metrics)
-        self.assertIn("uptime", metrics)
-        self.assertIn("gpu", metrics)
+        # Check CPU structure
+        cpu = result["cpu"]
+        self.assertIn("percent", cpu)
+        self.assertIn("load_average", cpu)
+        self.assertIn("cores_logical", cpu)
+        self.assertIn("cores_physical", cpu)
+        
+        # Check memory structure
+        memory = result["memory"]
+        self.assertIn("total", memory)
+        self.assertIn("used", memory)
+        self.assertIn("percent", memory)
+        self.assertIn("swap_total", memory)
+        self.assertIn("swap_used", memory)
+        self.assertIn("swap_percent", memory)
+        
+        # Check disk structure
+        disk = result["disk"]
+        self.assertIn("total", disk)
+        self.assertIn("used", disk)
+        self.assertIn("percent", disk)
+        
+        # Check GPU structure
+        gpu = result["gpu"]
+        self.assertIn("gpus", gpu)
+        self.assertIn("error", gpu)
+        
+        # Check uptime structure
+        uptime = result["uptime"]
+        self.assertIn("seconds", uptime)
     
     def test_get_cpu_metrics(self):
         """Test CPU metrics collection."""
@@ -43,16 +71,19 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_cpu_metrics()
         
-        # Should either have metrics or an error
+        # Should always have these fields
+        self.assertIn("percent", result)
+        self.assertIn("load_average", result)
+        self.assertIn("cores_logical", result)
+        self.assertIn("cores_physical", result)
+        
+        # If no error, verify values are reasonable
         if "error" not in result:
-            self.assertIn("percent", result)
-            self.assertIn("count_logical", result)
-            self.assertIn("count_physical", result)
-            
-            # Verify values are reasonable
             self.assertGreaterEqual(result["percent"], 0)
             self.assertLessEqual(result["percent"], 100)
-            self.assertGreater(result["count_logical"], 0)
+            self.assertGreater(result["cores_logical"], 0)
+            self.assertIsInstance(result["load_average"], list)
+            self.assertEqual(len(result["load_average"]), 3)
     
     def test_get_memory_metrics(self):
         """Test memory metrics collection."""
@@ -60,20 +91,19 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_memory_metrics()
         
-        # Should either have metrics or an error
+        # Should always have these fields
+        self.assertIn("total", result)
+        self.assertIn("used", result)
+        self.assertIn("percent", result)
+        self.assertIn("swap_total", result)
+        self.assertIn("swap_used", result)
+        self.assertIn("swap_percent", result)
+        
+        # If no error, verify values are reasonable
         if "error" not in result:
-            self.assertIn("ram", result)
-            self.assertIn("swap", result)
-            
-            ram = result["ram"]
-            self.assertIn("total_gb", ram)
-            self.assertIn("used_gb", ram)
-            self.assertIn("percent", ram)
-            
-            # Verify values are reasonable
-            self.assertGreater(ram["total_gb"], 0)
-            self.assertGreaterEqual(ram["percent"], 0)
-            self.assertLessEqual(ram["percent"], 100)
+            self.assertGreater(result["total"], 0)
+            self.assertGreaterEqual(result["percent"], 0)
+            self.assertLessEqual(result["percent"], 100)
     
     def test_get_disk_metrics(self):
         """Test disk metrics collection."""
@@ -81,17 +111,14 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_disk_metrics()
         
-        # Should either have metrics or an error
+        # Should always have these fields
+        self.assertIn("total", result)
+        self.assertIn("used", result)
+        self.assertIn("percent", result)
+        
+        # If no error, verify values are reasonable
         if "error" not in result:
-            self.assertIn("path", result)
-            self.assertIn("total_gb", result)
-            self.assertIn("used_gb", result)
-            self.assertIn("free_gb", result)
-            self.assertIn("percent", result)
-            
-            # Verify values are reasonable
-            self.assertEqual(result["path"], "/")
-            self.assertGreater(result["total_gb"], 0)
+            self.assertGreater(result["total"], 0)
     
     def test_get_uptime_metrics(self):
         """Test uptime metrics collection."""
@@ -99,14 +126,12 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_uptime_metrics()
         
-        # Should either have metrics or an error
+        # Should always have seconds field
+        self.assertIn("seconds", result)
+        
+        # If no error, uptime should be non-negative
         if "error" not in result:
-            self.assertIn("seconds", result)
-            self.assertIn("boot_time_iso", result)
-            self.assertIn("human_readable", result)
-            
-            # Uptime should be positive
-            self.assertGreater(result["seconds"], 0)
+            self.assertGreaterEqual(result["seconds"], 0)
     
     def test_get_gpu_metrics_graceful(self):
         """Test that GPU metrics handle missing GPU gracefully."""
@@ -114,13 +139,12 @@ class TestSystemStatus(unittest.TestCase):
         
         result = get_gpu_metrics()
         
-        # Should always return a dict with available status
-        self.assertIn("available", result)
+        # Should always return a dict with gpus and error fields
+        self.assertIn("gpus", result)
+        self.assertIn("error", result)
         
-        # If GPU is available, check structure
-        if result["available"]:
-            self.assertIn("count", result)
-            self.assertIn("gpus", result)
+        # gpus should be a list
+        self.assertIsInstance(result["gpus"], list)
     
     def test_system_status_never_raises(self):
         """Test that get_system_status never raises exceptions."""
@@ -174,6 +198,7 @@ class TestAutoBug(unittest.TestCase):
         
         for check in checks:
             self.assertIn("name", check)
+            self.assertIn("enabled", check)
             self.assertIn("ok", check)
             self.assertIn("latency_ms", check)
             
@@ -187,9 +212,11 @@ class TestAutoBug(unittest.TestCase):
         
         result = check_system_status()
         
-        self.assertEqual(result.name, "system_status")
+        self.assertEqual(result.name, "system")
+        self.assertIsInstance(result.enabled, bool)
         self.assertIsInstance(result.ok, bool)
-        self.assertGreaterEqual(result.latency_ms, 0)
+        if result.latency_ms is not None:
+            self.assertGreaterEqual(result.latency_ms, 0)
     
     def test_check_redis(self):
         """Test the Redis health check."""
@@ -198,8 +225,10 @@ class TestAutoBug(unittest.TestCase):
         result = check_redis()
         
         self.assertEqual(result.name, "redis")
+        self.assertIsInstance(result.enabled, bool)
         self.assertIsInstance(result.ok, bool)
-        self.assertGreaterEqual(result.latency_ms, 0)
+        if result.latency_ms is not None:
+            self.assertGreaterEqual(result.latency_ms, 0)
         
         # If it failed, should have error message
         if not result.ok:
@@ -212,8 +241,10 @@ class TestAutoBug(unittest.TestCase):
         result = check_chroma()
         
         self.assertEqual(result.name, "chroma")
+        self.assertIsInstance(result.enabled, bool)
         self.assertIsInstance(result.ok, bool)
-        self.assertGreaterEqual(result.latency_ms, 0)
+        if result.latency_ms is not None:
+            self.assertGreaterEqual(result.latency_ms, 0)
     
     def test_autobug_never_raises(self):
         """Test that run_autobug_checks never raises exceptions."""
@@ -273,8 +304,8 @@ class TestAutoBug(unittest.TestCase):
         
         # All checks should have been executed (not skipped due to errors)
         check_names = {c.get("name") for c in checks}
-        # We expect at least these checks
-        expected_checks = {"system_status", "redis", "chroma"}
+        # We expect at least these checks (updated names)
+        expected_checks = {"system", "redis", "chroma"}
         
         # At least some of the expected checks should be present
         self.assertTrue(
@@ -292,6 +323,7 @@ class TestCheckResult(unittest.TestCase):
         
         check = CheckResult(
             name="test_check",
+            enabled=True,
             ok=True,
             latency_ms=123.45,
             error=None,
@@ -302,6 +334,7 @@ class TestCheckResult(unittest.TestCase):
         
         self.assertIsInstance(result, dict)
         self.assertEqual(result["name"], "test_check")
+        self.assertEqual(result["enabled"], True)
         self.assertEqual(result["ok"], True)
         self.assertEqual(result["latency_ms"], 123.45)
         self.assertIsNone(result["error"])
@@ -313,6 +346,7 @@ class TestCheckResult(unittest.TestCase):
         
         check = CheckResult(
             name="failed_check",
+            enabled=True,
             ok=False,
             latency_ms=50.0,
             error="something went wrong",
@@ -321,6 +355,7 @@ class TestCheckResult(unittest.TestCase):
         result = check.to_dict()
         
         self.assertEqual(result["name"], "failed_check")
+        self.assertEqual(result["enabled"], True)
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "something went wrong")
 
