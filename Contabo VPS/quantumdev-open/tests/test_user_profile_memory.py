@@ -233,7 +233,7 @@ class TestUserProfileMemory(unittest.TestCase):
         for fact_id in cls.saved_fact_ids:
             try:
                 delete_user_fact(fact_id)
-            except:
+            except Exception:
                 pass
 
 

@@ -216,7 +216,7 @@ class TestEpisodicMemory(unittest.TestCase):
         # Clear test conversation buffer
         try:
             clear_conversation_buffer(cls.test_conversation_id)
-        except:
+        except Exception:
             pass
 
 
