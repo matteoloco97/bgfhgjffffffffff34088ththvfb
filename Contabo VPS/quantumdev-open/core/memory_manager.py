@@ -51,10 +51,12 @@ MEMORY_MAX_CONTEXT_TOKENS = int(os.getenv("MEMORY_MAX_CONTEXT_TOKENS", "800"))
 
 # Secret/sensitive data patterns (basic filtering)
 SENSITIVE_PATTERNS = [
-    r'\b[A-Za-z0-9]{20,}\b',  # Long alphanumeric strings (potential API keys)
+    r'\b[A-Za-z0-9]{25,}\b',  # Very long alphanumeric strings (potential API keys)
     r'\b(?:password|pwd|passwd|token|secret|api[_-]?key)\s*[:=]\s*\S+',  # Key-value pairs
     r'\b\d{13,19}\b',  # Potential card numbers
-    r'\b(?:sk|pk)[-_][a-zA-Z0-9]{20,}\b',  # Stripe-like keys
+    r'\bsk_[a-zA-Z0-9_]{10,}',  # Stripe secret keys
+    r'\bpk_[a-zA-Z0-9_]{10,}',  # Stripe public keys
+    r'\beyJ[A-Za-z0-9_-]{10,}',  # JWT tokens (start with eyJ)
 ]
 
 

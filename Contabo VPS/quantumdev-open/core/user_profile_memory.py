@@ -49,10 +49,10 @@ ALL_REMEMBER_PATTERNS = REMEMBER_PATTERNS_IT + REMEMBER_PATTERNS_EN
 
 # Category keywords for auto-classification
 CATEGORY_KEYWORDS = {
-    "bio": ["età", "anni", "anno di nascita", "nato", "città", "abito", "vivo", "lingua", "age", "born", "city", "live", "language"],
+    "bio": ["età", "anni", "anno di nascita", "nato", "città", "abito", "vivo", "lingua", "age", "years old", "born", "city", "live", "language"],
     "goal": ["obiettivo", "voglio", "devo", "target", "goal", "aim", "want to", "need to", "should"],
     "preference": ["preferisco", "piace", "tono", "stile", "prefer", "like", "tone", "style"],
-    "project": ["progetto", "lavoro", "sto facendo", "sto costruendo", "project", "working on", "building"],
+    "project": ["progetto", "lavoro", "sto lavorando", "sto facendo", "sto costruendo", "project", "working on", "building"],
 }
 
 
