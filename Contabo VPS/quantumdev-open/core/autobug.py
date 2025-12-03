@@ -427,6 +427,77 @@ def check_system_status() -> CheckResult:
         )
 
 
+def check_ocr() -> CheckResult:
+    """
+    Test OCR system availability and configuration.
+    
+    Returns:
+        CheckResult with test outcome.
+    """
+    start = time.monotonic()
+    
+    try:
+        from core.ocr_tools import get_ocr_info, is_ocr_enabled, OCR_AVAILABLE
+        
+        # Get OCR info
+        info = get_ocr_info()
+        
+        latency_ms = (time.monotonic() - start) * 1000
+        
+        # Check if OCR is properly configured
+        enabled = is_ocr_enabled()
+        available = OCR_AVAILABLE
+        
+        if not enabled:
+            return CheckResult(
+                name="ocr",
+                ok=False,
+                latency_ms=round(latency_ms, 2),
+                error="ocr_disabled",
+                details=info,
+            )
+        
+        if not available:
+            return CheckResult(
+                name="ocr",
+                ok=False,
+                latency_ms=round(latency_ms, 2),
+                error="ocr_dependencies_missing",
+                details=info,
+            )
+        
+        return CheckResult(
+            name="ocr",
+            ok=True,
+            latency_ms=round(latency_ms, 2),
+            details={
+                "enabled": enabled,
+                "available": available,
+                "max_size_mb": info.get("config", {}).get("max_image_size_mb"),
+                "default_lang": info.get("config", {}).get("default_lang"),
+                "tesseract_version": info.get("tesseract_version"),
+            },
+        )
+        
+    except ImportError as e:
+        latency_ms = (time.monotonic() - start) * 1000
+        return CheckResult(
+            name="ocr",
+            ok=False,
+            latency_ms=round(latency_ms, 2),
+            error=f"import_failed: {str(e)}",
+        )
+    except Exception as e:
+        latency_ms = (time.monotonic() - start) * 1000
+        log.error(f"OCR check failed: {e}")
+        return CheckResult(
+            name="ocr",
+            ok=False,
+            latency_ms=round(latency_ms, 2),
+            error=f"ocr_check_failed: {str(e)}",
+        )
+
+
 # ======================== Master Function ========================
 
 def run_autobug_checks() -> Dict[str, Any]:
@@ -476,6 +547,9 @@ def run_autobug_checks() -> Dict[str, Any]:
     
     # 5. LLM (can be slow)
     checks.append(check_llm())
+    
+    # 6. OCR (fast, optional - BLOCK 5)
+    checks.append(check_ocr())
     
     finished_at = datetime.now(timezone.utc)
     duration_ms = (time.monotonic() - start_time) * 1000

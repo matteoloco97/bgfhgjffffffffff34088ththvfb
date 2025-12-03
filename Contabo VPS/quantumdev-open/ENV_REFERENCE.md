@@ -161,6 +161,14 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | `DOCS_CHUNK_OVERLAP` | `200` | Overlap tra chunks (caratteri) |
 | `CHROMA_COLLECTION_USER_DOCS` | `user_docs` | Nome collezione ChromaDB per documenti |
 
+## OCR Tools (BLOCK 5)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLS_OCR_ENABLED` | `false` | Abilita OCR su immagini |
+| `OCR_MAX_IMAGE_SIZE_MB` | `10` | Dimensione massima immagine OCR (MB) |
+| `OCR_DEFAULT_LANG` | `eng+ita` | Lingue default per OCR (es: 'eng', 'ita', 'eng+ita') |
+
 ## Security
 
 | Variable | Default | Description |

@@ -3411,6 +3411,255 @@ async def files_query(req: FileQueryReq) -> Dict[str, Any]:
         }
 
 
+# ========================= OCR ENDPOINTS (BLOCK 5) =========================
+
+# -------------------------- /ocr/image ------------------------------
+@app.post("/ocr/image")
+async def ocr_image(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = None,
+    lang: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract text from an image using OCR.
+    
+    Args:
+        file: Image file to process
+        user_id: Optional user identifier
+        lang: Language(s) for OCR (e.g., 'eng', 'ita', 'eng+ita')
+        
+    Returns:
+        JSON with ok, text, error, filename, content_type
+    """
+    try:
+        from core.ocr_tools import is_ocr_enabled, run_ocr_on_image_bytes, OCR_DEFAULT_LANG
+        
+        # Check if OCR is enabled
+        if not is_ocr_enabled():
+            return {
+                "ok": False,
+                "text": "",
+                "error": "ocr_disabled",
+                "filename": file.filename,
+            }
+        
+        # Read file content
+        content = await file.read()
+        
+        # Check file type by extension and content_type
+        filename = file.filename or "image"
+        content_type = file.content_type or "application/octet-stream"
+        
+        # Validate image type
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp', '.gif')
+        valid_mimes = ('image/png', 'image/jpeg', 'image/webp', 'image/tiff', 'image/bmp', 'image/gif')
+        
+        is_valid = (
+            filename.lower().endswith(valid_extensions) or
+            content_type.lower() in valid_mimes
+        )
+        
+        if not is_valid:
+            return {
+                "ok": False,
+                "text": "",
+                "error": "unsupported_image_type",
+                "filename": filename,
+                "content_type": content_type,
+            }
+        
+        # Run OCR
+        result = run_ocr_on_image_bytes(
+            data=content,
+            lang=lang or OCR_DEFAULT_LANG,
+        )
+        
+        # Add metadata to result
+        result["filename"] = filename
+        result["content_type"] = content_type
+        
+        if user_id:
+            result["user_id"] = user_id
+        
+        log.info(
+            f"OCR image: filename={filename}, size={len(content)} bytes, "
+            f"ok={result['ok']}, text_length={len(result.get('text', ''))}"
+        )
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"/ocr/image error: {e}")
+        return {
+            "ok": False,
+            "text": "",
+            "error": str(e),
+            "filename": file.filename if file else None,
+        }
+
+
+# -------------------------- /ocr/image/index ------------------------------
+@app.post("/ocr/image/index")
+async def ocr_image_index(
+    file: UploadFile = File(...),
+    user_id: str = Body(...),
+    lang: Optional[str] = None,
+    label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract text from image via OCR and index it into user documents.
+    
+    Args:
+        file: Image file to process
+        user_id: User identifier (required)
+        lang: Language(s) for OCR
+        label: Optional label/tag for the document
+        
+    Returns:
+        JSON with ok, text_preview, file_id, num_chunks
+    """
+    try:
+        from core.ocr_tools import is_ocr_enabled, run_ocr_on_image_bytes, OCR_DEFAULT_LANG
+        from core.docs_ingest import index_document
+        import hashlib
+        import uuid
+        
+        # Check if OCR is enabled
+        if not is_ocr_enabled():
+            return {
+                "ok": False,
+                "error": "ocr_disabled",
+                "file_id": None,
+            }
+        
+        # Check if docs tool is enabled
+        if not TOOLS_DOCS_ENABLED:
+            return {
+                "ok": False,
+                "error": "docs_tool_disabled",
+                "file_id": None,
+            }
+        
+        # Read file content
+        content = await file.read()
+        filename = file.filename or "ocr_image"
+        content_type = file.content_type or "application/octet-stream"
+        
+        # Validate image type
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp', '.gif')
+        valid_mimes = ('image/png', 'image/jpeg', 'image/webp', 'image/tiff', 'image/bmp', 'image/gif')
+        
+        is_valid = (
+            filename.lower().endswith(valid_extensions) or
+            content_type.lower() in valid_mimes
+        )
+        
+        if not is_valid:
+            return {
+                "ok": False,
+                "error": "unsupported_image_type",
+                "file_id": None,
+            }
+        
+        # Run OCR
+        ocr_result = run_ocr_on_image_bytes(
+            data=content,
+            lang=lang or OCR_DEFAULT_LANG,
+        )
+        
+        if not ocr_result["ok"]:
+            return {
+                "ok": False,
+                "error": ocr_result.get("error", "ocr_failed"),
+                "file_id": None,
+            }
+        
+        text = ocr_result.get("text", "")
+        
+        if not text or not text.strip():
+            return {
+                "ok": False,
+                "error": "no_text_extracted",
+                "file_id": None,
+            }
+        
+        # Generate file_id for OCR source
+        unique_id = str(uuid.uuid4())[:8]
+        file_id = f"ocr:{unique_id}"
+        
+        # Create descriptive filename
+        if label:
+            indexed_filename = f"{label} (OCR: {filename})"
+        else:
+            indexed_filename = f"OCR: {filename}"
+        
+        # Index the extracted text
+        index_result = index_document(
+            user_id=user_id,
+            file_id=file_id,
+            filename=indexed_filename,
+            text=text,
+            max_chunks=DOCS_MAX_CHUNKS_PER_FILE,
+        )
+        
+        if not index_result.get("ok"):
+            return {
+                "ok": False,
+                "error": index_result.get("error", "indexing_failed"),
+                "file_id": None,
+            }
+        
+        # Create preview (first 200 chars)
+        text_preview = text[:200] + ("..." if len(text) > 200 else "")
+        
+        log.info(
+            f"OCR+index: filename={filename}, user={user_id}, "
+            f"text_length={len(text)}, chunks={index_result.get('num_chunks', 0)}"
+        )
+        
+        return {
+            "ok": True,
+            "file_id": file_id,
+            "text_preview": text_preview,
+            "num_chunks": index_result.get("num_chunks", 0),
+            "filename": indexed_filename,
+            "original_filename": filename,
+        }
+        
+    except Exception as e:
+        log.error(f"/ocr/image/index error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "file_id": None,
+        }
+
+
+# -------------------------- /ocr/info ------------------------------
+@app.get("/ocr/info")
+def ocr_info() -> Dict[str, Any]:
+    """
+    Get OCR system information and status.
+    
+    Returns:
+        JSON with OCR system details
+    """
+    try:
+        from core.ocr_tools import get_ocr_info
+        
+        info = get_ocr_info()
+        return {
+            "ok": True,
+            **info,
+        }
+    except Exception as e:
+        log.error(f"/ocr/info error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+        }
+
+
 # -------------------------- /unified-web ------------------------------
 class UnifiedWebReq(BaseModel):
     q: str
