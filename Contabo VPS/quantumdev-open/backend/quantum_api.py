@@ -3521,7 +3521,6 @@ async def ocr_image_index(
     try:
         from core.ocr_tools import is_ocr_enabled, run_ocr_on_image_bytes, OCR_DEFAULT_LANG
         from core.docs_ingest import index_document
-        import hashlib
         import uuid
         
         # Check if OCR is enabled
