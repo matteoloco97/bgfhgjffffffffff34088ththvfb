@@ -56,7 +56,7 @@ SENSITIVE_PATTERNS = [
     r'\b\d{13,19}\b',  # Potential card numbers
     r'\bsk_[a-zA-Z0-9_]{10,}',  # Stripe secret keys
     r'\bpk_[a-zA-Z0-9_]{10,}',  # Stripe public keys
-    r'\beyJ[A-Za-z0-9_-]{10,}',  # JWT tokens (start with eyJ)
+    r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',  # JWT tokens (three-part structure)
 ]
 
 
