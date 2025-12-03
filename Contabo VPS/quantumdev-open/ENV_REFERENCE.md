@@ -161,6 +161,14 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | `DOCS_CHUNK_OVERLAP` | `200` | Overlap tra chunks (caratteri) |
 | `CHROMA_COLLECTION_USER_DOCS` | `user_docs` | Nome collezione ChromaDB per documenti |
 
+## OCR Tools (BLOCK 5)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLS_OCR_ENABLED` | `false` | Abilita OCR su immagini |
+| `OCR_MAX_IMAGE_SIZE_MB` | `10` | Dimensione massima immagine OCR (MB) |
+| `OCR_DEFAULT_LANG` | `eng+ita` | Lingue default per OCR (es: 'eng', 'ita', 'eng+ita') |
+
 ## Security
 
 | Variable | Default | Description |
@@ -243,6 +251,14 @@ LIVE_CACHE_TTL_TRADING=120
 WEB_SEARCH_DEEP_MODE=true
 USE_RERANKER=true
 DIVERSIFIER_ENABLED=true
+
+# === Tools (BLOCK 4 & 5) ===
+TOOLS_MATH_ENABLED=true
+TOOLS_PYTHON_EXEC_ENABLED=false
+TOOLS_DOCS_ENABLED=true
+TOOLS_OCR_ENABLED=true
+OCR_MAX_IMAGE_SIZE_MB=10
+OCR_DEFAULT_LANG=eng+ita
 
 # === Telegram ===
 TELEGRAM_BOT_TOKEN=your_bot_token_here
