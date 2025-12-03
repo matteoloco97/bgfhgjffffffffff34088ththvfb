@@ -148,6 +148,19 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 |----------|---------|-------------|
 | `DIVERSIFIER_ENABLED` | `true` | Abilita diversificazione risultati |
 
+## Advanced Tools (BLOCK 4)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLS_MATH_ENABLED` | `true` | Abilita tool calcolatrice/math |
+| `TOOLS_PYTHON_EXEC_ENABLED` | `false` | Abilita esecuzione codice Python (sandbox) |
+| `TOOLS_DOCS_ENABLED` | `true` | Abilita upload e RAG su documenti |
+| `MAX_UPLOAD_SIZE_MB` | `10` | Dimensione massima file upload (MB) |
+| `DOCS_MAX_CHUNKS_PER_FILE` | `500` | Max chunks per documento indicizzato |
+| `DOCS_CHUNK_SIZE` | `1000` | Dimensione chunk testo (caratteri) |
+| `DOCS_CHUNK_OVERLAP` | `200` | Overlap tra chunks (caratteri) |
+| `CHROMA_COLLECTION_USER_DOCS` | `user_docs` | Nome collezione ChromaDB per documenti |
+
 ## Security
 
 | Variable | Default | Description |

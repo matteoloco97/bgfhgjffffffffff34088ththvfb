@@ -58,7 +58,7 @@ import math
 from typing import Optional, List, Dict, Tuple, Any
 
 import redis
-from fastapi import FastAPI, Request, Body
+from fastapi import FastAPI, Request, Body, UploadFile, File
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from pydantic import BaseModel, Field
@@ -103,6 +103,15 @@ except Exception:  # pragma: no cover
 
 from core.chat_engine import reply_with_llm
 from core.memory_autosave import autosave
+
+# === TOOLS (BLOCK 4) ===
+from core.calculator import Calculator, is_calculator_query
+from agents.code_execution import run_code
+from core.docs_ingest import (
+    extract_text_from_bytes,
+    index_document,
+    query_user_docs,
+)
 
 # Web research orchestrator (Claude-style)
 try:
@@ -431,6 +440,13 @@ RERANKER_DEVICE = os.getenv("RERANKER_DEVICE", "cpu")
 
 # Diversifier (flag globale)
 DIVERSIFIER_ENABLED = env_bool("DIVERSIFIER_ENABLED", True)
+
+# === TOOLS Configuration (BLOCK 4) ===
+TOOLS_MATH_ENABLED = env_bool("TOOLS_MATH_ENABLED", True)
+TOOLS_PYTHON_EXEC_ENABLED = env_bool("TOOLS_PYTHON_EXEC_ENABLED", False)
+TOOLS_DOCS_ENABLED = env_bool("TOOLS_DOCS_ENABLED", True)
+MAX_UPLOAD_SIZE_MB = env_int("MAX_UPLOAD_SIZE_MB", 10)
+DOCS_MAX_CHUNKS_PER_FILE = env_int("DOCS_MAX_CHUNKS_PER_FILE", 500)
 
 # Chroma
 MEM_HALF_LIFE_D = env_float("MEM_HALF_LIFE_D", 7.0)
@@ -3150,6 +3166,249 @@ async def code_generate(req: CodeReq) -> Dict[str, Any]:
             "ok": False,
             "error": str(e),
             "code": "",
+        }
+
+
+# ========================= TOOLS ENDPOINTS (BLOCK 4) =========================
+
+# -------------------------- /tools/math ------------------------------
+class MathToolReq(BaseModel):
+    expr: str
+
+
+@app.post("/tools/math")
+async def tools_math(req: MathToolReq) -> Dict[str, Any]:
+    """
+    Math/Calculator tool endpoint.
+    Evaluates mathematical expressions safely.
+    """
+    if not TOOLS_MATH_ENABLED:
+        return {
+            "ok": False,
+            "error": "math_tool_disabled",
+            "result": None,
+        }
+    
+    try:
+        expr = req.expr.strip()
+        if not expr:
+            return {
+                "ok": False,
+                "error": "empty_expression",
+                "result": None,
+            }
+        
+        # Evaluate using Calculator
+        result = Calculator.evaluate(expr)
+        
+        if result is None:
+            return {
+                "ok": False,
+                "error": "invalid_expression",
+                "result": None,
+                "expr": expr,
+            }
+        
+        formatted_result, result_type = result
+        
+        return {
+            "ok": True,
+            "result": formatted_result,
+            "type": result_type,
+            "expr": expr,
+        }
+        
+    except Exception as e:
+        log.error(f"/tools/math error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "result": None,
+        }
+
+
+# -------------------------- /tools/python ------------------------------
+class PythonToolReq(BaseModel):
+    code: str
+    timeout_s: Optional[float] = 3.0
+
+
+@app.post("/tools/python")
+async def tools_python(req: PythonToolReq) -> Dict[str, Any]:
+    """
+    Python code executor endpoint (sandboxed).
+    Executes small Python snippets with safety limits.
+    """
+    if not TOOLS_PYTHON_EXEC_ENABLED:
+        return {
+            "ok": False,
+            "error": "python_exec_disabled",
+            "stdout": "",
+            "stderr": "",
+        }
+    
+    try:
+        code = req.code.strip()
+        if not code:
+            return {
+                "ok": False,
+                "error": "empty_code",
+                "stdout": "",
+                "stderr": "",
+            }
+        
+        # Enforce max code length (10KB)
+        if len(code) > 10000:
+            return {
+                "ok": False,
+                "error": "code_too_long",
+                "stdout": "",
+                "stderr": "",
+            }
+        
+        # Execute code using existing code_execution agent
+        result = await run_code("python", code)
+        
+        # Map result format
+        return {
+            "ok": result.get("success", False),
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "error": result.get("error"),
+            "timeout": "timed out" in result.get("error", "").lower() if result.get("error") else False,
+        }
+        
+    except Exception as e:
+        log.error(f"/tools/python error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "stdout": "",
+            "stderr": "",
+        }
+
+
+# -------------------------- /files/upload ------------------------------
+@app.post("/files/upload")
+async def files_upload(
+    file: UploadFile = File(...),
+    user_id: str = Body("default"),
+) -> Dict[str, Any]:
+    """
+    Upload and index a document for RAG.
+    Supports: txt, markdown, PDF
+    """
+    if not TOOLS_DOCS_ENABLED:
+        return {
+            "ok": False,
+            "error": "docs_tool_disabled",
+            "file_id": None,
+        }
+    
+    try:
+        # Check file size
+        content = await file.read()
+        size_mb = len(content) / (1024 * 1024)
+        
+        if size_mb > MAX_UPLOAD_SIZE_MB:
+            return {
+                "ok": False,
+                "error": f"file_too_large (max {MAX_UPLOAD_SIZE_MB}MB)",
+                "file_id": None,
+            }
+        
+        # Detect mime type
+        filename = file.filename or "document"
+        mime_type = file.content_type or "application/octet-stream"
+        
+        # Generate file_id
+        import hashlib
+        file_id = hashlib.sha256(content).hexdigest()[:16]
+        
+        # Extract text
+        try:
+            text = extract_text_from_bytes(content, mime_type, filename)
+        except ValueError as e:
+            return {
+                "ok": False,
+                "error": str(e),
+                "file_id": None,
+            }
+        
+        # Index document
+        result = index_document(
+            user_id=user_id,
+            file_id=file_id,
+            filename=filename,
+            text=text,
+            max_chunks=DOCS_MAX_CHUNKS_PER_FILE
+        )
+        
+        # Add file metadata to result
+        if result.get("ok"):
+            result["size_mb"] = round(size_mb, 2)
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"/files/upload error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "file_id": None,
+        }
+
+
+# -------------------------- /files/query ------------------------------
+class FileQueryReq(BaseModel):
+    q: str
+    user_id: str = "default"
+    top_k: int = 5
+    file_id: Optional[str] = None
+
+
+@app.post("/files/query")
+async def files_query(req: FileQueryReq) -> Dict[str, Any]:
+    """
+    Query user documents using semantic search.
+    Returns relevant document chunks.
+    """
+    if not TOOLS_DOCS_ENABLED:
+        return {
+            "ok": False,
+            "error": "docs_tool_disabled",
+            "matches": [],
+        }
+    
+    try:
+        # Validate inputs
+        if not req.q or not req.q.strip():
+            return {
+                "ok": False,
+                "error": "empty_query",
+                "matches": [],
+            }
+        
+        # Query documents
+        matches = query_user_docs(
+            user_id=req.user_id,
+            query=req.q,
+            top_k=min(req.top_k, 20),  # Cap at 20
+            file_id=req.file_id,
+        )
+        
+        return {
+            "ok": True,
+            "matches": matches,
+            "count": len(matches),
+        }
+        
+    except Exception as e:
+        log.error(f"/files/query error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "matches": [],
         }
 
 
