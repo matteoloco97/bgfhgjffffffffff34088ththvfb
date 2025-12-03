@@ -63,8 +63,9 @@ def get_cpu_metrics() -> Dict[str, Any]:
             if hasattr(os, 'getloadavg'):
                 raw_load = os.getloadavg()
                 load_avg = [round(raw_load[0], 2), round(raw_load[1], 2), round(raw_load[2], 2)]
-        except Exception as e:
-            log.warning(f"Could not read load average: {e}")
+        except Exception:
+            # Silently use fallback - this is expected on Windows
+            pass
         
         return {
             "percent": round(cpu_percent, 2),

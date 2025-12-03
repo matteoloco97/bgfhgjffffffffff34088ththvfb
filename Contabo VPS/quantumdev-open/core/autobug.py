@@ -43,7 +43,17 @@ AUTOBUG_CHROMA_TIMEOUT_S = float(os.getenv("AUTOBUG_CHROMA_TIMEOUT_S", "10.0"))
 
 @dataclass
 class CheckResult:
-    """Result of a single health check."""
+    """
+    Result of a single health check.
+    
+    Attributes:
+        name: Check name (e.g., "llm", "web", "redis", "chroma", "system", "ocr")
+        enabled: Whether this check was enabled via environment variable
+        ok: Whether the check passed
+        latency_ms: Check duration in milliseconds (None if check was disabled)
+        error: Error message if check failed (None if ok=True)
+        details: Additional check-specific information (None if not available)
+    """
     name: str
     enabled: bool
     ok: bool
