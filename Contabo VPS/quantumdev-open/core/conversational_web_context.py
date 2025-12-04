@@ -172,11 +172,14 @@ class ConversationalWebManager:
         if len(words) == 1:
             return True
         
-        # Check for temporal reference only (2-3 words max)
-        if len(words) <= 3:
+        # Check for temporal reference only (2 words max)
+        # But not if it's a complete query like "Meteo Roma oggi"
+        if len(words) == 2:
             for temp_ref in TEMPORAL_REFS:
-                if temp_ref in query_lower:
-                    return True
+                if temp_ref in query_lower and query_lower != temp_ref:
+                    # Only if the temporal ref is one of the 2 words
+                    if temp_ref in words:
+                        return True
         
         return False
     
@@ -322,13 +325,21 @@ class ConversationalWebManager:
         elif context.domain == "sports" and "risultato" not in query_lower:
             resolved_parts.append("Risultato")
         
-        # Add entities from context (if not already in query)
-        for entity in context.entities:
-            if entity.lower() not in query_lower:
-                resolved_parts.append(entity)
+        # If single-word query, check if it's a new entity or a temporal ref
+        words = query.split()
+        is_single_entity = len(words) == 1 and query[0].isupper()
         
-        # Add the actual query
-        resolved_parts.append(query_lower)
+        if is_single_entity:
+            # Replace old entity with new one
+            resolved_parts.append(query)  # Use capitalized version
+        else:
+            # Add entities from context (if not already in query)
+            for entity in context.entities:
+                if entity.lower() not in query_lower:
+                    resolved_parts.append(entity)
+            
+            # Add the actual query
+            resolved_parts.append(query_lower)
         
         resolved = " ".join(resolved_parts).strip()
         
