@@ -350,13 +350,18 @@ from utils.chroma_handler import (
 from backend.synthesis_prompt_v2 import build_aggressive_synthesis_prompt
 from backend.parallel_fetch_optimizer import parallel_fetch_and_extract
 
+# 🆕 PROBLEMA 2 & 3: Web response formatter + Conversational context
+from core.web_response_formatter import format_web_response
+from core.conversational_web_context import get_web_context_manager
+
 BUILD_SIGNATURE = (
     "smart-intent-2025-11-29+env-safe+lazy-semcache+token-budget+summarize-q+no-error-user+"
     "feedback-toggle+web-search-endpoint+meta-override+zero-web-guard+no-generic-fallback+"
     "parallel-fetch-v1+validator+analytics+guard-relax+warm-harden+explain-guard+"
     "analytics-endpoints+web-minicache-endpoints+web-research-agent+web-summary-direct+"
     "search-diversifier+synthesis-aggressive-v1+llm-intent+jarvis-uncensored-v1+web-deep-mode-v1+"
-    "live-agents-v1+price-agent+sports-agent+news-agent+schedule-agent+live-cache-redis"
+    "live-agents-v1+price-agent+sports-agent+news-agent+schedule-agent+live-cache-redis+"
+    "autoweb-punct-fix+concise-formatter+conversational-context"
 )
 
 load_dotenv()
@@ -412,6 +417,9 @@ WEB_DEEP_MAX_SOURCES = env_int("WEB_DEEP_MAX_SOURCES", 15)
 WEB_DEEP_MIN_RESULTS = env_int("WEB_DEEP_MIN_RESULTS", 3)  # Trigger deep retry if < 3 results
 WEB_DEEP_MAX_RETRIES = env_int("WEB_DEEP_MAX_RETRIES", 1)  # Max 1 second attempt
 WEB_FALLBACK_TO_LLM = env_bool("WEB_FALLBACK_TO_LLM", True)  # Fallback to LLM if web fails
+
+# 🆕 PROBLEMA 2: Concise web response formatter
+WEB_USE_CONCISE_FORMATTER = env_bool("WEB_USE_CONCISE_FORMATTER", True)  # Enable ultra-concise responses
 
 
 # ⚡️ Parallel fetch env
@@ -1289,24 +1297,35 @@ async def _web_search_pipeline(
         ctx = "\n\n".join(ctx_parts)
         ctx = trim_to_tokens(ctx, WEB_SUMMARY_BUDGET_TOK)
 
-        # ⚡ AGGRESSIVE SYNTHESIS (nuovo)
-        prompt = build_aggressive_synthesis_prompt(
-            q,
-            [
-                {
-                    "idx": i + 1,
-                    "title": e.get("title", ""),
-                    "url": e.get("url", ""),
-                    "text": e.get("text", ""),
-                }
-                for i, e in enumerate(synth_docs)
-                if e.get("text")
-            ],
-        )
-
+        # PROBLEMA 2: Use concise formatter if enabled, otherwise use aggressive synthesis
         try:
-            summary = await reply_with_llm(prompt, persona)
-        except Exception:
+            if WEB_USE_CONCISE_FORMATTER:
+                # ⚡ CONCISE FORMATTER (max 50 words, 120 tokens)
+                summary = await format_web_response(
+                    query=q,
+                    extracts=synth_docs,
+                    llm_func=reply_with_llm,
+                    persona=persona,
+                )
+                log.info(f"Used concise formatter: {len(summary.split())} words")
+            else:
+                # ⚡ AGGRESSIVE SYNTHESIS (original)
+                prompt = build_aggressive_synthesis_prompt(
+                    q,
+                    [
+                        {
+                            "idx": i + 1,
+                            "title": e.get("title", ""),
+                            "url": e.get("url", ""),
+                            "text": e.get("text", ""),
+                        }
+                        for i, e in enumerate(synth_docs)
+                        if e.get("text")
+                    ],
+                )
+                summary = await reply_with_llm(prompt, persona)
+        except Exception as e:
+            log.error(f"Synthesis failed: {e}")
             summary = ""
             note = note or "llm_summary_failed"
 
@@ -3229,7 +3248,28 @@ class WebSearchReq(BaseModel):
 
 @app.post("/web/search")
 async def web_search(req: WebSearchReq) -> Dict[str, Any]:
-    if _is_smalltalk_query(req.q):
+    """
+    Web search endpoint with conversational context and concise responses.
+    
+    PROBLEMA 2 FIX: Uses format_web_response for ultra-concise answers (max 50 words, 120 tokens)
+    PROBLEMA 3 FIX: Uses conversational context to resolve follow-up queries
+    """
+    # PROBLEMA 3: Get conversational context manager
+    context_manager = get_web_context_manager()
+    
+    # PROBLEMA 3: Resolve query using context (handles follow-ups)
+    # Session ID combines source and source_id for isolation
+    session_id = f"{req.source}:{req.source_id}"
+    resolved_query = context_manager.resolve_query(req.q, session_id=session_id)
+    
+    # Log if query was resolved from context
+    if resolved_query != req.q:
+        log.info(f"Resolved follow-up: '{req.q}' → '{resolved_query}'")
+    
+    # Use resolved query for the actual search
+    search_query = resolved_query
+    
+    if _is_smalltalk_query(search_query):
         return {
             "summary": "",
             "results": [],
@@ -3238,11 +3278,11 @@ async def web_search(req: WebSearchReq) -> Dict[str, Any]:
         }
 
     # Se query complessa o flag deep, usa deep pipeline
-    is_complex = len(req.q.split()) > 8 or "?" in req.q
+    is_complex = len(search_query.split()) > 8 or "?" in search_query
 
     if WEB_SEARCH_DEEP_MODE or is_complex:
         ws = await _web_search_pipeline_deep(
-            q=req.q,
+            q=search_query,
             src=req.source,
             sid=str(req.source_id),
             k=WEB_DEEP_MAX_SOURCES,
@@ -3250,7 +3290,7 @@ async def web_search(req: WebSearchReq) -> Dict[str, Any]:
         )
     else:
         ws = await _web_search_pipeline(
-            q=req.q,
+            q=search_query,
             src=req.source,
             sid=str(req.source_id),
             k=int(req.k or 6),
@@ -3259,6 +3299,29 @@ async def web_search(req: WebSearchReq) -> Dict[str, Any]:
             ),
         )
 
+    # PROBLEMA 3: Update context with entities and domain after search
+    # Extract domain from ws.get("note") or detect from query
+    domain = ws.get("note") or "general"
+    if domain.endswith("_query"):
+        domain = domain.replace("_query", "")
+    
+    # Simple entity extraction (look for capitalized words in original query)
+    entities = set()
+    for word in req.q.split():
+        clean_word = word.strip("?!.,;:")
+        if clean_word and clean_word[0].isupper() and len(clean_word) > 2:
+            entities.add(clean_word)
+    
+    # Update context for future follow-ups
+    context_manager.update_context(
+        query=search_query,
+        entities=entities if entities else None,
+        domain=domain if domain else None,
+        session_id=session_id,
+    )
+    
+    log.info(f"Updated context: domain={domain}, entities={entities}")
+
     out: Dict[str, Any] = {
         "summary": (ws.get("summary") or ""),
         "results": (ws.get("results") or []),
@@ -3266,6 +3329,8 @@ async def web_search(req: WebSearchReq) -> Dict[str, Any]:
         "stats": ws.get("stats", {}),
         "reranker_used": ws.get("reranker_used", False),
         "diversity": ws.get("diversity"),
+        "original_query": req.q,  # Include original query for reference
+        "resolved_query": resolved_query if resolved_query != req.q else None,
     }
     if ws.get("validation") is not None:
         out["validation"] = ws["validation"]
