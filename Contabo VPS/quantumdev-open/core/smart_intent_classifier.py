@@ -117,6 +117,7 @@ class SmartIntentClassifier:
         # Keywords indicating a request about weather conditions.  If any
         # appear in the query, we treat the query as a live weather
         # request and search the web for current data.
+        # STEP 2: Expanded with natural language phrases
         self.weather_keywords = [
             "meteo",
             "che tempo",
@@ -129,14 +130,35 @@ class SmartIntentClassifier:
             "nuvoloso",
             "sereno",
             "temporale",
+            # STEP 2: Natural language additions
+            "piove",
+            "nevica",
+            "fa caldo",
+            "fa freddo",
+            "condizioni meteo",
+            "previsioni del tempo",
+            "com'è il tempo",
+            "come è il tempo",
+            "nevicherà",
+            "pioverà",
         ]
         
         # Pattern più specifici per query meteo con città
+        # STEP 2: Enhanced patterns for natural language
         self.weather_patterns = [
-            r"meteo\s+\w+",           # "meteo roma"
-            r"che\s+tempo\s+fa",      # "che tempo fa a..."
-            r"previsioni\s+\w+",      # "previsioni milano"
-            r"weather\s+\w+",         # "weather rome"
+            r"meteo\s+\w+",                    # "meteo roma"
+            r"che\s+tempo\s+fa",               # "che tempo fa a..."
+            r"com['']?è\s+il\s+tempo",         # "com'è il tempo", "come è il tempo"
+            r"come\s+è\s+il\s+tempo",          # "come è il tempo"
+            r"previsioni\s+\w+",               # "previsioni milano"
+            r"weather\s+\w+",                  # "weather rome"
+            r"piove\s+(a|in|su)",              # "piove a Roma"
+            r"nevica\s+(a|in|su)",             # "nevica a Milano"
+            r"fa\s+(caldo|freddo)\s+(a|in)",   # "fa caldo a Roma"
+            r"nevicherà\s+(a|in|domani|oggi)", # "nevicherà a Roma domani"
+            r"pioverà\s+(a|in|domani|oggi)",   # "pioverà domani"
+            r"condizioni\s+meteo\s+\w+",       # "condizioni meteo roma"
+            r"previsioni\s+del\s+tempo",       # "previsioni del tempo"
         ]
 
         # Asset keywords representing financial instruments, precious metals
@@ -438,42 +460,45 @@ class SmartIntentClassifier:
         # through the web for the most up‑to‑date information.
         tokens = low.split()
         if len(tokens) == 1:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.75,
                 "reason": "single_token_general_knowledge",
                 "url": None,
                 "live_type": None,
-            }
+            }, source="pattern")
 
         # If the text matches our general‑knowledge patterns, send it to
         # web search rather than the LLM so the assistant can draw on
         # external sources and deliver citations.
         if _GENERAL_KNOWLEDGE_RE.search(low):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.9,
                 "reason": "general_knowledge_query",
                 "url": None,
                 "live_type": None,
-            }
+            }, source="pattern")
 
         # Determine whether the prompt contains any temporal indicators
         has_live_time = any(k in low for k in self.time_live_keywords)
 
         # Weather queries: if the prompt mentions weather terms or matches
         # weather patterns, send directly to web search.
+        # STEP 2: Enhanced with LLM fallback for borderline cases
         has_weather_keyword = any(k in low for k in self.weather_keywords)
         has_weather_pattern = any(re.search(p, low) for p in self.weather_patterns)
         
         if has_weather_keyword or has_weather_pattern:
-            return {
+            # High confidence if both keyword AND pattern match
+            confidence = 0.95 if (has_weather_keyword and has_weather_pattern) else 0.80
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
-                "confidence": 0.95,  # Higher confidence with pattern matching
+                "confidence": confidence,
                 "reason": "weather_query",
                 "live_type": "weather",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Price/market queries: an asset keyword plus either a price
         # trigger or a temporal hint implies the user wants a live
@@ -481,36 +506,36 @@ class SmartIntentClassifier:
         has_asset = any(k in low for k in self.asset_keywords)
         has_price_trigger = any(k in low for k in self.price_trigger_keywords)
         if has_asset and (has_price_trigger or has_live_time):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.92,
                 "reason": "price_or_market_live_query",
                 "live_type": "price",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Asset da solo con contesto implicito di prezzo
         # Es: "bitcoin ora", "btc oggi", "ethereum" (query singola già gestita sopra)
         if has_asset and len(tokens) <= 3:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.88,
                 "reason": "asset_implicit_price_query",
                 "live_type": "price",
                 "url": None,
-            }
+            }, source="pattern")
         
         # PRIORITÀ: Travel keywords → check PRIMA di sports per evitare conflitti
         # Es: "volo roma parigi" non deve matchare "roma" come squadra
         has_travel = any(k in low for k in self.travel_keywords)
         if has_travel:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.85,
                 "reason": "travel_query",
                 "live_type": "travel",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Live results: detect sports scores or standings requests when
         # accompanied by temporal hints (today, yesterday).  These
@@ -518,93 +543,96 @@ class SmartIntentClassifier:
         # EXTENDED: anche senza hint temporali se menziona squadre/competizioni
         has_sports_keywords = any(k in low for k in self.results_keywords)
         if has_sports_keywords:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.90,
                 "reason": "sports_results_query",
                 "live_type": "sports",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Schedule/time requests: look up event times using live data.
         if any(k in low for k in self.schedule_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.88,
                 "reason": "schedule_or_time_query",
                 "live_type": "schedule",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Generic news queries or references to current events trigger a
         # search for recent headlines.
-        if any(k in low for k in self.news_keywords) or (
-            "news" in low and has_live_time
-        ):
-            return {
+        # STEP 2: Enhanced with pattern confidence check
+        has_news_keywords = any(k in low for k in self.news_keywords)
+        has_news_with_time = "news" in low and has_live_time
+        
+        if has_news_keywords or has_news_with_time:
+            pattern_result = self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.85,
                 "reason": "news_live_query",
                 "live_type": "news",
                 "url": None,
-            }
+            }, source="pattern")
+            return pattern_result
         
         # NUOVO: Betting keywords → WEB_SEARCH per dati aggiornati
         if any(k in low for k in self.betting_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.80,
                 "reason": "betting_query",
                 "live_type": "betting",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Trading keywords → mix LLM + context
         if any(k in low for k in self.trading_keywords):
             # Se è una domanda educativa ("cos'è lo stop loss") → LLM
             if _GENERAL_KNOWLEDGE_RE.search(low):
-                return {
+                return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.85,
                     "reason": "trading_educational_query",
-                }
+                }, source="pattern")
             # Altrimenti potrebbe volere dati live
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.78,
                 "reason": "trading_live_query",
                 "live_type": "trading",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Code generation → DIRECT_LLM con alta confidence
         # Richieste esplicite di generazione codice vanno direttamente al LLM
         if any(k in low for k in self.code_generation_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.95,
                 "reason": "code_generation_request",
                 "live_type": "code",
-            }
+            }, source="pattern")
         
         # NUOVO: Health keywords → WEB_SEARCH (con nota che non è consiglio medico)
         if any(k in low for k in self.health_keywords):
             # Domande educative → LLM
             if _GENERAL_KNOWLEDGE_RE.search(low):
-                return {
+                return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.80,
                     "reason": "health_educational_query",
                     "live_type": "health",
-                }
+                }, source="pattern")
             # Informazioni su farmaci/malattie → WEB_SEARCH per dati aggiornati
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.75,
                 "reason": "health_info_query",
                 "live_type": "health",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Operational requests (coding, writing, optimisation, etc.)
         # should stay within the LLM environment.  Recognise Italian
@@ -614,29 +642,37 @@ class SmartIntentClassifier:
             r"\b(scrivi|genera|crea|aggiorna|ottimizza|refactor|fixa|implementa|programma|codice)\b",
             low,
         ):
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.85,
                 "reason": "tooling_or_coding_request",
                 "live_type": "code",
-            }
+            }, source="pattern")
 
         # Default fallback: for anything not matched above, use the
         # LLM directly.  This includes open‑ended chat, deep
         # reasoning, personal advice and other creative tasks.
         
-        # NEW: Try LLM Intent Classifier before final fallback
+        # STEP 2: Enhanced LLM Intent Classifier integration
+        # Try LLM classification for borderline/generic queries
         pattern_result = {
             "intent": "DIRECT_LLM",
             "confidence": 0.6,
             "reason": "default_direct_llm",
         }
         
-        # If pattern confidence is low and LLM is enabled, try LLM fallback
+        # STEP 2: If pattern confidence is low/uncertain AND LLM is enabled,
+        # let LLM classifier attempt to provide better classification
         if LLM_INTENT_ENABLED and pattern_result["confidence"] < 0.7:
             llm_result = self._try_llm_classification(raw)
-            if llm_result:
-                log.info(f"Intent: LLM override pattern (pattern=0.6 → llm={llm_result.get('confidence', 0):.2f})")
+            if llm_result and llm_result.get("confidence", 0) >= INTENT_LLM_MIN_CONFIDENCE:
+                # LLM has higher confidence - use its classification
+                log.info(
+                    f"Intent: LLM override pattern "
+                    f"(pattern={pattern_result['confidence']:.2f} → "
+                    f"llm={llm_result.get('confidence', 0):.2f}, "
+                    f"intent={llm_result.get('intent')})"
+                )
                 return self._normalize_result(llm_result, source="llm")
         
         # Return pattern-based result
