@@ -9,7 +9,7 @@ Provides clean text, language hints, and multi-question detection.
 
 import re
 import unicodedata
-from typing import Dict
+from typing import Dict, Optional
 
 # Italian stopwords (subset for quick detection)
 IT_STOPWORDS = {
@@ -41,7 +41,7 @@ def preprocess_user_query(raw_text: str) -> Dict[str, any]:
         - clean_text: str        # testo normalizzato
         - lower_text: str        # versione lower-case
         - has_multiple_questions: bool
-        - language_hint: str | None  # "it", "en", None
+        - language_hint: Optional[str]  # "it", "en", None
     """
     if not raw_text:
         return {
@@ -85,7 +85,7 @@ def preprocess_user_query(raw_text: str) -> Dict[str, any]:
     }
 
 
-def _detect_language_simple(text: str) -> str | None:
+def _detect_language_simple(text: str) -> Optional[str]:
     """
     Semplice rilevamento lingua basato su stopwords prevalenti.
     

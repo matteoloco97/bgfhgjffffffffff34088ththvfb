@@ -504,9 +504,9 @@ class MasterOrchestrator:
                     query=clean_query,
                     query_lower=lower_query,
                     conversation_id=f"{source}:{source_id}",
-                    profile_top_k=int(os.getenv("MEMORY_PROFILE_TOP_K", "5")),
-                    episodic_top_k=int(os.getenv("MEMORY_EPISODIC_TOP_K", "3")),
-                    max_tokens=int(os.getenv("MEMORY_MAX_CONTEXT_TOKENS", "800")),
+                    profile_top_k=_env_int("MEMORY_PROFILE_TOP_K", 5),
+                    episodic_top_k=_env_int("MEMORY_EPISODIC_TOP_K", 3),
+                    max_tokens=_env_int("MEMORY_MAX_CONTEXT_TOKENS", 800),
                 )
                 
                 personal_memory_context = memory_result.get("context_text", "")
