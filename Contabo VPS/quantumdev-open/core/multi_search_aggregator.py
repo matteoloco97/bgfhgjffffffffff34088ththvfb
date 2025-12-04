@@ -63,11 +63,17 @@ def fuzzy_url_match(url1: str, url2: str) -> float:
             return 0.0
         
         # Path similarity (Jaccard su segmenti)
-        path1_parts = set(p1.path.strip('/').split('/'))
-        path2_parts = set(p2.path.strip('/').split('/'))
+        # Use filter(None, ...) to remove empty strings from path segments
+        path1_parts = set(filter(None, p1.path.strip('/').split('/')))
+        path2_parts = set(filter(None, p2.path.strip('/').split('/')))
         
+        # If both paths are empty (root URLs), they are identical
+        if not path1_parts and not path2_parts:
+            return 1.0
+        
+        # If only one path is empty, they are different
         if not path1_parts or not path2_parts:
-            return 0.5 if p1.netloc == p2.netloc else 0.0
+            return 0.0
         
         intersection = len(path1_parts & path2_parts)
         union = len(path1_parts | path2_parts)
@@ -120,10 +126,9 @@ async def aggregate_multi_engine(
     # Execute parallel
     results_by_engine = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Flatten results
+    # Flatten results using zip for cleaner iteration
     all_results = []
-    for i, engine_results in enumerate(results_by_engine):
-        engine_name = task_engine_names[i] if i < len(task_engine_names) else "unknown"
+    for engine_name, engine_results in zip(task_engine_names, results_by_engine):
         if isinstance(engine_results, Exception):
             log.warning(f"Engine {engine_name} failed: {engine_results}")
             continue
