@@ -175,11 +175,10 @@ class ConversationalWebManager:
         # Check for temporal reference only (2 words max)
         # But not if it's a complete query like "Meteo Roma oggi"
         if len(words) == 2:
+            # Check if one of the words is a temporal reference
             for temp_ref in TEMPORAL_REFS:
-                if temp_ref in query_lower and query_lower != temp_ref:
-                    # Only if the temporal ref is one of the 2 words
-                    if temp_ref in words:
-                        return True
+                if temp_ref in words:
+                    return True
         
         return False
     
@@ -207,17 +206,19 @@ class ConversationalWebManager:
             # Remove punctuation
             clean_word = re.sub(r'[?!.,;:]', '', word)
             
-            # Check if capitalized and not first word
-            if (clean_word and 
-                clean_word[0].isupper() and 
-                len(clean_word) > 2 and
-                not clean_word.isupper()):  # Avoid acronyms like "BTC"
-                entities.add(clean_word)
-            
-            # Also check for well-known entities in lowercase
-            clean_lower = clean_word.lower()
-            if clean_lower in ["bitcoin", "ethereum", "btc", "eth"]:
-                entities.add(clean_word)
+            # Check if capitalized and not first word (or short uppercase like BTC/ETH)
+            if clean_word:
+                # Allow short uppercase (2-4 chars) for acronyms like BTC, ETH
+                if clean_word.isupper() and 2 <= len(clean_word) <= 4:
+                    entities.add(clean_word)
+                # Or capitalized words (proper nouns)
+                elif (clean_word[0].isupper() and 
+                      len(clean_word) > 2 and 
+                      not clean_word.isupper()):
+                    entities.add(clean_word)
+                # Also check for well-known entities in lowercase
+                elif clean_word.lower() in ["bitcoin", "ethereum"]:
+                    entities.add(clean_word)
         
         return entities
     

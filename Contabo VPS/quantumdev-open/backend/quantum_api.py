@@ -3305,12 +3305,8 @@ async def web_search(req: WebSearchReq) -> Dict[str, Any]:
     if domain.endswith("_query"):
         domain = domain.replace("_query", "")
     
-    # Simple entity extraction (look for capitalized words in original query)
-    entities = set()
-    for word in req.q.split():
-        clean_word = word.strip("?!.,;:")
-        if clean_word and clean_word[0].isupper() and len(clean_word) > 2:
-            entities.add(clean_word)
+    # Use context manager's entity extraction for consistency
+    entities = context_manager._extract_entities(req.q)
     
     # Update context for future follow-ups
     context_manager.update_context(
