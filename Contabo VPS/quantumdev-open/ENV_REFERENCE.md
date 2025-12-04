@@ -63,6 +63,16 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | `WEB_FETCH_MAX_INFLIGHT` | `4` | Max richieste parallele |
 | `WEB_READ_TIMEOUT_S` | `6.0` | Timeout lettura pagine |
 
+## Multi-Engine Search Configuration (NEW - SPRINT 1)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BRAVE_SEARCH_API_KEY` | - | API key per Brave Search (richiesta per Brave) |
+| `BRAVE_SEARCH_ENABLED` | `1` | Abilita Brave Search (`1` = enabled, `0` = disabled) |
+| `BRAVE_SEARCH_COUNT` | `10` | Numero risultati da Brave Search per query |
+| `SEARCH_ENGINES_ENABLED` | `duckduckgo,brave,bing` | Lista motori (comma-separated) |
+| `MULTI_ENGINE_DEDUP_THRESHOLD` | `0.85` | Threshold fuzzy dedup URL (0.0-1.0) |
+
 ## Live Agents Cache TTL (in secondi)
 
 | Variable | Default | Description |
