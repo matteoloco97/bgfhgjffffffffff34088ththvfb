@@ -32,8 +32,38 @@ returns a dictionary with keys:
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Dict, Optional
+import logging
+from typing import Dict, Optional, Any
+
+# Setup logging
+log = logging.getLogger(__name__)
+
+# ===== ENVIRONMENT CONFIGURATION =====
+def _env_float(name: str, default: float) -> float:
+    """Safely read float from environment with default."""
+    try:
+        return float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+def _env_int(name: str, default: int) -> int:
+    """Safely read int from environment with default."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Safely read bool from environment."""
+    raw = (os.getenv(name, "1" if default else "0") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+# Intent LLM configuration
+LLM_INTENT_ENABLED = _env_bool("LLM_INTENT_ENABLED", False)
+INTENT_LLM_MIN_CONFIDENCE = _env_float("INTENT_LLM_MIN_CONFIDENCE", 0.45)
+INTENT_LLM_MAX_FALLBACKS = _env_int("INTENT_LLM_MAX_FALLBACKS", 1)
 
 
 # Regular expression to detect a URL in the text.  The classifier
@@ -302,6 +332,59 @@ class SmartIntentClassifier:
         m = _URL_RE.search(text or "")
         return m.group(1) if m else None
 
+    def _try_llm_classification(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Tenta classificazione con LLM Intent Classifier.
+        
+        Returns None se LLM non disponibile o fallisce.
+        Altrimenti ritorna dict con intent, confidence, reason, source="llm".
+        """
+        if not LLM_INTENT_ENABLED:
+            return None
+        
+        try:
+            from core.llm_intent_classifier import get_llm_intent_classifier
+            
+            llm_classifier = get_llm_intent_classifier()
+            if not llm_classifier:
+                return None
+            
+            # Call LLM classifier
+            llm_result = llm_classifier.classify(text)
+            
+            if not llm_result or llm_result.get("confidence", 0) < INTENT_LLM_MIN_CONFIDENCE:
+                log.debug(f"LLM intent below threshold: {llm_result}")
+                return None
+            
+            # Convert LLM result format to SmartIntent format
+            return {
+                "intent": llm_result.get("intent", "DIRECT_LLM"),
+                "confidence": llm_result.get("confidence", 0.5),
+                "reason": f"llm_classified:{llm_result.get('reasoning', 'semantic')}",
+                "source": "llm",
+                "low_confidence": llm_result.get("confidence", 0) < 0.65,
+                "url": None,
+                "live_type": llm_result.get("live_type"),
+            }
+        except Exception as e:
+            log.warning(f"LLM intent classification failed: {e}")
+            return None
+
+    @staticmethod
+    def _normalize_result(result: Dict[str, Any], source: str = "pattern") -> Dict[str, Any]:
+        """Normalizza risultato classificazione aggiungendo campi standard."""
+        if "source" not in result:
+            result["source"] = source
+        if "low_confidence" not in result:
+            # Considera low se confidence < 0.65
+            result["low_confidence"] = result.get("confidence", 0.0) < 0.65
+        # Assicura che ci siano tutti i campi base
+        if "url" not in result:
+            result["url"] = None
+        if "live_type" not in result:
+            result["live_type"] = None
+        return result
+
     # ------------------------------------------------------------------
     # Main classification logic
     def classify(self, text: str) -> Dict[str, object]:
@@ -325,30 +408,30 @@ class SmartIntentClassifier:
 
         # If the input is empty, return a low‑confidence DIRECT_LLM
         if not raw:
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.0,
                 "reason": "empty",
-            }
+            }, source="pattern")
 
         # If a URL is present, we should read the page content via WEB_READ
         url = self._extract_url(raw)
         if url:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_READ",
                 "confidence": 0.95,
                 "reason": "url_detected",
                 "url": url,
                 "live_type": None,
-            }
+            }, source="pattern")
 
         # Handle basic greetings or confirmations via the LLM
         if _SMALLTALK_RE.search(low):
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.9,
                 "reason": "smalltalk",
-            }
+            }, source="pattern")
 
         # One‑word queries like "Roma" or "Einstein" typically
         # correspond to a general knowledge lookup.  We route these
@@ -541,11 +624,23 @@ class SmartIntentClassifier:
         # Default fallback: for anything not matched above, use the
         # LLM directly.  This includes open‑ended chat, deep
         # reasoning, personal advice and other creative tasks.
-        return {
+        
+        # NEW: Try LLM Intent Classifier before final fallback
+        pattern_result = {
             "intent": "DIRECT_LLM",
             "confidence": 0.6,
             "reason": "default_direct_llm",
         }
+        
+        # If pattern confidence is low and LLM is enabled, try LLM fallback
+        if LLM_INTENT_ENABLED and pattern_result["confidence"] < 0.7:
+            llm_result = self._try_llm_classification(raw)
+            if llm_result:
+                log.info(f"Intent: LLM override pattern (pattern=0.6 → llm={llm_result.get('confidence', 0):.2f})")
+                return self._normalize_result(llm_result, source="llm")
+        
+        # Return pattern-based result
+        return self._normalize_result(pattern_result, source="pattern")
     
     def classify_with_unified(self, text: str) -> Dict[str, object]:
         """

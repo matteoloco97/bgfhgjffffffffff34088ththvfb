@@ -426,11 +426,33 @@ class MasterOrchestrator:
         """
         start_time = time.perf_counter()
         
+        # === STEP 1 PRE-PROCESSING (NUOVO) ===
+        # Preprocess query (normalize, detect language, multi-questions)
+        preprocessed = {}
+        try:
+            from core.text_preprocessing import preprocess_user_query
+            preprocessed = preprocess_user_query(query)
+            log.debug(f"Preprocessed: lang={preprocessed.get('language_hint')}, "
+                     f"multi_q={preprocessed.get('has_multiple_questions')}")
+        except Exception as e:
+            log.warning(f"Text preprocessing failed: {e}")
+            # Fallback to original query
+            preprocessed = {
+                "clean_text": query,
+                "lower_text": query.lower(),
+                "has_multiple_questions": False,
+                "language_hint": None,
+            }
+        
+        # Use cleaned text for processing
+        clean_query = preprocessed.get("clean_text", query) or query
+        lower_query = preprocessed.get("lower_text", query.lower())
+        
         # Initialize context
         context = OrchestratorContext(
             source=source,
             source_id=source_id,
-            query=query,
+            query=clean_query,
         )
         
         try:
@@ -469,6 +491,32 @@ class MasterOrchestrator:
                 
                 if trace:
                     self._complete_step(trace, f"Loaded {len(context.memory_context)} context messages")
+            
+            # === STEP 3B: Personal Memory Context (NUOVO) ===
+            # Load user profile + episodic memory
+            personal_memory_context = ""
+            try:
+                from core.memory_context_builder import build_memory_context
+                
+                # Build memory context
+                memory_result = build_memory_context(
+                    user_id=source_id,
+                    query=clean_query,
+                    query_lower=lower_query,
+                    conversation_id=f"{source}:{source_id}",
+                    profile_top_k=_env_int("MEMORY_PROFILE_TOP_K", 5),
+                    episodic_top_k=_env_int("MEMORY_EPISODIC_TOP_K", 3),
+                    max_tokens=_env_int("MEMORY_MAX_CONTEXT_TOKENS", 800),
+                )
+                
+                personal_memory_context = memory_result.get("context_text", "")
+                
+                if personal_memory_context:
+                    log.info(f"Personal memory: {memory_result.get('total_tokens', 0)} tokens, "
+                            f"self_q={memory_result.get('is_self_question', False)}")
+                
+            except Exception as e:
+                log.warning(f"Failed to build personal memory context: {e}")
             
             # Step 4: Execute strategy
             response_text = ""
@@ -525,13 +573,26 @@ class MasterOrchestrator:
                 
                 # Build context-aware prompt
                 system_parts = []
+                
+                # Add conversational memory
                 if context.memory_context:
                     system_parts.append("CONVERSAZIONE PRECEDENTE:")
                     for msg in context.memory_context[-5:]:
                         system_parts.append(f"{msg['role'].upper()}: {msg['content'][:200]}")
                 
+                # === ADD PERSONAL MEMORY (NUOVO) ===
+                if personal_memory_context:
+                    system_parts.append("\n" + personal_memory_context)
+                
+                # === ADD MULTI-QUESTION HINT (NUOVO) ===
+                if preprocessed.get("has_multiple_questions", False):
+                    system_parts.append(
+                        "\nNOTA: L'utente potrebbe aver posto più domande. "
+                        "Rispondi in modo ordinato, punto per punto."
+                    )
+                
                 system = "\n".join(system_parts) if system_parts else ""
-                response_text = await self.llm_func(query, system)
+                response_text = await self.llm_func(clean_query, system)
                 
                 if trace:
                     self._complete_step(trace, f"Generated {len(response_text)} chars")
@@ -557,10 +618,38 @@ class MasterOrchestrator:
                 
                 session = await self.memory.add_turn(
                     source, source_id,
-                    query, response_text,
+                    clean_query, response_text,
                     user_metadata={"query_type": query_type.value},
                     assistant_metadata={"strategy": strategy.value},
                 )
+                
+                # === SAVE TO PERSONAL MEMORY (NUOVO) ===
+                try:
+                    from core.memory_context_builder import save_to_memory, maybe_summarize_buffer
+                    
+                    # Save to episodic buffer and detect "remember" statements
+                    save_result = save_to_memory(
+                        user_id=source_id,
+                        user_message=query,
+                        assistant_response=response_text,
+                        conversation_id=f"{source}:{source_id}",
+                    )
+                    
+                    # Check if buffer needs summarization
+                    if save_result.get("needs_summarization", False):
+                        summary = await maybe_summarize_buffer(
+                            conversation_id=f"{source}:{source_id}",
+                            user_id=source_id,
+                            llm_func=self.llm_func,
+                        )
+                        if summary:
+                            log.info(f"Episodic buffer summarized: {len(summary)} chars")
+                    
+                    if save_result.get("profile_fact_saved", False):
+                        log.info(f"User profile fact saved: {save_result.get('profile_fact_id')}")
+                
+                except Exception as e:
+                    log.warning(f"Failed to save to personal memory: {e}")
                 
                 if trace:
                     self._complete_step(trace, "Saved turn to memory")
