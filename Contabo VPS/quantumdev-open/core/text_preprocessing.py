@@ -98,7 +98,7 @@ def _detect_language_simple(text: str) -> str | None:
     if not text or len(text) < 5:
         return None
     
-    # Tokenize roughly
+    # Tokenize roughly (remove punctuation)
     words = re.findall(r'\b\w+\b', text.lower())
     
     if not words:
@@ -108,8 +108,8 @@ def _detect_language_simple(text: str) -> str | None:
     it_count = sum(1 for w in words if w in IT_STOPWORDS)
     en_count = sum(1 for w in words if w in EN_STOPWORDS)
     
-    # Need at least 2 stopwords to make a guess
-    if it_count < 2 and en_count < 2:
+    # Need at least 1 stopword to make a guess (relaxed from 2)
+    if it_count < 1 and en_count < 1:
         return None
     
     # Return language with most stopword matches
