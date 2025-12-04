@@ -9,7 +9,7 @@ Provides clean text, language hints, and multi-question detection.
 
 import re
 import unicodedata
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 # Italian stopwords (subset for quick detection)
 IT_STOPWORDS = {
@@ -29,7 +29,7 @@ EN_STOPWORDS = {
 }
 
 
-def preprocess_user_query(raw_text: str) -> Dict[str, any]:
+def preprocess_user_query(raw_text: str) -> Dict[str, Any]:
     """
     Normalizza la query utente e fornisce info utili alla pipeline.
     

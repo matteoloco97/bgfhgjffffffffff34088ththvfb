@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 # Setup logging
 log = logging.getLogger(__name__)
@@ -332,7 +332,7 @@ class SmartIntentClassifier:
         m = _URL_RE.search(text or "")
         return m.group(1) if m else None
 
-    def _try_llm_classification(self, text: str) -> Optional[Dict[str, any]]:
+    def _try_llm_classification(self, text: str) -> Optional[Dict[str, Any]]:
         """
         Tenta classificazione con LLM Intent Classifier.
         
@@ -371,7 +371,7 @@ class SmartIntentClassifier:
             return None
 
     @staticmethod
-    def _normalize_result(result: Dict[str, any], source: str = "pattern") -> Dict[str, any]:
+    def _normalize_result(result: Dict[str, Any], source: str = "pattern") -> Dict[str, Any]:
         """Normalizza risultato classificazione aggiungendo campi standard."""
         if "source" not in result:
             result["source"] = source

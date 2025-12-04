@@ -10,7 +10,7 @@ to inject into LLM prompts for personalized responses.
 import os
 import re
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def build_memory_context(
     profile_top_k: int = 5,
     episodic_top_k: int = 3,
     max_tokens: int = 800,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Costruisce contesto memory da user profile e episodic memory.
     
@@ -221,7 +221,7 @@ def save_to_memory(
     user_message: str,
     assistant_response: str,
     conversation_id: Optional[str] = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Salva la nuova coppia domanda/risposta in memoria.
     
