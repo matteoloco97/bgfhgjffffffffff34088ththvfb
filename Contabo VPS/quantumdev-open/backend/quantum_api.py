@@ -408,6 +408,12 @@ WEB_SUMMARIZE_TOP_DEFAULT = env_int("WEB_SUMMARIZE_TOP_DEFAULT", 2)
 WEB_SEARCH_DEEP_MODE = env_bool("WEB_SEARCH_DEEP_MODE", False)
 WEB_DEEP_MAX_SOURCES = env_int("WEB_DEEP_MAX_SOURCES", 15)
 
+# 🔄 STEP 2: Autoweb Deep Retry & Fallback
+WEB_DEEP_MIN_RESULTS = env_int("WEB_DEEP_MIN_RESULTS", 3)  # Trigger deep retry if < 3 results
+WEB_DEEP_MAX_RETRIES = env_int("WEB_DEEP_MAX_RETRIES", 1)  # Max 1 second attempt
+WEB_FALLBACK_TO_LLM = env_bool("WEB_FALLBACK_TO_LLM", True)  # Fallback to LLM if web fails
+
+
 # ⚡️ Parallel fetch env
 WEB_FETCH_TIMEOUT_S = env_float("WEB_FETCH_TIMEOUT_S", 3.0)
 WEB_FETCH_MAX_INFLIGHT = env_int("WEB_FETCH_MAX_INFLIGHT", 4)
@@ -961,6 +967,79 @@ def _is_smalltalk_query(q: str) -> bool:
     return False
 
 
+# ===================== Fallback Helper (STEP 2) =====================
+
+async def _fallback_internal_answer(
+    user_query: str,
+    src: str,
+    sid: str,
+    system_hint: str = "",
+) -> Dict[str, Any]:
+    """
+    STEP 2: Fallback to internal LLM when web search fails.
+    
+    Uses the normal LLM without web docs, explaining that web search failed.
+    Returns a dict compatible with the normal response pipeline.
+    
+    Args:
+        user_query: Original user query
+        src: Source identifier
+        sid: Session ID
+        system_hint: Optional system hint/context
+        
+    Returns:
+        Dict with text, sources (empty), and metadata
+    """
+    try:
+        persona = await get_persona(src, sid)
+        
+        # Build prompt explaining the situation
+        fallback_prompt = (
+            f"Non sei riuscito a trovare fonti affidabili online per questa domanda:\n"
+            f'"{user_query}"\n\n'
+            f"Rispondi usando solo la tua conoscenza interna.\n"
+            f"Se non sei sicuro o l'informazione richiede dati aggiornati in tempo reale, "
+            f"dillo esplicitamente e spiega perché.\n\n"
+        )
+        
+        if system_hint:
+            fallback_prompt += f"{system_hint}\n\n"
+        
+        fallback_prompt += f"Domanda: {user_query}\n\nRisposta:"
+        
+        # Get LLM response
+        try:
+            answer = await reply_with_llm(fallback_prompt, persona)
+        except Exception as e:
+            log.error(f"Fallback LLM failed: {e}")
+            answer = (
+                "Mi dispiace, non sono riuscito a trovare informazioni online "
+                "e non ho dati sufficienti nella mia conoscenza interna per rispondere "
+                "a questa domanda in modo affidabile."
+            )
+        
+        return {
+            "text": answer,
+            "sources": [],
+            "meta": {
+                "used_web": False,
+                "fallback_reason": "no_web_results",
+                "fallback_to_llm": True,
+            },
+        }
+    except Exception as e:
+        log.error(f"Fallback internal answer failed: {e}")
+        return {
+            "text": f"Errore nel tentativo di risposta: {str(e)}",
+            "sources": [],
+            "meta": {
+                "used_web": False,
+                "fallback_reason": "error",
+                "error": str(e),
+            },
+        }
+
+
 # ===================== Web search pipeline ===========================
 async def _web_search_pipeline(
     q: str,
@@ -1029,6 +1108,54 @@ async def _web_search_pipeline(
         )
         seen.add(u)
 
+    # STEP 2: Deep-mode automatic retry if results are poor
+    deep_retry_used = False
+    good_results = [r for r in dedup if r.get("url")]
+    
+    if (
+        len(good_results) < WEB_DEEP_MIN_RESULTS
+        and WEB_DEEP_MAX_RETRIES > 0
+        and len(good_results) > 0  # Don't retry if completely empty
+    ):
+        try:
+            from core.text_preprocessing import relax_search_query
+            
+            relaxed_q = relax_search_query(q)
+            
+            # Only retry if relaxed query is different
+            if relaxed_q != q.lower().strip():
+                log.info(
+                    f"Deep retry: {len(good_results)} results < {WEB_DEEP_MIN_RESULTS}, "
+                    f"trying relaxed query: '{relaxed_q}'"
+                )
+                
+                # Second search with relaxed query
+                raw_deep: List[Dict[str, Any]] = []
+                for v in build_query_variants(relaxed_q, pol):
+                    try:
+                        raw_deep.extend(web_search_core(v, num=6))
+                    except Exception:
+                        pass
+                
+                # Deduplicate and merge with first results
+                for r in raw_deep:
+                    u = r.get("url")
+                    if not u or u in seen:
+                        continue
+                    dedup.append(
+                        {
+                            "url": u,
+                            "title": r.get("title", ""),
+                            "snippet": r.get("snippet", r.get("title", "")),
+                        }
+                    )
+                    seen.add(u)
+                
+                deep_retry_used = True
+                log.info(f"Deep retry: Added {len(dedup) - len(good_results)} new results")
+        except Exception as e:
+            log.warning(f"Deep retry failed: {e}")
+
     if not dedup:
         return {
             "query": q,
@@ -1039,6 +1166,7 @@ async def _web_search_pipeline(
             "diversity": None,
             "note": "SERP vuota",
             "reranker_used": False,
+            "deep_retry_used": False,
             "stats": {
                 "raw_results": len(raw),
                 "dedup_results": 0,
@@ -1240,7 +1368,23 @@ async def _web_search_pipeline(
             except Exception as e:
                 log.warning(f"Synthesis validation error: {e}")
     else:
-        note = note or "no_extracted_content"
+        # STEP 2: No extracted content - fallback to LLM if enabled
+        note = "no_extracted_content"
+        
+        if WEB_FALLBACK_TO_LLM and not summary:
+            log.info("Web search failed, falling back to internal LLM")
+            try:
+                fallback_result = await _fallback_internal_answer(
+                    user_query=q,
+                    src=src,
+                    sid=sid,
+                    system_hint="Il web search non ha prodotto risultati utili.",
+                )
+                summary = fallback_result.get("text", "")
+                note = "llm_fallback_no_web"
+            except Exception as e:
+                log.error(f"LLM fallback failed: {e}")
+                note = "no_extracted_content_fallback_failed"
 
     # autosave sintesi (se presente)
     try:
@@ -1305,6 +1449,7 @@ async def _web_search_pipeline(
         "summary": summary,
         "validation": validation,
         "reranker_used": used,
+        "deep_retry_used": deep_retry_used,  # STEP 2: Track deep retry usage
         "diversity": diversity_block,
         "note": note,
         "stats": stats,

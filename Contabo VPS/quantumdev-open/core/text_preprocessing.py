@@ -120,3 +120,61 @@ def _detect_language_simple(text: str) -> Optional[str]:
     
     # Tie or unclear
     return None
+
+
+def relax_search_query(query: str) -> str:
+    """
+    STEP 2: Relaxes a search query by removing temporal/noise words.
+    
+    Used for deep-mode retry when initial search returns poor results.
+    Preserves core keywords while removing time-sensitive or noise terms.
+    
+    Args:
+        query: Original user query
+        
+    Returns:
+        Relaxed query string (never empty)
+        
+    Examples:
+        "meteo roma oggi" -> "meteo roma"
+        "ultime notizie bitcoin" -> "notizie bitcoin"
+        "prezzo btc adesso" -> "prezzo btc"
+    """
+    if not query or len(query.strip()) < 3:
+        return query.strip() or "general search"
+    
+    # Temporal/noise words to remove (Italian + English)
+    noise_words = {
+        # Temporal Italian
+        "oggi", "adesso", "ora", "stamattina", "stasera", "ieri",
+        "domani", "in questo momento", "al momento", "attualmente",
+        "corrente", "attuale", "ultimo", "ultima", "ultime", "ultimi",
+        "recente", "recenti", "nuova", "nuovo", "nuove", "nuovi",
+        "latest", "pochi minuti fa", "poco fa", "ultima ora",
+        "ultimo aggiornamento", "aggiornamento", "novità",
+        # Temporal English
+        "now", "today", "current", "currently", "latest", "recent",
+        "just now", "right now", "this moment", "at the moment",
+        "new", "newest", "freshest", "breaking",
+        # Noise/filler words
+        "rapide", "rapida", "veloci", "veloce", "subito",
+        "quick", "fast", "rapid",
+    }
+    
+    # Clean and tokenize
+    clean = query.strip().lower()
+    words = clean.split()
+    
+    # Filter out noise words
+    kept_words = [w for w in words if w not in noise_words]
+    
+    # If we filtered everything, keep original (don't over-relax)
+    if not kept_words or len(kept_words) == 0:
+        return query.strip()
+    
+    # Rebuild query
+    relaxed = " ".join(kept_words)
+    
+    # Ensure not empty
+    return relaxed if relaxed.strip() else query.strip()
+
