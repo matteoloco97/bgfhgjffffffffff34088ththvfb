@@ -144,17 +144,18 @@ def relax_search_query(query: str) -> str:
         return query.strip() or "general search"
     
     # Temporal/noise words to remove (Italian + English)
+    # Note: Multi-word phrases handled via word-level matching
     noise_words = {
         # Temporal Italian
         "oggi", "adesso", "ora", "stamattina", "stasera", "ieri",
-        "domani", "in questo momento", "al momento", "attualmente",
+        "domani", "momento", "attualmente",
         "corrente", "attuale", "ultimo", "ultima", "ultime", "ultimi",
         "recente", "recenti", "nuova", "nuovo", "nuove", "nuovi",
-        "latest", "pochi minuti fa", "poco fa", "ultima ora",
-        "ultimo aggiornamento", "aggiornamento", "novità",
+        "latest", "fa", "poco", "pochi", "minuti",
+        "aggiornamento", "novità",
         # Temporal English
         "now", "today", "current", "currently", "latest", "recent",
-        "just now", "right now", "this moment", "at the moment",
+        "just", "right", "this", "moment",
         "new", "newest", "freshest", "breaking",
         # Noise/filler words
         "rapide", "rapida", "veloci", "veloce", "subito",
@@ -169,7 +170,7 @@ def relax_search_query(query: str) -> str:
     kept_words = [w for w in words if w not in noise_words]
     
     # If we filtered everything, keep original (don't over-relax)
-    if not kept_words or len(kept_words) == 0:
+    if not kept_words:
         return query.strip()
     
     # Rebuild query

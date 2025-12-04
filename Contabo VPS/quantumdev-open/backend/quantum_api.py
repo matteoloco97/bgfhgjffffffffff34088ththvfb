@@ -995,7 +995,7 @@ async def _fallback_internal_answer(
         
         # Build prompt explaining the situation
         fallback_prompt = (
-            f"Non sei riuscito a trovare fonti affidabili online per questa domanda:\n"
+            f"Non sei riuscita a trovare fonti affidabili online per questa domanda:\n"
             f'"{user_query}"\n\n'
             f"Rispondi usando solo la tua conoscenza interna.\n"
             f"Se non sei sicuro o l'informazione richiede dati aggiornati in tempo reale, "
@@ -1112,18 +1112,19 @@ async def _web_search_pipeline(
     deep_retry_used = False
     good_results = [r for r in dedup if r.get("url")]
     
+    # Only retry if we have SOME results but fewer than threshold
+    # (Zero results might indicate query is too specific/impossible)
     if (
-        len(good_results) < WEB_DEEP_MIN_RESULTS
+        0 < len(good_results) < WEB_DEEP_MIN_RESULTS
         and WEB_DEEP_MAX_RETRIES > 0
-        and len(good_results) > 0  # Don't retry if completely empty
     ):
         try:
             from core.text_preprocessing import relax_search_query
             
             relaxed_q = relax_search_query(q)
             
-            # Only retry if relaxed query is different
-            if relaxed_q != q.lower().strip():
+            # Only retry if relaxed query is different (case-insensitive comparison)
+            if relaxed_q.lower().strip() != q.lower().strip():
                 log.info(
                     f"Deep retry: {len(good_results)} results < {WEB_DEEP_MIN_RESULTS}, "
                     f"trying relaxed query: '{relaxed_q}'"

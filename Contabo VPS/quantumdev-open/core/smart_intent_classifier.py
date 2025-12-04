@@ -460,25 +460,25 @@ class SmartIntentClassifier:
         # through the web for the most up‑to‑date information.
         tokens = low.split()
         if len(tokens) == 1:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.75,
                 "reason": "single_token_general_knowledge",
                 "url": None,
                 "live_type": None,
-            }
+            }, source="pattern")
 
         # If the text matches our general‑knowledge patterns, send it to
         # web search rather than the LLM so the assistant can draw on
         # external sources and deliver citations.
         if _GENERAL_KNOWLEDGE_RE.search(low):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.9,
                 "reason": "general_knowledge_query",
                 "url": None,
                 "live_type": None,
-            }
+            }, source="pattern")
 
         # Determine whether the prompt contains any temporal indicators
         has_live_time = any(k in low for k in self.time_live_keywords)
@@ -506,36 +506,36 @@ class SmartIntentClassifier:
         has_asset = any(k in low for k in self.asset_keywords)
         has_price_trigger = any(k in low for k in self.price_trigger_keywords)
         if has_asset and (has_price_trigger or has_live_time):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.92,
                 "reason": "price_or_market_live_query",
                 "live_type": "price",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Asset da solo con contesto implicito di prezzo
         # Es: "bitcoin ora", "btc oggi", "ethereum" (query singola già gestita sopra)
         if has_asset and len(tokens) <= 3:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.88,
                 "reason": "asset_implicit_price_query",
                 "live_type": "price",
                 "url": None,
-            }
+            }, source="pattern")
         
         # PRIORITÀ: Travel keywords → check PRIMA di sports per evitare conflitti
         # Es: "volo roma parigi" non deve matchare "roma" come squadra
         has_travel = any(k in low for k in self.travel_keywords)
         if has_travel:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.85,
                 "reason": "travel_query",
                 "live_type": "travel",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Live results: detect sports scores or standings requests when
         # accompanied by temporal hints (today, yesterday).  These
@@ -543,23 +543,23 @@ class SmartIntentClassifier:
         # EXTENDED: anche senza hint temporali se menziona squadre/competizioni
         has_sports_keywords = any(k in low for k in self.results_keywords)
         if has_sports_keywords:
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.90,
                 "reason": "sports_results_query",
                 "live_type": "sports",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Schedule/time requests: look up event times using live data.
         if any(k in low for k in self.schedule_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.88,
                 "reason": "schedule_or_time_query",
                 "live_type": "schedule",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Generic news queries or references to current events trigger a
         # search for recent headlines.
@@ -579,60 +579,60 @@ class SmartIntentClassifier:
         
         # NUOVO: Betting keywords → WEB_SEARCH per dati aggiornati
         if any(k in low for k in self.betting_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.80,
                 "reason": "betting_query",
                 "live_type": "betting",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Trading keywords → mix LLM + context
         if any(k in low for k in self.trading_keywords):
             # Se è una domanda educativa ("cos'è lo stop loss") → LLM
             if _GENERAL_KNOWLEDGE_RE.search(low):
-                return {
+                return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.85,
                     "reason": "trading_educational_query",
-                }
+                }, source="pattern")
             # Altrimenti potrebbe volere dati live
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.78,
                 "reason": "trading_live_query",
                 "live_type": "trading",
                 "url": None,
-            }
+            }, source="pattern")
         
         # NUOVO: Code generation → DIRECT_LLM con alta confidence
         # Richieste esplicite di generazione codice vanno direttamente al LLM
         if any(k in low for k in self.code_generation_keywords):
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.95,
                 "reason": "code_generation_request",
                 "live_type": "code",
-            }
+            }, source="pattern")
         
         # NUOVO: Health keywords → WEB_SEARCH (con nota che non è consiglio medico)
         if any(k in low for k in self.health_keywords):
             # Domande educative → LLM
             if _GENERAL_KNOWLEDGE_RE.search(low):
-                return {
+                return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.80,
                     "reason": "health_educational_query",
                     "live_type": "health",
-                }
+                }, source="pattern")
             # Informazioni su farmaci/malattie → WEB_SEARCH per dati aggiornati
-            return {
+            return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.75,
                 "reason": "health_info_query",
                 "live_type": "health",
                 "url": None,
-            }
+            }, source="pattern")
 
         # Operational requests (coding, writing, optimisation, etc.)
         # should stay within the LLM environment.  Recognise Italian
@@ -642,12 +642,12 @@ class SmartIntentClassifier:
             r"\b(scrivi|genera|crea|aggiorna|ottimizza|refactor|fixa|implementa|programma|codice)\b",
             low,
         ):
-            return {
+            return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.85,
                 "reason": "tooling_or_coding_request",
                 "live_type": "code",
-            }
+            }, source="pattern")
 
         # Default fallback: for anything not matched above, use the
         # LLM directly.  This includes open‑ended chat, deep
