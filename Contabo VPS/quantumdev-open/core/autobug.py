@@ -43,10 +43,21 @@ AUTOBUG_CHROMA_TIMEOUT_S = float(os.getenv("AUTOBUG_CHROMA_TIMEOUT_S", "10.0"))
 
 @dataclass
 class CheckResult:
-    """Result of a single health check."""
+    """
+    Result of a single health check.
+    
+    Attributes:
+        name: Check name (e.g., "llm", "web", "redis", "chroma", "system", "ocr")
+        enabled: Whether this check was enabled via environment variable
+        ok: Whether the check passed
+        latency_ms: Check duration in milliseconds (None if check was disabled)
+        error: Error message if check failed (None if ok=True)
+        details: Additional check-specific information (None if not available)
+    """
     name: str
+    enabled: bool
     ok: bool
-    latency_ms: float
+    latency_ms: Optional[float]
     error: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     
@@ -69,8 +80,9 @@ def check_llm() -> CheckResult:
     if not AUTOBUG_ENABLE_LLM:
         return CheckResult(
             name="llm",
+            enabled=False,
             ok=False,
-            latency_ms=0.0,
+            latency_ms=None,
             error="check_disabled",
         )
     
@@ -92,6 +104,7 @@ def check_llm() -> CheckResult:
         if response_text and len(response_text) > 0:
             return CheckResult(
                 name="llm",
+                enabled=True,
                 ok=True,
                 latency_ms=round(latency_ms, 2),
                 details={
@@ -102,6 +115,7 @@ def check_llm() -> CheckResult:
         else:
             return CheckResult(
                 name="llm",
+                enabled=True,
                 ok=False,
                 latency_ms=round(latency_ms, 2),
                 error="empty_response",
@@ -111,6 +125,7 @@ def check_llm() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
             name="llm",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"import_failed: {str(e)}",
@@ -120,6 +135,7 @@ def check_llm() -> CheckResult:
         log.error(f"LLM check failed: {e}")
         return CheckResult(
             name="llm",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"llm_call_failed: {str(e)}",
@@ -137,9 +153,10 @@ def check_web_search() -> CheckResult:
     
     if not AUTOBUG_ENABLE_WEB_SEARCH:
         return CheckResult(
-            name="web_search",
+            name="web",
+            enabled=False,
             ok=False,
-            latency_ms=0.0,
+            latency_ms=None,
             error="check_disabled",
         )
     
@@ -161,7 +178,8 @@ def check_web_search() -> CheckResult:
             
             if has_url and has_content:
                 return CheckResult(
-                    name="web_search",
+                    name="web",
+                    enabled=True,
                     ok=True,
                     latency_ms=round(latency_ms, 2),
                     details={
@@ -171,14 +189,16 @@ def check_web_search() -> CheckResult:
                 )
             else:
                 return CheckResult(
-                    name="web_search",
+                    name="web",
+                    enabled=True,
                     ok=False,
                     latency_ms=round(latency_ms, 2),
                     error="invalid_result_structure",
                 )
         else:
             return CheckResult(
-                name="web_search",
+                name="web",
+                enabled=True,
                 ok=False,
                 latency_ms=round(latency_ms, 2),
                 error="no_results",
@@ -187,7 +207,8 @@ def check_web_search() -> CheckResult:
     except ImportError as e:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
-            name="web_search",
+            name="web",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"import_failed: {str(e)}",
@@ -196,7 +217,8 @@ def check_web_search() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         log.error(f"Web search check failed: {e}")
         return CheckResult(
-            name="web_search",
+            name="web",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"search_failed: {str(e)}",
@@ -215,8 +237,9 @@ def check_redis() -> CheckResult:
     if not AUTOBUG_ENABLE_REDIS:
         return CheckResult(
             name="redis",
+            enabled=False,
             ok=False,
-            latency_ms=0.0,
+            latency_ms=None,
             error="check_disabled",
         )
     
@@ -254,6 +277,7 @@ def check_redis() -> CheckResult:
         if retrieved and retrieved.decode('utf-8') == test_value:
             return CheckResult(
                 name="redis",
+                enabled=True,
                 ok=True,
                 latency_ms=round(latency_ms, 2),
                 details={
@@ -265,6 +289,7 @@ def check_redis() -> CheckResult:
         else:
             return CheckResult(
                 name="redis",
+                enabled=True,
                 ok=False,
                 latency_ms=round(latency_ms, 2),
                 error="value_mismatch",
@@ -274,6 +299,7 @@ def check_redis() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
             name="redis",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"redis_not_installed: {str(e)}",
@@ -289,6 +315,7 @@ def check_redis() -> CheckResult:
         
         return CheckResult(
             name="redis",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=error_msg,
@@ -307,8 +334,9 @@ def check_chroma() -> CheckResult:
     if not AUTOBUG_ENABLE_CHROMA:
         return CheckResult(
             name="chroma",
+            enabled=False,
             ok=False,
-            latency_ms=0.0,
+            latency_ms=None,
             error="check_disabled",
         )
     
@@ -331,6 +359,7 @@ def check_chroma() -> CheckResult:
         
         return CheckResult(
             name="chroma",
+            enabled=True,
             ok=True,
             latency_ms=round(latency_ms, 2),
             details={
@@ -343,6 +372,7 @@ def check_chroma() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
             name="chroma",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"import_failed: {str(e)}",
@@ -352,6 +382,7 @@ def check_chroma() -> CheckResult:
         log.error(f"ChromaDB check failed: {e}")
         return CheckResult(
             name="chroma",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"chroma_operation_failed: {str(e)}",
@@ -363,15 +394,16 @@ def check_system_status() -> CheckResult:
     Test system status monitoring.
     
     Returns:
-        CheckResult with test outcome.
+        CheckResult with test outcome and full system status in details.
     """
     start = time.monotonic()
     
     if not AUTOBUG_ENABLE_SYSTEM:
         return CheckResult(
-            name="system_status",
+            name="system",
+            enabled=False,
             ok=False,
-            latency_ms=0.0,
+            latency_ms=None,
             error="check_disabled",
         )
     
@@ -385,33 +417,21 @@ def check_system_status() -> CheckResult:
         # Check if the system status call was successful
         ok = status.get("ok", False)
         
-        if ok:
-            # Extract some key metrics for the details
-            metrics = status.get("metrics", {})
-            cpu = metrics.get("cpu", {})
-            memory = metrics.get("memory", {})
-            
-            return CheckResult(
-                name="system_status",
-                ok=True,
-                latency_ms=round(latency_ms, 2),
-                details={
-                    "cpu_percent": cpu.get("percent"),
-                    "ram_percent": memory.get("ram", {}).get("percent"),
-                },
-            )
-        else:
-            return CheckResult(
-                name="system_status",
-                ok=False,
-                latency_ms=round(latency_ms, 2),
-                error="system_metrics_unavailable",
-            )
+        # Include the full system status in details
+        return CheckResult(
+            name="system",
+            enabled=True,
+            ok=ok,
+            latency_ms=round(latency_ms, 2),
+            details=status,
+            error=None if ok else "system_metrics_unavailable",
+        )
             
     except ImportError as e:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
-            name="system_status",
+            name="system",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"import_failed: {str(e)}",
@@ -420,7 +440,8 @@ def check_system_status() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         log.error(f"System status check failed: {e}")
         return CheckResult(
-            name="system_status",
+            name="system",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"status_check_failed: {str(e)}",
@@ -436,6 +457,7 @@ def check_ocr() -> CheckResult:
     """
     start = time.monotonic()
     
+    # OCR is optional, so we always report it as enabled=True but may fail
     try:
         from core.ocr_tools import get_ocr_info, is_ocr_enabled, OCR_AVAILABLE
         
@@ -451,6 +473,7 @@ def check_ocr() -> CheckResult:
         if not enabled:
             return CheckResult(
                 name="ocr",
+                enabled=True,
                 ok=False,
                 latency_ms=round(latency_ms, 2),
                 error="ocr_disabled",
@@ -460,6 +483,7 @@ def check_ocr() -> CheckResult:
         if not available:
             return CheckResult(
                 name="ocr",
+                enabled=True,
                 ok=False,
                 latency_ms=round(latency_ms, 2),
                 error="ocr_dependencies_missing",
@@ -468,6 +492,7 @@ def check_ocr() -> CheckResult:
         
         return CheckResult(
             name="ocr",
+            enabled=True,
             ok=True,
             latency_ms=round(latency_ms, 2),
             details={
@@ -483,6 +508,7 @@ def check_ocr() -> CheckResult:
         latency_ms = (time.monotonic() - start) * 1000
         return CheckResult(
             name="ocr",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"import_failed: {str(e)}",
@@ -492,6 +518,7 @@ def check_ocr() -> CheckResult:
         log.error(f"OCR check failed: {e}")
         return CheckResult(
             name="ocr",
+            enabled=True,
             ok=False,
             latency_ms=round(latency_ms, 2),
             error=f"ocr_check_failed: {str(e)}",
@@ -506,23 +533,43 @@ def run_autobug_checks() -> Dict[str, Any]:
     
     This function never raises exceptions - all errors are captured in check results.
     
+    Environment Variables (all default to True):
+    - AUTOBUG_ENABLED: Master switch
+    - AUTOBUG_ENABLE_LLM: Enable LLM check
+    - AUTOBUG_ENABLE_WEB_SEARCH: Enable web search check
+    - AUTOBUG_ENABLE_REDIS: Enable Redis check
+    - AUTOBUG_ENABLE_CHROMA: Enable ChromaDB check
+    - AUTOBUG_ENABLE_SYSTEM: Enable system status check
+    
     Returns:
         Dictionary with:
-            - ok: bool (true if all checks passed)
+            - ok: bool (true if ALL enabled checks passed)
             - started_at: ISO timestamp
             - finished_at: ISO timestamp
             - duration_ms: total runtime in milliseconds
-            - checks: list of CheckResult dictionaries
+            - checks: list of CheckResult dictionaries with:
+                - name: str ("llm", "web", "redis", "chroma", "system")
+                - enabled: bool
+                - ok: bool
+                - latency_ms: float | None
+                - error: str | None
+                - details: dict | None
             - summary: dict with passed/failed counts
-            - system_status: optional system status dict
     """
     if not AUTOBUG_ENABLED:
         return {
             "ok": False,
             "error": "autobug_disabled",
+            "detail": "AutoBug is disabled via AUTOBUG_ENABLED environment variable",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": 0.0,
             "checks": [],
+            "summary": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+            }
         }
     
     started_at = datetime.now(timezone.utc)
@@ -548,35 +595,30 @@ def run_autobug_checks() -> Dict[str, Any]:
     # 5. LLM (can be slow)
     checks.append(check_llm())
     
-    # 6. OCR (fast, optional - BLOCK 5)
+    # 6. OCR (fast, optional)
     checks.append(check_ocr())
     
     finished_at = datetime.now(timezone.utc)
     duration_ms = (time.monotonic() - start_time) * 1000
     
-    # Calculate summary
-    passed = sum(1 for c in checks if c.ok)
-    failed = len(checks) - passed
-    all_ok = all(c.ok for c in checks)
+    # Calculate summary (only count enabled checks)
+    enabled_checks = [c for c in checks if c.enabled]
+    passed = sum(1 for c in enabled_checks if c.ok)
+    failed = len(enabled_checks) - passed
+    
+    # all_ok = True only if ALL enabled checks passed
+    all_ok = all(c.ok for c in enabled_checks) if enabled_checks else False
     
     # Log results
     log.info(
-        f"AutoBug checks completed: {passed}/{len(checks)} passed, "
+        f"AutoBug checks completed: {passed}/{len(enabled_checks)} enabled checks passed, "
         f"{failed} failed, duration: {duration_ms:.0f}ms"
     )
     
     if failed > 0:
         for check in checks:
-            if not check.ok:
+            if check.enabled and not check.ok:
                 log.warning(f"Check '{check.name}' failed: {check.error}")
-    
-    # Get full system status if the system check passed
-    system_status_full = None
-    try:
-        from core.system_status import get_system_status
-        system_status_full = get_system_status()
-    except Exception as e:
-        log.warning(f"Could not get full system status: {e}")
     
     return {
         "ok": all_ok,
@@ -585,9 +627,8 @@ def run_autobug_checks() -> Dict[str, Any]:
         "duration_ms": round(duration_ms, 2),
         "checks": [c.to_dict() for c in checks],
         "summary": {
-            "total": len(checks),
+            "total": len(enabled_checks),
             "passed": passed,
             "failed": failed,
         },
-        "system_status": system_status_full,
     }

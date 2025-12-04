@@ -37,51 +37,51 @@ def get_cpu_metrics() -> Dict[str, Any]:
     Get CPU usage metrics.
     
     Returns:
-        Dictionary with CPU metrics or error information.
+        Dictionary with CPU metrics including:
+        - percent: CPU usage percentage
+        - load_average: List [1min, 5min, 15min] (if available)
+        - cores_logical: Number of logical cores
+        - cores_physical: Number of physical cores
     """
     if not PSUTIL_AVAILABLE:
-        return {"error": "psutil_not_available"}
+        return {
+            "percent": 0.0,
+            "load_average": [0.0, 0.0, 0.0],
+            "cores_logical": 0,
+            "cores_physical": 0,
+            "error": "psutil_not_available"
+        }
     
     try:
         cpu_percent = psutil.cpu_percent(interval=0.1)
         cpu_count = psutil.cpu_count(logical=True)
         cpu_count_physical = psutil.cpu_count(logical=False)
         
-        # Per-core usage (optional, can be expensive)
-        per_core = None
-        try:
-            per_core = psutil.cpu_percent(interval=0.1, percpu=True)
-        except Exception:
-            pass
-        
         # Load average (Unix-like systems only)
-        load_avg = None
+        load_avg = [0.0, 0.0, 0.0]
         try:
             if hasattr(os, 'getloadavg'):
-                load_avg = os.getloadavg()  # 1, 5, 15 min averages
+                raw_load = os.getloadavg()
+                load_avg = [round(raw_load[0], 2), round(raw_load[1], 2), round(raw_load[2], 2)]
         except Exception:
+            # Silently use fallback - this is expected on Windows
             pass
         
-        result: Dict[str, Any] = {
+        return {
             "percent": round(cpu_percent, 2),
-            "count_logical": cpu_count,
-            "count_physical": cpu_count_physical,
+            "load_average": load_avg,
+            "cores_logical": cpu_count or 0,
+            "cores_physical": cpu_count_physical or 0,
         }
-        
-        if per_core:
-            result["per_core"] = [round(p, 2) for p in per_core]
-        
-        if load_avg:
-            result["load_average"] = {
-                "1min": round(load_avg[0], 2),
-                "5min": round(load_avg[1], 2),
-                "15min": round(load_avg[2], 2),
-            }
-        
-        return result
     except Exception as e:
         log.error(f"Error reading CPU metrics: {e}")
-        return {"error": f"cpu_read_failed: {str(e)}"}
+        return {
+            "percent": 0.0,
+            "load_average": [0.0, 0.0, 0.0],
+            "cores_logical": 0,
+            "cores_physical": 0,
+            "error": f"cpu_read_failed: {str(e)}"
+        }
 
 
 def get_memory_metrics() -> Dict[str, Any]:
@@ -89,32 +89,48 @@ def get_memory_metrics() -> Dict[str, Any]:
     Get RAM and swap memory metrics.
     
     Returns:
-        Dictionary with memory metrics or error information.
+        Dictionary with memory metrics including:
+        - total: Total RAM in bytes
+        - used: Used RAM in bytes
+        - percent: RAM usage percentage
+        - swap_total: Total swap in bytes
+        - swap_used: Used swap in bytes
+        - swap_percent: Swap usage percentage
     """
     if not PSUTIL_AVAILABLE:
-        return {"error": "psutil_not_available"}
+        return {
+            "total": 0,
+            "used": 0,
+            "percent": 0.0,
+            "swap_total": 0,
+            "swap_used": 0,
+            "swap_percent": 0.0,
+            "error": "psutil_not_available"
+        }
     
     try:
         mem = psutil.virtual_memory()
         swap = psutil.swap_memory()
         
         return {
-            "ram": {
-                "total_gb": round(mem.total / (1024**3), 2),
-                "used_gb": round(mem.used / (1024**3), 2),
-                "available_gb": round(mem.available / (1024**3), 2),
-                "percent": round(mem.percent, 2),
-            },
-            "swap": {
-                "total_gb": round(swap.total / (1024**3), 2),
-                "used_gb": round(swap.used / (1024**3), 2),
-                "free_gb": round(swap.free / (1024**3), 2),
-                "percent": round(swap.percent, 2),
-            },
+            "total": int(mem.total),
+            "used": int(mem.used),
+            "percent": round(mem.percent, 2),
+            "swap_total": int(swap.total),
+            "swap_used": int(swap.used),
+            "swap_percent": round(swap.percent, 2),
         }
     except Exception as e:
         log.error(f"Error reading memory metrics: {e}")
-        return {"error": f"memory_read_failed: {str(e)}"}
+        return {
+            "total": 0,
+            "used": 0,
+            "percent": 0.0,
+            "swap_total": 0,
+            "swap_used": 0,
+            "swap_percent": 0.0,
+            "error": f"memory_read_failed: {str(e)}"
+        }
 
 
 def get_disk_metrics() -> Dict[str, Any]:
@@ -122,25 +138,36 @@ def get_disk_metrics() -> Dict[str, Any]:
     Get disk usage for main partition.
     
     Returns:
-        Dictionary with disk metrics or error information.
+        Dictionary with disk metrics including:
+        - total: Total disk space in bytes
+        - used: Used disk space in bytes
+        - percent: Disk usage percentage
     """
     if not PSUTIL_AVAILABLE:
-        return {"error": "psutil_not_available"}
+        return {
+            "total": 0,
+            "used": 0,
+            "percent": 0.0,
+            "error": "psutil_not_available"
+        }
     
     try:
         # Get disk usage for root partition
         disk = psutil.disk_usage('/')
         
         return {
-            "path": "/",
-            "total_gb": round(disk.total / (1024**3), 2),
-            "used_gb": round(disk.used / (1024**3), 2),
-            "free_gb": round(disk.free / (1024**3), 2),
+            "total": int(disk.total),
+            "used": int(disk.used),
             "percent": round(disk.percent, 2),
         }
     except Exception as e:
         log.error(f"Error reading disk metrics: {e}")
-        return {"error": f"disk_read_failed: {str(e)}"}
+        return {
+            "total": 0,
+            "used": 0,
+            "percent": 0.0,
+            "error": f"disk_read_failed: {str(e)}"
+        }
 
 
 def get_uptime_metrics() -> Dict[str, Any]:
@@ -148,30 +175,28 @@ def get_uptime_metrics() -> Dict[str, Any]:
     Get system uptime.
     
     Returns:
-        Dictionary with uptime metrics or error information.
+        Dictionary with uptime metrics including:
+        - seconds: Uptime in seconds
     """
     if not PSUTIL_AVAILABLE:
-        return {"error": "psutil_not_available"}
+        return {
+            "seconds": 0,
+            "error": "psutil_not_available"
+        }
     
     try:
         boot_time = psutil.boot_time()
         uptime_seconds = time.time() - boot_time
         
-        # Calculate human-readable components
-        days = int(uptime_seconds // 86400)
-        hours = int((uptime_seconds % 86400) // 3600)
-        minutes = int((uptime_seconds % 3600) // 60)
-        
-        boot_timestamp = datetime.fromtimestamp(boot_time, tz=timezone.utc)
-        
         return {
-            "seconds": round(uptime_seconds, 2),
-            "boot_time_iso": boot_timestamp.isoformat(),
-            "human_readable": f"{days}d {hours}h {minutes}m",
+            "seconds": int(uptime_seconds),
         }
     except Exception as e:
         log.error(f"Error reading uptime metrics: {e}")
-        return {"error": f"uptime_read_failed: {str(e)}"}
+        return {
+            "seconds": 0,
+            "error": f"uptime_read_failed: {str(e)}"
+        }
 
 
 def get_gpu_metrics() -> Dict[str, Any]:
@@ -179,10 +204,24 @@ def get_gpu_metrics() -> Dict[str, Any]:
     Get GPU metrics using pynvml (NVIDIA GPUs).
     
     Returns:
-        Dictionary with GPU metrics or error/unavailable information.
+        Dictionary with GPU metrics including:
+        - gpus: List of GPU info dictionaries
+        - error: Error message if pynvml is not available or failed
+        
+        Each GPU dict contains:
+        - index: GPU index
+        - name: GPU name
+        - memory_total: Total VRAM in bytes
+        - memory_used: Used VRAM in bytes
+        - memory_percent: VRAM usage percentage
+        - utilization_percent: GPU utilization percentage (or None)
+        - temperature: GPU temperature in Celsius (or None)
     """
     if not PYNVML_AVAILABLE:
-        return {"available": False, "reason": "pynvml_not_installed"}
+        return {
+            "gpus": [],
+            "error": "pynvml_not_installed"
+        }
     
     try:
         pynvml.nvmlInit()
@@ -190,7 +229,10 @@ def get_gpu_metrics() -> Dict[str, Any]:
         
         if device_count == 0:
             pynvml.nvmlShutdown()
-            return {"available": False, "reason": "no_gpu_detected"}
+            return {
+                "gpus": [],
+                "error": "no_gpu_detected"
+            }
         
         gpus = []
         for i in range(device_count):
@@ -200,39 +242,34 @@ def get_gpu_metrics() -> Dict[str, Any]:
                 
                 # Memory info
                 mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                total_vram_gb = round(mem_info.total / (1024**3), 2)
-                used_vram_gb = round(mem_info.used / (1024**3), 2)
-                free_vram_gb = round(mem_info.free / (1024**3), 2)
-                vram_percent = round((mem_info.used / mem_info.total) * 100, 2)
+                total_vram = int(mem_info.total)
+                used_vram = int(mem_info.used)
+                vram_percent = round((mem_info.used / mem_info.total) * 100, 2) if mem_info.total > 0 else 0.0
                 
                 # Utilization
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                gpu_util = util.gpu
-                mem_util = util.memory
+                util_percent = None
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    util_percent = float(util.gpu)
+                except Exception:
+                    pass
                 
                 # Temperature
+                temp = None
                 try:
-                    temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                    temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
                 except Exception:
-                    temp = None
+                    pass
                 
                 gpu_info: Dict[str, Any] = {
                     "index": i,
                     "name": name if isinstance(name, str) else name.decode('utf-8'),
-                    "vram": {
-                        "total_gb": total_vram_gb,
-                        "used_gb": used_vram_gb,
-                        "free_gb": free_vram_gb,
-                        "percent": vram_percent,
-                    },
-                    "utilization": {
-                        "gpu_percent": gpu_util,
-                        "memory_percent": mem_util,
-                    },
+                    "memory_total": total_vram,
+                    "memory_used": used_vram,
+                    "memory_percent": vram_percent,
+                    "utilization_percent": util_percent,
+                    "temperature": temp,
                 }
-                
-                if temp is not None:
-                    gpu_info["temperature_c"] = temp
                 
                 gpus.append(gpu_info)
                 
@@ -240,15 +277,20 @@ def get_gpu_metrics() -> Dict[str, Any]:
                 log.warning(f"Error reading GPU {i} metrics: {e}")
                 gpus.append({
                     "index": i,
+                    "name": f"GPU {i}",
+                    "memory_total": 0,
+                    "memory_used": 0,
+                    "memory_percent": 0.0,
+                    "utilization_percent": None,
+                    "temperature": None,
                     "error": f"gpu_{i}_read_failed: {str(e)}",
                 })
         
         pynvml.nvmlShutdown()
         
         return {
-            "available": True,
-            "count": device_count,
             "gpus": gpus,
+            "error": None,
         }
         
     except Exception as e:
@@ -257,7 +299,10 @@ def get_gpu_metrics() -> Dict[str, Any]:
             pynvml.nvmlShutdown()
         except Exception:
             pass
-        return {"available": False, "reason": f"nvml_init_failed: {str(e)}"}
+        return {
+            "gpus": [],
+            "error": f"nvml_init_failed: {str(e)}"
+        }
 
 
 def get_system_status() -> Dict[str, Any]:
@@ -267,35 +312,74 @@ def get_system_status() -> Dict[str, Any]:
     This function never raises exceptions - all errors are captured and returned
     in the result dictionary.
     
-    Returns:
-        Dictionary with:
-            - ok: bool (true if basic CPU+RAM metrics were read successfully)
-            - timestamp: ISO timestamp when metrics were collected
-            - metrics: dict with cpu, ram, disk, gpu, uptime sub-sections
-    """
-    timestamp = datetime.now(timezone.utc).isoformat()
+    RETURNS STRUCTURE (JSON-safe):
+    {
+        "ok": bool,                      # true if psutil/core metrics available
+        "psutil_available": bool,
+        "pynvml_available": bool,
+        "cpu": {
+            "percent": float,
+            "load_average": [float, float, float],  # 1,5,15 min
+            "cores_logical": int,
+            "cores_physical": int
+        },
+        "memory": {
+            "total": int,                # bytes
+            "used": int,                 # bytes
+            "percent": float,
+            "swap_total": int,           # bytes
+            "swap_used": int,            # bytes
+            "swap_percent": float
+        },
+        "disk": {
+            "total": int,                # bytes
+            "used": int,                 # bytes
+            "percent": float
+        },
+        "gpu": {
+            "gpus": [
+                {
+                    "index": int,
+                    "name": str,
+                    "memory_total": int,
+                    "memory_used": int,
+                    "memory_percent": float,
+                    "utilization_percent": float | None,
+                    "temperature": float | None
+                }
+            ],
+            "error": str | None
+        },
+        "uptime": {
+            "seconds": int
+        }
+    }
     
+    Returns:
+        Dictionary with system status as described above
+    """
+    # Collect all metrics (they never raise exceptions)
     cpu = get_cpu_metrics()
     memory = get_memory_metrics()
     disk = get_disk_metrics()
     uptime = get_uptime_metrics()
     gpu = get_gpu_metrics()
     
-    # Consider the system check successful if we can read basic CPU and RAM metrics
+    # Determine overall status
+    # ok = True only if we can read basic CPU and RAM metrics AND psutil is available
     ok = (
-        "error" not in cpu
+        PSUTIL_AVAILABLE
+        and "error" not in cpu
         and "error" not in memory
-        and PSUTIL_AVAILABLE
     )
     
     return {
         "ok": ok,
-        "timestamp": timestamp,
-        "metrics": {
-            "cpu": cpu,
-            "memory": memory,
-            "disk": disk,
-            "uptime": uptime,
-            "gpu": gpu,
-        },
+        "psutil_available": PSUTIL_AVAILABLE,
+        "pynvml_available": PYNVML_AVAILABLE,
+        "cpu": cpu,
+        "memory": memory,
+        "disk": disk,
+        "gpu": gpu,
+        "uptime": uptime,
     }
