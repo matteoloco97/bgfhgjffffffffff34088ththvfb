@@ -1067,6 +1067,10 @@ async def _web_search_pipeline(
     nsum: int = 2,
 ) -> Dict[str, Any]:
     t_start = time.perf_counter()
+    
+    # Initialize timing variables to avoid UnboundLocalError
+    preprocess_ms = 0
+    llm_ms = 0
 
     # 🔒 Guard: non cercare MAI su smalltalk
     if _is_smalltalk_query(q):
@@ -1463,14 +1467,14 @@ async def _web_search_pipeline(
 
     # Calculate total time and post-process time
     total_ms = int((time.perf_counter() - t_start) * 1000)
-    post_ms = total_ms - fetch_duration_ms - (preprocess_ms if 'preprocess_ms' in locals() else 0) - (llm_ms if 'llm_ms' in locals() else 0)
+    post_ms = total_ms - fetch_duration_ms - preprocess_ms - llm_ms
     
     # Performance breakdown log
     log.info(
         f"[PERF] Web synthesis breakdown: "
         f"fetch={fetch_duration_ms}ms, "
-        f"preprocess={preprocess_ms if 'preprocess_ms' in locals() else 0}ms, "
-        f"llm={llm_ms if 'llm_ms' in locals() else 0}ms, "
+        f"preprocess={preprocess_ms}ms, "
+        f"llm={llm_ms}ms, "
         f"postprocess={max(0, post_ms)}ms, "
         f"total={total_ms}ms"
     )
