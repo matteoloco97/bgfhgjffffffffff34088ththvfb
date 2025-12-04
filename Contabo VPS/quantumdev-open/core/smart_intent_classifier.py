@@ -347,6 +347,46 @@ class SmartIntentClassifier:
         return SmartIntentClassifier._clean(text).lower()
 
     @staticmethod
+    def _clean_query_for_matching(text: str) -> str:
+        """Remove punctuation (?!.,;:) and normalize whitespace for pattern matching.
+        
+        This method strips common punctuation that can interfere with keyword
+        and pattern matching while preserving the semantic content of the query.
+        The original query is maintained for other uses (logging, display, etc.).
+        
+        Parameters
+        ----------
+        text : str
+            The query text to clean.
+        
+        Returns
+        -------
+        str
+            Cleaned query with punctuation removed and normalized whitespace.
+        
+        Examples
+        --------
+        >>> SmartIntentClassifier._clean_query_for_matching("Meteo Roma?")
+        "Meteo Roma"
+        >>> SmartIntentClassifier._clean_query_for_matching("Prezzo Bitcoin!!!")
+        "Prezzo Bitcoin"
+        >>> SmartIntentClassifier._clean_query_for_matching("Chi è Einstein?!")
+        "Chi è Einstein"
+        """
+        if not text:
+            return ""
+        
+        # Remove punctuation: ?!.,;:
+        cleaned = text
+        for char in "?!.,;:":
+            cleaned = cleaned.replace(char, "")
+        
+        # Normalize whitespace (collapse multiple spaces into one)
+        cleaned = " ".join(cleaned.split())
+        
+        return cleaned.strip()
+
+    @staticmethod
     def _extract_url(text: str) -> Optional[str]:
         """Extract the first URL from a given text or return None if
         no URL is present.  Only HTTP and HTTPS URLs are recognised.
@@ -427,6 +467,10 @@ class SmartIntentClassifier:
         """
         raw = self._clean(text)
         low = self._lower(text)
+        
+        # Clean query for pattern matching (removes punctuation ?!.,;:)
+        # Use this for keyword and pattern checks, but keep 'low' for other uses
+        low_clean = self._lower(self._clean_query_for_matching(text))
 
         # If the input is empty, return a low‑confidence DIRECT_LLM
         if not raw:
@@ -448,7 +492,8 @@ class SmartIntentClassifier:
             }, source="pattern")
 
         # Handle basic greetings or confirmations via the LLM
-        if _SMALLTALK_RE.search(low):
+        # Use low_clean for pattern matching to ignore punctuation
+        if _SMALLTALK_RE.search(low_clean):
             return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.9,
@@ -458,7 +503,8 @@ class SmartIntentClassifier:
         # One‑word queries like "Roma" or "Einstein" typically
         # correspond to a general knowledge lookup.  We route these
         # through the web for the most up‑to‑date information.
-        tokens = low.split()
+        # Use low_clean to properly count tokens without punctuation
+        tokens = low_clean.split()
         if len(tokens) == 1:
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
@@ -471,7 +517,8 @@ class SmartIntentClassifier:
         # If the text matches our general‑knowledge patterns, send it to
         # web search rather than the LLM so the assistant can draw on
         # external sources and deliver citations.
-        if _GENERAL_KNOWLEDGE_RE.search(low):
+        # Use low_clean for pattern matching
+        if _GENERAL_KNOWLEDGE_RE.search(low_clean):
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.9,
@@ -481,13 +528,15 @@ class SmartIntentClassifier:
             }, source="pattern")
 
         # Determine whether the prompt contains any temporal indicators
-        has_live_time = any(k in low for k in self.time_live_keywords)
+        # Use low_clean for keyword matching
+        has_live_time = any(k in low_clean for k in self.time_live_keywords)
 
         # Weather queries: if the prompt mentions weather terms or matches
         # weather patterns, send directly to web search.
         # STEP 2: Enhanced with LLM fallback for borderline cases
-        has_weather_keyword = any(k in low for k in self.weather_keywords)
-        has_weather_pattern = any(re.search(p, low) for p in self.weather_patterns)
+        # Use low_clean for keyword and pattern matching
+        has_weather_keyword = any(k in low_clean for k in self.weather_keywords)
+        has_weather_pattern = any(re.search(p, low_clean) for p in self.weather_patterns)
         
         if has_weather_keyword or has_weather_pattern:
             # High confidence if both keyword AND pattern match
@@ -503,8 +552,9 @@ class SmartIntentClassifier:
         # Price/market queries: an asset keyword plus either a price
         # trigger or a temporal hint implies the user wants a live
         # quote.  Route to web search and mark the live_type.
-        has_asset = any(k in low for k in self.asset_keywords)
-        has_price_trigger = any(k in low for k in self.price_trigger_keywords)
+        # Use low_clean for keyword matching
+        has_asset = any(k in low_clean for k in self.asset_keywords)
+        has_price_trigger = any(k in low_clean for k in self.price_trigger_keywords)
         if has_asset and (has_price_trigger or has_live_time):
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
@@ -527,7 +577,8 @@ class SmartIntentClassifier:
         
         # PRIORITÀ: Travel keywords → check PRIMA di sports per evitare conflitti
         # Es: "volo roma parigi" non deve matchare "roma" come squadra
-        has_travel = any(k in low for k in self.travel_keywords)
+        # Use low_clean for keyword matching
+        has_travel = any(k in low_clean for k in self.travel_keywords)
         if has_travel:
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
@@ -541,7 +592,8 @@ class SmartIntentClassifier:
         # accompanied by temporal hints (today, yesterday).  These
         # queries are best answered with a fresh web search.
         # EXTENDED: anche senza hint temporali se menziona squadre/competizioni
-        has_sports_keywords = any(k in low for k in self.results_keywords)
+        # Use low_clean for keyword matching
+        has_sports_keywords = any(k in low_clean for k in self.results_keywords)
         if has_sports_keywords:
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
@@ -552,7 +604,8 @@ class SmartIntentClassifier:
             }, source="pattern")
 
         # Schedule/time requests: look up event times using live data.
-        if any(k in low for k in self.schedule_keywords):
+        # Use low_clean for keyword matching
+        if any(k in low_clean for k in self.schedule_keywords):
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.88,
@@ -564,8 +617,9 @@ class SmartIntentClassifier:
         # Generic news queries or references to current events trigger a
         # search for recent headlines.
         # STEP 2: Enhanced with pattern confidence check
-        has_news_keywords = any(k in low for k in self.news_keywords)
-        has_news_with_time = "news" in low and has_live_time
+        # Use low_clean for keyword matching
+        has_news_keywords = any(k in low_clean for k in self.news_keywords)
+        has_news_with_time = "news" in low_clean and has_live_time
         
         if has_news_keywords or has_news_with_time:
             pattern_result = self._normalize_result({
@@ -578,7 +632,8 @@ class SmartIntentClassifier:
             return pattern_result
         
         # NUOVO: Betting keywords → WEB_SEARCH per dati aggiornati
-        if any(k in low for k in self.betting_keywords):
+        # Use low_clean for keyword matching
+        if any(k in low_clean for k in self.betting_keywords):
             return self._normalize_result({
                 "intent": "WEB_SEARCH",
                 "confidence": 0.80,
@@ -588,9 +643,10 @@ class SmartIntentClassifier:
             }, source="pattern")
         
         # NUOVO: Trading keywords → mix LLM + context
-        if any(k in low for k in self.trading_keywords):
+        # Use low_clean for keyword matching
+        if any(k in low_clean for k in self.trading_keywords):
             # Se è una domanda educativa ("cos'è lo stop loss") → LLM
-            if _GENERAL_KNOWLEDGE_RE.search(low):
+            if _GENERAL_KNOWLEDGE_RE.search(low_clean):
                 return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.85,
@@ -607,7 +663,8 @@ class SmartIntentClassifier:
         
         # NUOVO: Code generation → DIRECT_LLM con alta confidence
         # Richieste esplicite di generazione codice vanno direttamente al LLM
-        if any(k in low for k in self.code_generation_keywords):
+        # Use low_clean for keyword matching
+        if any(k in low_clean for k in self.code_generation_keywords):
             return self._normalize_result({
                 "intent": "DIRECT_LLM",
                 "confidence": 0.95,
@@ -616,9 +673,10 @@ class SmartIntentClassifier:
             }, source="pattern")
         
         # NUOVO: Health keywords → WEB_SEARCH (con nota che non è consiglio medico)
-        if any(k in low for k in self.health_keywords):
+        # Use low_clean for keyword matching
+        if any(k in low_clean for k in self.health_keywords):
             # Domande educative → LLM
-            if _GENERAL_KNOWLEDGE_RE.search(low):
+            if _GENERAL_KNOWLEDGE_RE.search(low_clean):
                 return self._normalize_result({
                     "intent": "DIRECT_LLM",
                     "confidence": 0.80,
@@ -638,9 +696,10 @@ class SmartIntentClassifier:
         # should stay within the LLM environment.  Recognise Italian
         # verbs like "scrivi", "genera", "crea" and treat them as
         # direct commands rather than search queries.
+        # Use low_clean for pattern matching
         if re.search(
             r"\b(scrivi|genera|crea|aggiorna|ottimizza|refactor|fixa|implementa|programma|codice)\b",
-            low,
+            low_clean,
         ):
             return self._normalize_result({
                 "intent": "DIRECT_LLM",
