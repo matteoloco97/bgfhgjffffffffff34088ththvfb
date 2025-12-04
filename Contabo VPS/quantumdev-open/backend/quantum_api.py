@@ -104,6 +104,16 @@ except Exception:  # pragma: no cover
 from core.chat_engine import reply_with_llm
 from core.memory_autosave import autosave
 
+# LLM config presets for optimized parameters
+try:
+    from core.llm_config import get_preset, to_payload_params
+except Exception:
+    # Fallback if llm_config not available
+    def get_preset(name):  # type: ignore
+        return None
+    def to_payload_params(preset):  # type: ignore
+        return {}
+
 # === TOOLS (BLOCK 4) ===
 from core.calculator import Calculator, is_calculator_query
 from agents.code_execution import run_code
@@ -1057,6 +1067,10 @@ async def _web_search_pipeline(
     nsum: int = 2,
 ) -> Dict[str, Any]:
     t_start = time.perf_counter()
+    
+    # Initialize timing variables to avoid UnboundLocalError
+    preprocess_ms = 0
+    llm_ms = 0
 
     # 🔒 Guard: non cercare MAI su smalltalk
     if _is_smalltalk_query(q):
@@ -1281,6 +1295,9 @@ async def _web_search_pipeline(
     note: Optional[str] = "live_query" if _is_quick_live_query(q) else None
 
     if extracts:
+        # Timing: Start preprocessing
+        t_preprocess_start = time.perf_counter()
+        
         persona = await get_persona(src, sid)
 
         # Documenti usati per la sintesi (limite nsum)
@@ -1296,15 +1313,44 @@ async def _web_search_pipeline(
             )
         ctx = "\n\n".join(ctx_parts)
         ctx = trim_to_tokens(ctx, WEB_SUMMARY_BUDGET_TOK)
+        
+        preprocess_ms = int((time.perf_counter() - t_preprocess_start) * 1000)
 
         # PROBLEMA 2: Use concise formatter if enabled, otherwise use aggressive synthesis
         try:
+            # Timing: Start LLM call
+            t_llm_start = time.perf_counter()
+            
             if WEB_USE_CONCISE_FORMATTER:
                 # ⚡ CONCISE FORMATTER (max 50 words, 120 tokens)
+                # Get optimized preset for web synthesis
+                web_preset = get_preset("web_synthesis")
+                
+                # Create wrapper function that applies optimized parameters
+                async def llm_func_optimized(prompt, persona_arg):
+                    if web_preset:
+                        return await reply_with_llm(
+                            prompt,
+                            persona_arg,
+                            temperature=web_preset.temperature,
+                            max_tokens=web_preset.max_tokens,
+                            stop_sequences=web_preset.stop_sequences,
+                            repetition_penalty=web_preset.repetition_penalty,
+                        )
+                    else:
+                        # Fallback to direct optimized params
+                        return await reply_with_llm(
+                            prompt,
+                            persona_arg,
+                            temperature=0.2,
+                            max_tokens=120,
+                            stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:"],
+                        )
+                
                 summary = await format_web_response(
                     query=q,
                     extracts=synth_docs,
-                    llm_func=reply_with_llm,
+                    llm_func=llm_func_optimized,
                     persona=persona,
                 )
                 log.info(f"Used concise formatter: {len(summary.split())} words")
@@ -1324,7 +1370,11 @@ async def _web_search_pipeline(
                     ],
                 )
                 summary = await reply_with_llm(prompt, persona)
+            
+            llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
+            
         except Exception as e:
+            llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
             log.error(f"Synthesis failed: {e}")
             summary = ""
             note = note or "llm_summary_failed"
@@ -1414,6 +1464,20 @@ async def _web_search_pipeline(
                 log.info(f"[autosave:web_search] {asv}")
     except Exception as e:  # pragma: no cover
         log.warning(f"AutoSave web_search failed: {e}")
+
+    # Calculate total time and post-process time
+    total_ms = int((time.perf_counter() - t_start) * 1000)
+    post_ms = total_ms - fetch_duration_ms - preprocess_ms - llm_ms
+    
+    # Performance breakdown log
+    log.info(
+        f"[PERF] Web synthesis breakdown: "
+        f"fetch={fetch_duration_ms}ms, "
+        f"preprocess={preprocess_ms}ms, "
+        f"llm={llm_ms}ms, "
+        f"postprocess={max(0, post_ms)}ms, "
+        f"total={total_ms}ms"
+    )
 
     stats = {
         "raw_results": len(raw),
