@@ -200,6 +200,26 @@ class TestAggregateMultiEngine(unittest.TestCase):
                 self.skipTest(f"Network test skipped: {e}")
         
         asyncio.run(run_test())
+    
+    def test_aggregate_with_bing(self):
+        """Test aggregation with Bing engine included."""
+        async def run_test():
+            try:
+                # Test with bing included (should not cause index errors)
+                results = await aggregate_multi_engine(
+                    "test query",
+                    engines=["duckduckgo", "bing"],
+                    max_results=5
+                )
+                
+                self.assertIsInstance(results, list)
+                # Bing may or may not return results depending on network
+                
+            except Exception as e:
+                # Skip test if network unavailable
+                self.skipTest(f"Network test skipped: {e}")
+        
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

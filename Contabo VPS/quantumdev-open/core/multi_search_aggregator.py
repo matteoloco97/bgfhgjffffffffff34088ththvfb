@@ -99,19 +99,23 @@ async def aggregate_multi_engine(
     
     # Parallel search su tutti i motori
     tasks = []
+    task_engine_names = []  # Track which engine each task corresponds to
     
     if "brave" in engines:
         tasks.append(search_brave(query, BRAVE_COUNT))
+        task_engine_names.append("brave")
     
     if "duckduckgo" in engines:
         # Import esistente core/web_search.py
         from core.web_search import search as ddg_search
         tasks.append(asyncio.to_thread(ddg_search, query, num=10))
+        task_engine_names.append("duckduckgo")
     
     if "bing" in engines:
-        # Se BING abilitato, usa lo stesso pattern
-        # (assumo esista già in web_search.py)
-        pass
+        # Import bing search from web_search.py
+        from core.web_search import _search_bing_html
+        tasks.append(asyncio.to_thread(_search_bing_html, query, 10))
+        task_engine_names.append("bing")
     
     # Execute parallel
     results_by_engine = await asyncio.gather(*tasks, return_exceptions=True)
@@ -119,8 +123,9 @@ async def aggregate_multi_engine(
     # Flatten results
     all_results = []
     for i, engine_results in enumerate(results_by_engine):
+        engine_name = task_engine_names[i] if i < len(task_engine_names) else "unknown"
         if isinstance(engine_results, Exception):
-            log.warning(f"Engine {engines[i]} failed: {engine_results}")
+            log.warning(f"Engine {engine_name} failed: {engine_results}")
             continue
         
         if engine_results:
