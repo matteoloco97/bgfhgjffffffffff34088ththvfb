@@ -10,6 +10,9 @@ from typing import Dict, Any, Optional
 import requests
 from dotenv import load_dotenv
 
+# Import logging at module level
+import logging
+
 from core.datetime_helper import format_datetime_context
 
 # === Token budget utils (fallback interni se modulo non presente) ===
@@ -24,6 +27,9 @@ except Exception:
         return s[: max_tokens * 4]
 
 load_dotenv()
+
+# Setup logging
+log = logging.getLogger(__name__)
 
 # === ENV helpers ===
 def _env_int(name: str, default: int) -> int:
@@ -135,13 +141,58 @@ def _extract_text(data: Dict[str, Any]) -> str:
         raise ValueError(f"Formato risposta inatteso: {e}")
 
 # === Main async API ===
-async def reply_with_llm(user_text: str, persona: str) -> str:
+async def reply_with_llm(
+    user_text: str, 
+    persona: str,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    stop_sequences: Optional[list] = None,
+    repetition_penalty: Optional[float] = None,
+) -> str:
     """
     Chiama il modello e RITORNA solo testo.
-    Non restituisce stringhe di errore visibili all’utente:
+    Non restituisce stringhe di errore visibili all'utente:
     in caso di problemi alza eccezioni (gestite dal chiamante).
+    
+    Parameters
+    ----------
+    user_text : str
+        Testo del messaggio utente.
+    persona : str
+        System prompt/persona per il contesto.
+    temperature : float, optional
+        Override della temperatura (default da env LLM_TEMPERATURE).
+    max_tokens : int, optional
+        Override del max tokens (default da env LLM_MAX_TOKENS).
+    stop_sequences : list, optional
+        Sequenze di stop opzionali.
+    repetition_penalty : float, optional
+        Penalità per ripetizioni (supporto dipende dal backend).
+    
+    Returns
+    -------
+    str
+        Risposta del modello LLM.
+    
+    Raises
+    ------
+    RuntimeError
+        Se tutti i tentativi falliscono.
     """
+    t_start = time.perf_counter()
+    
     payload = _build_payload(user_text, persona)
+
+    # Apply optional overrides
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+    if max_tokens is not None:
+        payload["max_tokens"] = int(max_tokens)
+    if stop_sequences is not None and stop_sequences:
+        payload["stop"] = stop_sequences
+    if repetition_penalty is not None:
+        # Some backends support this, others ignore it
+        payload["repetition_penalty"] = float(repetition_penalty)
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, RETRY_ATTEMPTS + 2):  # es. 1 tentativo + 2 retry = 3 tot
@@ -156,7 +207,13 @@ async def reply_with_llm(user_text: str, persona: str) -> str:
                 raise RuntimeError(f"LLM HTTP {r.status_code}: {err_snip}")
 
             data = r.json()
-            return _extract_text(data)
+            response_text = _extract_text(data)
+            
+            # Log timing
+            elapsed_ms = int((time.perf_counter() - t_start) * 1000)
+            log.info(f"LLM response time: {elapsed_ms}ms")
+            
+            return response_text
 
         except (requests.exceptions.Timeout, asyncio.TimeoutError) as e:
             last_exc = e
@@ -185,7 +242,13 @@ def reply_with_llm_sync(user_text: str, persona: str) -> str:
                 err_snip = (r.text or "")[:300]
                 raise RuntimeError(f"LLM HTTP {r.status_code}: {err_snip}")
             data = r.json()
-            return _extract_text(data)
+            response_text = _extract_text(data)
+            
+            # Log timing
+            elapsed_ms = int((time.perf_counter() - t_start) * 1000)
+            log.info(f"LLM response time: {elapsed_ms}ms")
+            
+            return response_text
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_exc = e
         except Exception as e:

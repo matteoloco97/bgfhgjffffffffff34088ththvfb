@@ -21,6 +21,13 @@ from typing import List, Dict, Any, Callable, Awaitable, Optional
 # Setup logging
 log = logging.getLogger(__name__)
 
+# Pre-compile regex patterns for performance (module level)
+_HTML_TAG_PATTERN = re.compile(r'<[^>]+>')
+_HTML_ENTITY_PATTERN = re.compile(r'&[a-zA-Z]+;|&#\d+;')
+_DUPLICATE_WHITESPACE = re.compile(r'\s+')
+_DUPLICATE_SENTENCES = re.compile(r'(\b.{20,}\b).*?\1', re.IGNORECASE)
+_VERBOSE_PHRASES_COMPILED = None  # Will be compiled on first use
+
 # Hard limit on response tokens
 MAX_RESPONSE_TOKENS = 120
 MAX_RESPONSE_WORDS = 50
@@ -41,8 +48,51 @@ VERBOSE_PHRASES = [
 ]
 
 
+def _get_verbose_phrases_compiled():
+    """Lazy compile verbose phrases patterns (singleton pattern)."""
+    global _VERBOSE_PHRASES_COMPILED
+    if _VERBOSE_PHRASES_COMPILED is None:
+        _VERBOSE_PHRASES_COMPILED = [
+            re.compile(pattern, re.IGNORECASE) for pattern in VERBOSE_PHRASES
+        ]
+    return _VERBOSE_PHRASES_COMPILED
+
+
+def _clean_extract(text: str) -> str:
+    """Pulizia veloce HTML/duplicati usando pattern pre-compilati.
+    
+    Parameters
+    ----------
+    text : str
+        Testo estratto da pulire.
+    
+    Returns
+    -------
+    str
+        Testo pulito senza HTML, entità, duplicati.
+    """
+    if not text:
+        return ""
+    
+    # Remove HTML tags
+    cleaned = _HTML_TAG_PATTERN.sub('', text)
+    
+    # Remove HTML entities
+    cleaned = _HTML_ENTITY_PATTERN.sub(' ', cleaned)
+    
+    # Normalize whitespace
+    cleaned = _DUPLICATE_WHITESPACE.sub(' ', cleaned)
+    
+    # Remove obvious duplicates (same sentence repeated)
+    cleaned = _DUPLICATE_SENTENCES.sub(r'\1', cleaned)
+    
+    return cleaned.strip()
+
+
 def _remove_verbose_phrases(text: str) -> str:
     """Remove verbose preamble phrases from the response text.
+    
+    Uses pre-compiled regex patterns for better performance.
     
     Parameters
     ----------
@@ -58,11 +108,13 @@ def _remove_verbose_phrases(text: str) -> str:
         return ""
     
     cleaned = text
-    for phrase_pattern in VERBOSE_PHRASES:
-        cleaned = re.sub(phrase_pattern, "", cleaned, flags=re.IGNORECASE)
+    compiled_patterns = _get_verbose_phrases_compiled()
+    
+    for pattern in compiled_patterns:
+        cleaned = pattern.sub("", cleaned)
     
     # Clean up any resulting double spaces or leading/trailing commas
-    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = _DUPLICATE_WHITESPACE.sub(' ', cleaned)
     cleaned = re.sub(r'^\s*,\s*', '', cleaned)
     cleaned = re.sub(r'\s*,\s*$', '', cleaned)
     
@@ -130,11 +182,203 @@ def _count_words(text: str) -> int:
     return len(text.split())
 
 
+def _approx_tokens(text: str) -> int:
+    """Fast token approximation (1 token ≈ 4 characters).
+    
+    Parameters
+    ----------
+    text : str
+        Text to estimate tokens for.
+    
+    Returns
+    -------
+    int
+        Approximate number of tokens.
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+def _extract_keywords(query: str, top_n: int = 5) -> List[str]:
+    """Extract top keywords from query for relevance scoring.
+    
+    Parameters
+    ----------
+    query : str
+        User query.
+    top_n : int, optional
+        Number of top keywords to extract.
+    
+    Returns
+    -------
+    List[str]
+        List of keywords (lowercased, no stopwords).
+    """
+    # Simple keyword extraction (remove common stopwords)
+    stopwords = {
+        'il', 'lo', 'la', 'i', 'gli', 'le', 'di', 'da', 'a', 'in', 'su', 'per',
+        'con', 'tra', 'fra', 'che', 'e', 'o', 'ma', 'come', 'quando', 'dove',
+        'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or',
+        'what', 'when', 'where', 'how', 'why', 'is', 'are', 'was', 'were',
+    }
+    
+    words = query.lower().split()
+    keywords = [w for w in words if len(w) > 2 and w not in stopwords]
+    
+    # Return top_n or all if fewer
+    return keywords[:top_n]
+
+
+def _score_extract_relevance(extract_text: str, keywords: List[str]) -> float:
+    """Score extract relevance based on keyword presence.
+    
+    Parameters
+    ----------
+    extract_text : str
+        Extract text to score.
+    keywords : List[str]
+        Keywords from query.
+    
+    Returns
+    -------
+    float
+        Relevance score (0.0 to 1.0).
+    """
+    if not keywords or not extract_text:
+        return 0.5  # Neutral score
+    
+    text_lower = extract_text.lower()
+    matches = sum(1 for kw in keywords if kw in text_lower)
+    
+    return min(1.0, matches / len(keywords))
+
+
+def smart_trim_extracts(
+    extracts: List[Dict[str, Any]], 
+    query: str,
+    max_sources: int = 5,
+    max_chars_per_source: int = 200,
+    max_total_tokens: int = 400
+) -> List[Dict[str, Any]]:
+    """Trim intelligente estratti mantenendo info chiave.
+    
+    Strategia:
+    1. Limita a max_sources fonti
+    2. Calcola token per estratto
+    3. Prioritizza estratti con keywords dalla query
+    4. Tronca intelligentemente mantenendo frasi complete
+    5. Bilancia tra quantità fonti e profondità per fonte
+    
+    Parameters
+    ----------
+    extracts : List[Dict[str, Any]]
+        Lista estratti con keys: url, title, text.
+    query : str
+        Query utente per keyword extraction.
+    max_sources : int, optional
+        Numero massimo di fonti da mantenere.
+    max_chars_per_source : int, optional
+        Massimo caratteri per fonte.
+    max_total_tokens : int, optional
+        Budget totale token per tutti gli estratti.
+    
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Lista di estratti trimmed, max max_sources fonti.
+    
+    Examples
+    --------
+    >>> extracts = [
+    ...     {"url": "...", "title": "Bitcoin", "text": "Bitcoin è..."},
+    ...     {"url": "...", "title": "Crypto", "text": "Le crypto..."}
+    ... ]
+    >>> trimmed = smart_trim_extracts(extracts, "prezzo bitcoin")
+    >>> len(trimmed) <= 5
+    True
+    """
+    if not extracts:
+        return []
+    
+    # 1. Limit to max_sources
+    limited = extracts[:max_sources]
+    
+    # 2. Extract keywords from query
+    keywords = _extract_keywords(query)
+    
+    # 3. Score and sort by relevance
+    scored_extracts = []
+    for ext in limited:
+        text = ext.get('text', '')
+        score = _score_extract_relevance(text, keywords)
+        scored_extracts.append((score, ext))
+    
+    # Sort by score descending
+    scored_extracts.sort(key=lambda x: x[0], reverse=True)
+    
+    # 4. Clean and trim each extract
+    trimmed_extracts = []
+    total_tokens_used = 0
+    
+    for score, ext in scored_extracts:
+        text = ext.get('text', '')
+        
+        # Clean HTML and duplicates
+        cleaned_text = _clean_extract(text)
+        
+        # Trim to max chars, preserving sentence boundaries
+        if len(cleaned_text) > max_chars_per_source:
+            # Try to cut at sentence boundary
+            truncated = cleaned_text[:max_chars_per_source]
+            last_period = max(
+                truncated.rfind('.'),
+                truncated.rfind('!'),
+                truncated.rfind('?')
+            )
+            
+            if last_period > max_chars_per_source * 0.6:  # At least 60% of limit
+                cleaned_text = truncated[:last_period + 1].strip()
+            else:
+                # Cut at word boundary
+                cleaned_text = truncated.rsplit(' ', 1)[0].strip() + '...'
+        
+        # Calculate tokens
+        tokens = _approx_tokens(cleaned_text)
+        
+        # Check budget
+        if total_tokens_used + tokens > max_total_tokens and trimmed_extracts:
+            # If we already have some extracts, stop here
+            break
+        
+        total_tokens_used += tokens
+        
+        # Create trimmed extract
+        trimmed_ext = {
+            'url': ext.get('url', ''),
+            'title': ext.get('title', ''),
+            'text': cleaned_text,
+            'tokens': tokens,
+            'relevance_score': score,
+        }
+        
+        trimmed_extracts.append(trimmed_ext)
+    
+    log.info(
+        f"Smart trim: {len(extracts)} → {len(trimmed_extracts)} sources, "
+        f"{total_tokens_used} tokens (budget: {max_total_tokens})"
+    )
+    
+    return trimmed_extracts
+
+
 def _build_concise_prompt(
     query: str,
     extracts: List[Dict[str, Any]],
 ) -> str:
     """Build ultra-concise synthesis prompt (max 50 words output).
+    
+    Uses smart trimming to optimize input for faster LLM processing.
     
     Parameters
     ----------
@@ -148,18 +392,22 @@ def _build_concise_prompt(
     str
         The formatted prompt for LLM.
     """
-    # Build context from extracts
+    # Apply smart trimming BEFORE building prompt (reduces tokens)
+    trimmed_extracts = smart_trim_extracts(
+        extracts, 
+        query, 
+        max_sources=3,  # Max 3 sources for speed
+        max_chars_per_source=200,  # 200 chars per source
+        max_total_tokens=400  # Total budget for all extracts
+    )
+    
+    # Build context from trimmed extracts
     context_parts: List[str] = []
-    for i, extract in enumerate(extracts[:3], 1):  # Max 3 sources
+    for i, extract in enumerate(trimmed_extracts, 1):
         title = extract.get('title', 'Untitled')
         text = extract.get('text', '')
         
-        # Limit each extract to ~200 chars
-        text_snippet = text[:200].strip()
-        if len(text) > 200:
-            text_snippet += '...'
-        
-        context_parts.append(f"[{i}] {title}: {text_snippet}")
+        context_parts.append(f"[{i}] {title}: {text}")
     
     context = "\n".join(context_parts)
     
