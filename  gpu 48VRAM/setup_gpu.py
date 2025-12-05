@@ -17,6 +17,7 @@ import hmac
 import shutil
 import hashlib
 import subprocess
+import uuid
 from pathlib import Path
 
 # ========= CONFIG =========
@@ -37,38 +38,78 @@ MAX_MODEL_LEN = 3072
 GPU_MEMORY_UTIL = 0.80
 MAX_NUM_SEQS = 1
 
-CPU_HOST = "84.247.166.247"
-CPU_USER = "gpu-tunnel"
-CPU_PORT = 22
-CPU_TUNNEL_PORT = 9001
+# Load configuration from environment variables
+CPU_HOST = os.getenv("CPU_HOST")
+CPU_USER = os.getenv("CPU_USER", "gpu-tunnel")
+CPU_PORT = int(os.getenv("CPU_PORT", "22"))
+CPU_TUNNEL_PORT = int(os.getenv("CPU_TUNNEL_PORT", "9001"))
 
-GPU_SSH_PRIVATE_KEY = """-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACB/iSyF5LPK16ou4DU+lGoNDc+swOOHqugFR2jeRPAvWwAAAJjx5ttG8ebb
-RgAAAAtzc2gtZWQyNTUxOQAAACB/iSyF5LPK16ou4DU+lGoNDc+swOOHqugFR2jeRPAvWw
-AAAEADZomzFLVB/TW99QVgGAeU+vQqGGyHLVBVKhZlnVbkmX+JLIXks8rXqi7gNT6Uag0N
-z6zA44eq6AVHaN5E8C9bAAAAD2dwdS10dW5uZWxAdmFzdAECAwQFBg==
------END OPENSSH PRIVATE KEY-----"""
+GPU_SSH_PRIVATE_KEY = os.getenv("GPU_SSH_PRIVATE_KEY", "").strip()
 
-BACKEND_API = f"http://{CPU_HOST}:8081/update_gpu"
-SHARED_SECRET = "5e6ad9f7c2b14dceb2f4a1a9087c3da0d4a885c3e85f1b2d47a6f0e9c3b21d77"
+BACKEND_API = os.getenv("BACKEND_API")
+SHARED_SECRET = os.getenv("SHARED_SECRET", "").strip()
+
+# Generate correlation ID for this setup run
+CORRELATION_ID = str(uuid.uuid4())[:8]
 
 # ========= Logging =========
 
 def log(msg: str, level="INFO"):
+    """Log message with timestamp, correlation ID, and level."""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [{level}] {msg}"
+    line = f"[{ts}] [{CORRELATION_ID}] [{level}] {msg}"
     print(line)
     try:
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
-    except:
-        pass
+    except Exception as e:
+        # Only fail silently for logging errors
+        print(f"Warning: Could not write to log file: {e}", file=sys.stderr)
 
 def section(title: str):
     log("=" * 80)
     log(title)
     log("=" * 80)
+
+
+def validate_environment():
+    """Validate that all required environment variables are set."""
+    section("🔍 ENVIRONMENT VALIDATION")
+    
+    missing = []
+    warnings = []
+    
+    # Required variables
+    if not CPU_HOST:
+        missing.append("CPU_HOST - The hostname/IP of the CPU server")
+    
+    if not BACKEND_API:
+        missing.append("BACKEND_API - The backend API endpoint for registration")
+    
+    # Optional but recommended variables
+    if not GPU_SSH_PRIVATE_KEY:
+        warnings.append("GPU_SSH_PRIVATE_KEY - SSH tunnel will be disabled")
+    
+    if not SHARED_SECRET:
+        warnings.append("SHARED_SECRET - Backend registration will be disabled")
+    
+    if missing:
+        log("❌ MISSING REQUIRED ENVIRONMENT VARIABLES:", "ERROR")
+        for var in missing:
+            log(f"  - {var}", "ERROR")
+        log("", "ERROR")
+        log("Please set the required environment variables and try again.", "ERROR")
+        log("See .env.example for a template.", "ERROR")
+        raise EnvironmentError(f"Missing required environment variables: {', '.join([v.split(' - ')[0] for v in missing])}")
+    
+    if warnings:
+        log("⚠️  Optional environment variables not set:", "WARN")
+        for var in warnings:
+            log(f"  - {var}", "WARN")
+    
+    log("✅ Environment validation passed")
+    log(f"Correlation ID: {CORRELATION_ID}")
+
 
 # ========= Env =========
 
@@ -284,28 +325,43 @@ def tunnel():
     section("🚇 TUNNEL")
     
     if not GPU_SSH_PRIVATE_KEY.strip():
-        log("⚠️  No key", "WARN")
+        log("⚠️  No SSH key configured (GPU_SSH_PRIVATE_KEY not set)", "WARN")
+        log("Skipping tunnel setup. GPU endpoint will be directly accessible.", "WARN")
         return False
     
     ssh_dir = WORKSPACE / ".ssh"
     ssh_dir.mkdir(mode=0o700, exist_ok=True)
     key = ssh_dir / "key"
-    key.write_text(GPU_SSH_PRIVATE_KEY)
-    os.chmod(key, 0o600)
     
+    try:
+        key.write_text(GPU_SSH_PRIVATE_KEY)
+        os.chmod(key, 0o600)
+    except Exception as e:
+        log(f"⚠️  Failed to write SSH key: {e}", "WARN")
+        return False
+    
+    # Test SSH connection
     try:
         run([
             "ssh", "-i", str(key), "-o", "StrictHostKeyChecking=no",
             "-o", "ConnectTimeout=10", "-p", str(CPU_PORT),
             f"{CPU_USER}@{CPU_HOST}", "echo OK"
         ], timeout=15)
-    except:
-        log("⚠️  SSH failed", "WARN")
+    except subprocess.TimeoutExpired:
+        log(f"⚠️  SSH connection to {CPU_USER}@{CPU_HOST}:{CPU_PORT} timed out", "WARN")
+        return False
+    except subprocess.CalledProcessError as e:
+        log(f"⚠️  SSH authentication failed: {e}", "WARN")
+        return False
+    except Exception as e:
+        log(f"⚠️  SSH connection failed: {e}", "WARN")
         return False
     
+    # Kill existing tunnel
     run(["pkill", "-f", f"ssh.*{CPU_TUNNEL_PORT}"], check=False)
     time.sleep(2)
     
+    # Start tunnel
     try:
         subprocess.Popen([
             "ssh", "-N", "-f", "-i", str(key),
@@ -318,12 +374,16 @@ def tunnel():
         time.sleep(2)
         log(f"✅ GPU:{VLLM_PORT} → CPU:{CPU_TUNNEL_PORT}")
         return True
-    except:
-        log("⚠️  Failed", "WARN")
+    except Exception as e:
+        log(f"⚠️  Failed to start tunnel: {e}", "WARN")
         return False
 
 def register(has_tunnel: bool):
     section("📡 BACKEND")
+    
+    if not SHARED_SECRET:
+        log("⚠️  SHARED_SECRET not configured - skipping backend registration", "WARN")
+        return False
     
     import requests
     
@@ -332,7 +392,8 @@ def register(has_tunnel: bool):
     else:
         try:
             ip = requests.get("http://checkip.amazonaws.com", timeout=5).text.strip()
-        except:
+        except requests.RequestException as e:
+            log(f"⚠️  Could not determine public IP: {e}", "WARN")
             ip = "127.0.0.1"
         ep = f"http://{ip}:{VLLM_PORT}/v1/chat/completions"
     
@@ -356,18 +417,25 @@ def register(has_tunnel: bool):
             timeout=20
         )
         if r.ok:
-            log(f"✅ {ep}")
+            log(f"✅ Registered at {ep}")
             return True
-    except:
-        pass
-    
-    log("⚠️  Failed (non-critical)", "WARN")
-    return False
+        else:
+            log(f"⚠️  Backend registration failed with status {r.status_code}: {r.text}", "WARN")
+            return False
+    except requests.RequestException as e:
+        log(f"⚠️  Backend registration request failed: {e}", "WARN")
+        return False
+    except Exception as e:
+        log(f"⚠️  Unexpected error during registration: {e}", "WARN")
+        return False
 
 # ========= Main =========
 
 def main():
     section("🚀 QUANTUM GPU SETUP")
+    
+    # Validate environment variables first
+    validate_environment()
     
     env = Env()
     env.summary()
@@ -378,7 +446,7 @@ def main():
     
     start_vllm(py)
     if not wait_ready():
-        log("❌ vLLM failed", "ERROR")
+        log("❌ vLLM failed to start", "ERROR")
         return 1
     
     test()
