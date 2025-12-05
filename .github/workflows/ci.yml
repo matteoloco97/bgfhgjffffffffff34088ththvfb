@@ -73,10 +73,11 @@ jobs:
           # Run tests from the quantumdev-open directory if they exist
           if [ -d "Contabo VPS/quantumdev-open/tests" ]; then
             cd "Contabo VPS/quantumdev-open"
-            pytest tests/ -v --tb=short || true
+            pytest tests/ -v --tb=short
           else
             echo "No tests directory found, skipping tests"
           fi
+        continue-on-error: true  # Don't fail build if no tests exist yet
 
   security:
     name: Security Audit
@@ -97,8 +98,10 @@ jobs:
       
       - name: Run pip-audit
         run: |
-          pip-audit --desc || true
-      
+          pip-audit --desc
+        continue-on-error: true  # Allow to continue but report issues
+
       - name: Run safety check
         run: |
-          safety check --json || true
+          safety check --json
+        continue-on-error: true  # Allow to continue but report issues
