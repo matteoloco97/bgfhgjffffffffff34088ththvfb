@@ -117,6 +117,7 @@ except Exception:
 # === TOOLS (BLOCK 4) ===
 from core.calculator import Calculator, is_calculator_query
 from agents.code_execution import run_code
+from core.code_executor import execute_python_snippet
 from core.docs_ingest import (
     extract_text_from_bytes,
     index_document,
@@ -468,6 +469,8 @@ DIVERSIFIER_ENABLED = env_bool("DIVERSIFIER_ENABLED", True)
 # === TOOLS Configuration (BLOCK 4) ===
 TOOLS_MATH_ENABLED = env_bool("TOOLS_MATH_ENABLED", True)
 TOOLS_PYTHON_EXEC_ENABLED = env_bool("TOOLS_PYTHON_EXEC_ENABLED", False)
+CODE_EXEC_ENABLED = env_bool("CODE_EXEC_ENABLED", False)
+CODE_EXEC_TIMEOUT = env_float("CODE_EXEC_TIMEOUT", 10.0)
 TOOLS_DOCS_ENABLED = env_bool("TOOLS_DOCS_ENABLED", True)
 MAX_UPLOAD_SIZE_MB = env_int("MAX_UPLOAD_SIZE_MB", 10)
 DOCS_MAX_CHUNKS_PER_FILE = env_int("DOCS_MAX_CHUNKS_PER_FILE", 500)
@@ -3634,64 +3637,45 @@ async def tools_math(req: MathToolReq) -> Dict[str, Any]:
 
 
 # -------------------------- /tools/python ------------------------------
-class PythonToolReq(BaseModel):
-    code: str
-    timeout_s: Optional[float] = 3.0
-
 
 @app.post("/tools/python")
-async def tools_python(req: PythonToolReq) -> Dict[str, Any]:
+async def tools_python(req: Request) -> Dict[str, Any]:
     """
     Python code executor endpoint (sandboxed).
-    Executes small Python snippets with safety limits.
+    
+    Executes small Python snippets with safety limits. This is NOT a fully
+    trusted multi-tenant environment - use only with trusted users or in
+    controlled contexts.
+    
+    Security features:
+    - Code length limits (4000 chars)
+    - Blacklist of dangerous imports/operations
+    - Subprocess isolation
+    - Timeout enforcement
+    - No environment variable leakage
+    
+    Returns:
+        JSON with ok, stdout, stderr, error, timeout fields
     """
-    if not TOOLS_PYTHON_EXEC_ENABLED:
-        return {
-            "ok": False,
-            "error": "python_exec_disabled",
-            "stdout": "",
-            "stderr": "",
-        }
+    if not (TOOLS_PYTHON_EXEC_ENABLED and CODE_EXEC_ENABLED):
+        return {"ok": False, "error": "python_exec_disabled", "stdout": "", "stderr": "", "timeout": False}
     
     try:
-        code = req.code.strip()
-        if not code:
-            return {
-                "ok": False,
-                "error": "empty_code",
-                "stdout": "",
-                "stderr": "",
-            }
-        
-        # Enforce max code length (10KB)
-        if len(code) > 10000:
-            return {
-                "ok": False,
-                "error": "code_too_long",
-                "stdout": "",
-                "stderr": "",
-            }
-        
-        # Execute code using existing code_execution agent
-        result = await run_code("python", code)
-        
-        # Map result format
-        return {
-            "ok": result.get("success", False),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "error": result.get("error"),
-            "timeout": "timed out" in result.get("error", "").lower() if result.get("error") else False,
-        }
-        
-    except Exception as e:
-        log.error(f"/tools/python error: {e}")
-        return {
-            "ok": False,
-            "error": str(e),
-            "stdout": "",
-            "stderr": "",
-        }
+        body = await req.json()
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="invalid_json")
+    
+    code = body.get("code", "")
+    timeout_s = body.get("timeout_s", CODE_EXEC_TIMEOUT)
+    
+    try:
+        timeout_s = float(timeout_s)
+    except Exception:
+        timeout_s = CODE_EXEC_TIMEOUT
+    
+    result = execute_python_snippet(code=code, timeout_s=timeout_s)
+    return result
 
 
 # -------------------------- /files/upload ------------------------------

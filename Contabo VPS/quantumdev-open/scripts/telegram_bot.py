@@ -57,12 +57,24 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "0") or "0")
 
+# Backend URLs - prefer QUANTUM_UNIFIED_URL for chat
 QUANTUM_CHAT_URL = os.getenv("QUANTUM_CHAT_URL", "http://127.0.0.1:8081/chat").strip()
 QUANTUM_UNIFIED_URL = os.getenv("QUANTUM_UNIFIED_URL", "http://127.0.0.1:8081/unified").strip()
+BACKEND_CHAT_URL = QUANTUM_UNIFIED_URL or QUANTUM_CHAT_URL
+
+# Tools and system endpoints
+QUANTUM_SYSTEM_STATUS_URL = os.getenv("QUANTUM_SYSTEM_STATUS_URL", "http://127.0.0.1:8081/system/status").strip()
+QUANTUM_AUTOBUG_URL = os.getenv("QUANTUM_AUTOBUG_URL", "http://127.0.0.1:8081/autobug/run").strip()
+QUANTUM_MATH_URL = os.getenv("QUANTUM_MATH_URL", "http://127.0.0.1:8081/tools/math").strip()
+QUANTUM_PYTHON_URL = os.getenv("QUANTUM_PYTHON_URL", "http://127.0.0.1:8081/tools/python").strip()
+
+# Web search endpoints
 QUANTUM_WEB_SEARCH_URL = os.getenv("QUANTUM_WEB_SEARCH_URL", "http://127.0.0.1:8081/web/search").strip()
 QUANTUM_WEB_SUMMARY_URL = os.getenv("QUANTUM_WEB_SUMMARY_URL", "http://127.0.0.1:8081/web/summarize").strip()
 QUANTUM_WEB_RESEARCH_URL = os.getenv("QUANTUM_WEB_RESEARCH_URL", "http://127.0.0.1:8081/web/research").strip()
 QUANTUM_HEALTH_URL = os.getenv("QUANTUM_HEALTH_URL", "http://127.0.0.1:8081/healthz").strip()
+
+# Persona endpoints
 QUANTUM_PERSONA_SET_URL = os.getenv("QUANTUM_PERSONA_SET_URL", "http://127.0.0.1:8081/persona/set").strip()
 QUANTUM_PERSONA_GET_URL = os.getenv("QUANTUM_PERSONA_GET_URL", "http://127.0.0.1:8081/persona/get").strip()
 QUANTUM_PERSONA_RESET_URL = os.getenv("QUANTUM_PERSONA_RESET_URL", "http://127.0.0.1:8081/persona/reset").strip()
@@ -163,9 +175,20 @@ def _detect_live_type(q: str) -> str | None:
 async def on_startup(app):
     app.bot_data["http"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
     log.info(
-        "🌐 HTTP session pronta; /unified=%s | /chat=%s | /web/search=%s | /web/summarize=%s | /web/research=%s",
-        QUANTUM_UNIFIED_URL,
-        QUANTUM_CHAT_URL,
+        "🌐 HTTP session ready\n"
+        "  Chat endpoint: %s\n"
+        "  System status: %s\n"
+        "  AutoBug: %s\n"
+        "  Math: %s\n"
+        "  Python exec: %s\n"
+        "  Web search: %s\n"
+        "  Web summarize: %s\n"
+        "  Web research: %s",
+        BACKEND_CHAT_URL,
+        QUANTUM_SYSTEM_STATUS_URL,
+        QUANTUM_AUTOBUG_URL,
+        QUANTUM_MATH_URL,
+        QUANTUM_PYTHON_URL,
         QUANTUM_WEB_SEARCH_URL,
         QUANTUM_WEB_SUMMARY_URL,
         QUANTUM_WEB_RESEARCH_URL,
@@ -225,6 +248,52 @@ async def call_chat(text: str, http: aiohttp.ClientSession, chat_id: int) -> dic
     if status == 200 and isinstance(data, dict):
         return data
     return {"ok": False, "error": f"/chat {status}: {txt or ''}"}
+
+
+async def call_backend_json(
+    http: aiohttp.ClientSession,
+    url: str,
+    payload: dict | None = None,
+    method: str = "POST",
+    timeout: float = 30.0
+) -> dict:
+    """
+    Generic helper for calling backend JSON endpoints.
+    
+    Args:
+        http: HTTP session
+        url: Backend endpoint URL
+        payload: JSON payload (for POST requests)
+        method: HTTP method (GET or POST)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Response dict or error dict with {"ok": False, "error": "..."}
+    """
+    try:
+        if method.upper() == "GET":
+            async with http.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                status = r.status
+                if status == 200:
+                    data = await r.json()
+                    return data if isinstance(data, dict) else {"ok": False, "error": "invalid_response"}
+                else:
+                    txt = await r.text()
+                    return {"ok": False, "error": f"http_{status}", "detail": txt}
+        else:  # POST
+            async with http.post(url, json=payload or {}, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                status = r.status
+                if status == 200:
+                    data = await r.json()
+                    return data if isinstance(data, dict) else {"ok": False, "error": "invalid_response"}
+                else:
+                    txt = await r.text()
+                    return {"ok": False, "error": f"http_{status}", "detail": txt}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "timeout"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 # === Formatting WEB results (attribution + cache badge) ===
 
@@ -362,6 +431,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start – riepilogo funzioni di Jarvis (AI personale)\n"
         "• /help – questo messaggio\n"
         "• /health – stato del backend QuantumDev\n"
+        "• /status – stato del sistema (CPU, RAM, disk, GPU, uptime)\n"
+        "• /autobug – diagnostica completa di tutti i subsistemi\n"
+        "• /math <expr> – calcolatrice (es: /math 2*(3+5.5))\n"
+        "• /py <code> – esegui codice Python (solo admin)\n"
         "• /web <query> – ricerca web (live + ricerca avanzata)\n"
         "• /read <url> – leggi e riassumi una singola pagina\n"
         "• /persona – mostra la persona attuale del bot per questa chat\n"
@@ -516,6 +589,286 @@ async def persona_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Errore persona/reset: {e}")
 
+
+# === NEW TELEGRAM COMMANDS ===
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /status command - Display system status information.
+    Shows CPU, RAM, disk, GPU usage and uptime.
+    """
+    http = context.application.bot_data["http"]
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    try:
+        # Call /system/status endpoint
+        data = await call_backend_json(http, QUANTUM_SYSTEM_STATUS_URL, method="GET", timeout=10.0)
+        
+        if not data.get("ok", False):
+            error_msg = data.get("error", "unknown_error")
+            await update.message.reply_text(f"❌ Errore nel recupero dello stato del sistema: {error_msg}")
+            return
+        
+        # Build human-readable status message
+        lines = ["📊 System Status:\n"]
+        
+        # CPU
+        cpu = data.get("cpu", {})
+        cpu_percent = cpu.get("percent", 0.0)
+        cores = cpu.get("cores_logical", 0)
+        lines.append(f"• CPU: {cpu_percent:.1f}% ({cores} cores)")
+        
+        # Memory
+        mem = data.get("memory", {})
+        mem_used_gb = mem.get("used", 0) / (1024**3)
+        mem_total_gb = mem.get("total", 0) / (1024**3)
+        mem_percent = mem.get("percent", 0.0)
+        lines.append(f"• RAM: {mem_used_gb:.1f} / {mem_total_gb:.1f} GB ({mem_percent:.1f}%)")
+        
+        # Disk
+        disk = data.get("disk", {})
+        disk_percent = disk.get("percent", 0.0)
+        disk_used_gb = disk.get("used", 0) / (1024**3)
+        disk_total_gb = disk.get("total", 0) / (1024**3)
+        lines.append(f"• Disk: {disk_used_gb:.1f} / {disk_total_gb:.1f} GB ({disk_percent:.1f}%)")
+        
+        # GPU (if available)
+        gpu = data.get("gpu", {})
+        gpus = gpu.get("gpus", [])
+        if gpus:
+            for i, gpu_info in enumerate(gpus):
+                gpu_name = gpu_info.get("name", "Unknown")
+                gpu_mem_used = gpu_info.get("memory_used_mb", 0) / 1024
+                gpu_mem_total = gpu_info.get("memory_total_mb", 0) / 1024
+                gpu_util = gpu_info.get("utilization_percent", 0)
+                lines.append(f"• GPU {i}: {gpu_name} ({gpu_util}%, {gpu_mem_used:.1f} / {gpu_mem_total:.1f} GB)")
+        
+        # Uptime
+        uptime_data = data.get("uptime", {})
+        uptime_seconds = uptime_data.get("seconds", 0)
+        hours = uptime_seconds // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        lines.append(f"• Uptime: {hours}h {minutes}m")
+        
+        message = "\n".join(lines)
+        await update.message.reply_text(message)
+        
+    except Exception as e:
+        log.error(f"/status command error: {e}")
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+
+async def autobug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /autobug command - Run health checks on all subsystems.
+    Shows status of LLM, web search, Redis, ChromaDB, system, OCR.
+    """
+    http = context.application.bot_data["http"]
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    # Send initial message
+    await update.message.reply_text("🩺 Running AutoBug diagnostics...")
+    
+    try:
+        # Call /autobug/run endpoint
+        data = await call_backend_json(http, QUANTUM_AUTOBUG_URL, payload={}, method="POST", timeout=60.0)
+        
+        if not data:
+            await update.message.reply_text("❌ Errore: nessuna risposta dal backend")
+            return
+        
+        # Build human-readable report
+        checks = data.get("checks", [])
+        overall_ok = data.get("ok", False)
+        summary = data.get("summary", {})
+        duration_ms = data.get("duration_ms", 0)
+        
+        # Header
+        status_emoji = "✅" if overall_ok else "⚠️"
+        lines = [
+            f"{status_emoji} AutoBug Report:",
+            f"Duration: {duration_ms:.0f}ms",
+            f"Passed: {summary.get('passed', 0)}/{summary.get('total', 0)}\n"
+        ]
+        
+        # Individual checks
+        for check in checks:
+            name = check.get("name", "unknown")
+            enabled = check.get("enabled", False)
+            ok = check.get("ok", False)
+            latency = check.get("latency_ms")
+            error = check.get("error")
+            
+            if not enabled:
+                lines.append(f"• {name}: DISABLED")
+            elif ok:
+                lat_str = f" ({latency:.0f}ms)" if latency else ""
+                lines.append(f"• {name}: OK{lat_str}")
+            else:
+                err_str = f" ({error})" if error else ""
+                lines.append(f"• {name}: FAIL{err_str}")
+        
+        message = "\n".join(lines)
+        
+        # Send report (split if too long)
+        for chunk in split_text(message, 3000):
+            await update.message.reply_text(chunk)
+        
+    except Exception as e:
+        log.error(f"/autobug command error: {e}")
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+
+async def math_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /math command - Evaluate mathematical expressions.
+    Usage: /math 2*(3+5.5)
+    """
+    http = context.application.bot_data["http"]
+    
+    # Extract expression from command
+    text = update.message.text or ""
+    args = text.split(maxsplit=1)
+    
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /math <expression>\nExample: /math 2*(3+5.5)")
+        return
+    
+    expr = args[1].strip()
+    
+    if not expr:
+        await update.message.reply_text("⚠️ Provide a mathematical expression.\nExample: /math 2+2*10")
+        return
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    try:
+        # Call /tools/math endpoint
+        data = await call_backend_json(
+            http,
+            QUANTUM_MATH_URL,
+            payload={"expr": expr},
+            method="POST",
+            timeout=5.0
+        )
+        
+        if data.get("ok", False):
+            result = data.get("result")
+            result_type = data.get("type", "")
+            type_label = f" ({result_type})" if result_type else ""
+            await update.message.reply_text(f"🧮 Risultato{type_label}: {result}")
+        else:
+            error = data.get("error", "calculation_failed")
+            await update.message.reply_text(f"⚠️ Errore calcolo: {error}")
+        
+    except Exception as e:
+        log.error(f"/math command error: {e}")
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+
+async def py_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /py command - Execute Python code (admin only).
+    Usage: /py print("Hello, World!")
+    
+    This command is restricted to the admin user for security.
+    """
+    http = context.application.bot_data["http"]
+    chat_id = update.effective_chat.id
+    
+    # Check if user is admin
+    if not ADMIN_CHAT_ID or chat_id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⛔ This command is restricted to the admin user.")
+        return
+    
+    # Extract code from command
+    text = update.message.text or ""
+    args = text.split(maxsplit=1)
+    
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /py <code>\n"
+            "Example: /py print('Hello!')\n"
+            "Example: /py x = 2 + 2\\nprint(f'Result: {x}')"
+        )
+        return
+    
+    code = args[1].strip()
+    
+    if not code:
+        await update.message.reply_text("⚠️ Provide Python code to execute.")
+        return
+    
+    # Show typing indicator
+    await typing(context, chat_id)
+    
+    # Send initial message
+    await update.message.reply_text("🐍 Executing Python code...")
+    
+    try:
+        # Call /tools/python endpoint
+        data = await call_backend_json(
+            http,
+            QUANTUM_PYTHON_URL,
+            payload={"code": code, "timeout_s": 5.0},
+            method="POST",
+            timeout=10.0
+        )
+        
+        if not data:
+            await update.message.reply_text("❌ No response from backend")
+            return
+        
+        ok = data.get("ok", False)
+        stdout = data.get("stdout", "")
+        stderr = data.get("stderr", "")
+        error = data.get("error", "")
+        timeout = data.get("timeout", False)
+        
+        # Build response message
+        lines = []
+        
+        if timeout:
+            lines.append("⏱️ Execution timed out")
+        elif ok:
+            lines.append("✅ Execution successful")
+        else:
+            lines.append("❌ Execution failed")
+        
+        # Add stdout (truncated to 800 chars)
+        if stdout:
+            stdout_truncated = stdout[:800]
+            if len(stdout) > 800:
+                stdout_truncated += "\n... (output truncated)"
+            lines.append(f"\n📤 Output:\n{stdout_truncated}")
+        
+        # Add stderr if present
+        if stderr and not ok:
+            stderr_truncated = stderr[:400]
+            if len(stderr) > 400:
+                stderr_truncated += "\n... (error truncated)"
+            lines.append(f"\n⚠️ Error:\n{stderr_truncated}")
+        
+        # Add error message if present
+        if error and not timeout:
+            lines.append(f"\n❌ Error: {error}")
+        
+        message = "\n".join(lines) if lines else "No output"
+        
+        # Send response (split if too long)
+        for chunk in split_text(message, 3000):
+            await update.message.reply_text(chunk, disable_web_page_preview=True)
+        
+    except Exception as e:
+        log.error(f"/py command error: {e}")
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+
 # Error handler
 
 
@@ -540,6 +893,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("autobug", autobug_cmd))
+    app.add_handler(CommandHandler("math", math_cmd))
+    app.add_handler(CommandHandler("py", py_cmd))
     app.add_handler(CommandHandler("flushcache", flush_cache))
     app.add_handler(CommandHandler("web", web_cmd))
     app.add_handler(CommandHandler("read", read_cmd))
@@ -550,5 +907,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    log.info("🤖 Avvio Telegram Bot (Jarvis personale | LLM-only chat | web manuale avanzato + fast live) | polling")
+    log.info("🤖 Avvio Telegram Bot (Jarvis personale | LLM-only chat | web manuale avanzato + fast live + tools) | polling")
     app.run_polling(drop_pending_updates=True, poll_interval=1.0)
