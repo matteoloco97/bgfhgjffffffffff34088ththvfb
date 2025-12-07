@@ -1,19 +1,87 @@
+# ============================================================
+# WEB ORCHESTRATOR SYSTEMD SERVICE
+# ============================================================
+# Manages web search orchestration and agent coordination
+# 
+# Deploy to: /etc/systemd/system/web-orchestrator.service
+#
+# Installation:
+#   sudo cp web-orchestrator.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable web-orchestrator
+#   sudo systemctl start web-orchestrator
+#
+# Management:
+#   sudo systemctl status web-orchestrator
+#   sudo systemctl restart web-orchestrator
+#   sudo journalctl -u web-orchestrator -f
 
 [Unit]
-Description=Quantum Web Orchestrator (FastAPI)
-After=network-online.target
-Wants=network-online.target
+Description=QuantumDev Web Search Orchestrator
+Documentation=https://github.com/matteoloco97/quantumdev
+After=network-online.target redis-server.service quantum-api.service
+Wants=network-online.target redis-server.service
+Requires=redis-server.service
 
 [Service]
-User=root
+Type=simple
 WorkingDirectory=/root/quantumdev-open
-Environment="PYTHONPATH=/root/quantumdev-open"
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/root/quantumdev-open
 EnvironmentFile=-/root/quantumdev-open/.env
-ExecStart=/opt/qd-orch-venv/bin/uvicorn agents.web_orchestrator:app --app-dir /root/quantumdev-open --host 0.0.0.0 --port 8082 --workers 1 --log-level info
+
+# User/Group
+User=root
+Group=root
+
+# Execution
+ExecStartPre=/usr/bin/env bash -c 'mkdir -p /root/quantumdev-open/logs /root/quantumdev-open/status'
+ExecStartPre=/root/quantumdev-open/venv/bin/python -c "import sys; sys.path.insert(0, '/root/quantumdev-open'); import agents.web_research_agent as m; print('✓ Module loaded')"
+ExecStart=/root/quantumdev-open/venv/bin/python3 -m agents.web_research_agent
+
+# Restart policy
 Restart=always
-RestartSec=2
-KillSignal=SIGINT
-TimeoutStopSec=15
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Timeouts
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Kill settings
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+FinalKillSignal=SIGKILL
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/root/quantumdev-open/logs /root/quantumdev-open/status /tmp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=web-orchestrator
 
 [Install]
 WantedBy=multi-user.target
