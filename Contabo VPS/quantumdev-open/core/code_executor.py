@@ -48,6 +48,8 @@ FORBIDDEN_PATTERNS = [
     "from socket",
     "import shutil",
     "from shutil",
+    "import time",
+    "from time",
     "open(",
     "eval(",
     "exec(",
@@ -228,8 +230,8 @@ if __name__ == "__main__":
     print("  ✓ PASS\n")
     
     # Test 6: Timeout
-    print("Test 6: Timeout")
-    result = execute_python_snippet("import time\ntime.sleep(10)", timeout_s=0.5)
+    print("Test 6: Timeout (infinite loop)")
+    result = execute_python_snippet("while True: pass", timeout_s=0.5)
     print(f"  Result: {result}")
     assert result["ok"] is False
     assert result["timeout"] is True

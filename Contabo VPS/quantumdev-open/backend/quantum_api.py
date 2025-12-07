@@ -3637,10 +3637,6 @@ async def tools_math(req: MathToolReq) -> Dict[str, Any]:
 
 
 # -------------------------- /tools/python ------------------------------
-class PythonToolReq(BaseModel):
-    code: str
-    timeout_s: Optional[float] = 3.0
-
 
 @app.post("/tools/python")
 async def tools_python(req: Request) -> Dict[str, Any]:
