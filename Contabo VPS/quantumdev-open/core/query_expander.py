@@ -324,7 +324,7 @@ class QueryExpander:
 
 
 # Singleton instance per riuso
-_expander_instance: QueryExpander | None = None
+_expander_instance: Optional[QueryExpander] = None
 
 
 def get_query_expander() -> QueryExpander:

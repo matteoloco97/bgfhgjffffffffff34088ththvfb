@@ -360,7 +360,7 @@ class SmartSynthesizer:
 
 
 # Singleton instance
-_synthesizer_instance: SmartSynthesizer | None = None
+_synthesizer_instance: Optional[SmartSynthesizer] = None
 
 
 def get_smart_synthesizer() -> SmartSynthesizer:

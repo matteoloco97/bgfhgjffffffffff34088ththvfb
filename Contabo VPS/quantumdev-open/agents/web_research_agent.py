@@ -8,6 +8,10 @@
 # - Prompt di sintesi strutturato con blocchi ✅/⚠️
 # - Vietato limitarsi a dire "le fonti non contengono..." se esistono info utili
 # - Niente "apri la fonte" come unica soluzione: la risposta deve essere autosufficiente
+#
+# ENHANCEMENT v3 (2024):
+# - Integrated smart synthesis for better content extraction
+# - Better quality scoring and sentence extraction
 
 from __future__ import annotations
 
