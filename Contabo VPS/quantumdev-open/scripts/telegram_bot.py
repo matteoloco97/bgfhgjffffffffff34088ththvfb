@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-# scripts/telegram_bot.py — LLM-only chat + web manuale (PATCH 2025-11-18 + FAST LIVE)
-# - Tutti i messaggi vanno a /chat (nessun fallback web automatico)
-# - /web:
-#     • se query "live" (meteo, prezzi, risultati, orari, news) → percorso veloce /web/summarize
-#     • altrimenti → /web/research (motore avanzato, multi-step)
-# - /read usa /web/summarize con url
+# scripts/telegram_bot.py — Smart Intent + Autoweb automatico (PATCH 2025-12-10)
+# - NUOVO: SmartIntentClassifier integrato per autoweb automatico intelligente
+# - Intent WEB_SEARCH → /web/search automatico
+# - Intent WEB_READ → /web/summarize automatico con URL
+# - Intent DIRECT_LLM → /chat normale
+# - /web e /read continuano a funzionare come comandi manuali (backward compatible)
 # - Calculator locale (se disponibile)
 # - Attribution pulita: fonti reali quando si usa il web + badge cache opzionale
 # - Log puliti, lock single-instance
 # - Ritento automatico 1 volta su timeout/502/504
 # - PATCH 18/11: supporto QUANTUM_WEB_SEARCH_URL + fonti lette anche da "results"
 # - PATCH 21/11: testi /start e /help allineati a Jarvis (AI personale incensurata)
+# - PATCH 10/12: SmartIntentClassifier per autoweb automatico
 
 from telegram import Update
 from telegram.ext import (
@@ -87,6 +88,15 @@ SHOW_CACHE_BADGE = os.getenv("TELEGRAM_SHOW_CACHE_BADGE", "1").strip() != "0"
 # === LOGGING ===
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# === SmartIntentClassifier per autoweb automatico ===
+try:
+    from core.smart_intent_classifier import SmartIntentClassifier
+    _smart_intent = SmartIntentClassifier()
+    log.info("✅ SmartIntentClassifier loaded for autoweb")
+except Exception as e:
+    _smart_intent = None
+    log.warning(f"⚠️ SmartIntentClassifier not available: {e}")
 
 # === Utils ===
 TG_MAX = 4096
@@ -413,15 +423,23 @@ async def call_web_read(url: str, http: aiohttp.ClientSession, chat_id: int) -> 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    autoweb_status = "🤖 Autoweb ATTIVO" if _smart_intent else "⚠️ Autoweb NON DISPONIBILE"
     await update.message.reply_text(
         "🧠 Jarvis – AI personale di Matteo (QuantumDev)\n"
         "\n"
-        "• 💬 Chatta normalmente per usare Jarvis su qualsiasi tema (business, crypto, coding, vita reale…)\n"
-        "• 🌐 Usa il web con /web <query> (motore avanzato + percorso veloce per meteo/prezzi/risultati/news)\n"
-        "• 📄 Riassumi una pagina con /read <url>\n"
-        "• 🧮 Se scrivi un’espressione tipo 2+2*10 provo a calcolarla in locale\n"
+        f"{autoweb_status}\n"
         "\n"
-        "Nota: il web NON parte in automatico, lo attivi solo tu con /web."
+        "• 💬 Chatta normalmente per usare Jarvis su qualsiasi tema (business, crypto, coding, vita reale…)\n"
+        "• 🌐 Autoweb intelligente: query su meteo, prezzi, sport, news vengono elaborate automaticamente via web\n"
+        "• 🔗 Invia un URL per ottenere automaticamente un riassunto della pagina\n"
+        "• 🧮 Se scrivi un'espressione tipo 2+2*10 provo a calcolarla in locale\n"
+        "• 🛠️ Comandi manuali: /web <query> per forzare ricerca web, /read <url> per leggere pagine\n"
+        "\n"
+        "Esempi autoweb:\n"
+        "• 'Meteo Roma?' → Ricerca web automatica\n"
+        "• 'Prezzo Bitcoin?' → Quotazione in tempo reale\n"
+        "• 'https://example.com' → Riassunto automatico\n"
+        "• 'Ciao come stai?' → Chat normale con LLM"
     )
 
 
@@ -443,7 +461,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /flushcache – svuota Redis (solo admin)"
     )
 
-# === Handler principale (LLM-only) ===
+# === Handler principale (Smart Intent + Autoweb automatico) ===
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -470,6 +488,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await typing(context, chat_id)
+
+    # === NUOVO: SmartIntentClassifier per autoweb automatico ===
+    intent_result = None
+    if _smart_intent:
+        try:
+            intent_result = _smart_intent.classify(text)
+            intent = intent_result.get("intent", "DIRECT_LLM")
+            confidence = intent_result.get("confidence", 0.0)
+            reason = intent_result.get("reason", "")
+            live_type = intent_result.get("live_type")
+            url = intent_result.get("url")
+            
+            # Log intent rilevato per debug (no user data in production)
+            log.info(
+                f"📊 Intent detected: {intent} (confidence={confidence:.2f}, "
+                f"reason={reason}, live_type={live_type}, query_len={len(text)})"
+            )
+            
+            # === WEB_READ: URL rilevato, usa /web/summarize automaticamente ===
+            if intent == "WEB_READ" and url:
+                log.info(f"🌐 Autoweb WEB_READ: url_len={len(url)}")
+                try:
+                    final = await call_web_read(url, http, chat_id)
+                    for part in split_text(final):
+                        await msg.reply_text(part, disable_web_page_preview=not SOURCE_PREVIEW)
+                    return
+                except Exception as e:
+                    log.warning(f"⚠️ Autoweb WEB_READ failed: {e}, fallback to /chat")
+                    # Fallback a /chat se autoweb fallisce
+            
+            # === WEB_SEARCH: query web rilevata, usa /web/search automaticamente ===
+            elif intent == "WEB_SEARCH":
+                log.info(f"🔍 Autoweb WEB_SEARCH: live_type={live_type}, query_len={len(text)}")
+                try:
+                    # Usa percorso veloce se live_type è impostato
+                    if live_type in ("weather", "price", "sports", "schedule", "news"):
+                        final = await call_web_summary_query(text, http, chat_id)
+                    else:
+                        # Usa ricerca avanzata per query complesse
+                        final = await call_web_research(text, http, chat_id)
+                    
+                    for part in split_text(final):
+                        await msg.reply_text(part, disable_web_page_preview=not SOURCE_PREVIEW)
+                    return
+                except Exception as e:
+                    log.warning(f"⚠️ Autoweb WEB_SEARCH failed: {e}, fallback to /chat")
+                    # Fallback a /chat se autoweb fallisce
+            
+            # === DIRECT_LLM: prosegui con /chat normale ===
+            else:
+                log.info(f"💬 Direct LLM: query_len={len(text)}")
+                # Prosegue sotto con la logica normale di /chat
+                
+        except Exception as e:
+            log.warning(f"⚠️ Intent classification failed: {e}, fallback to /chat")
+            # Se la classificazione fallisce, prosegui con /chat normale
+    
+    # === Flusso normale: chiamata a /chat ===
     data = await call_chat(text, http, chat_id)
     reply = (data.get("reply") or "").strip()
     if not reply:
