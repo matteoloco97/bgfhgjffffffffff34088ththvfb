@@ -25,17 +25,18 @@ class SmartSearchEngine:
     }
 
     DYNAMIC_TOPICS = {
-        'weather': {'keywords': ['meteo','tempo','previsioni','temperatura','rain','forecast','weather'], 'weight': 35},
-        'news':    {'keywords': ['notizie','news','breaking','ultime','cronaca','headlines','updates'], 'weight': 40},
-        'prices':  {'keywords': ['prezzo','costa','quotazione','quanto costa','price','value','worth'], 'weight': 30},
-        'sports':  {'keywords': ['partita','risultato','classifica','marcatori','match','score','league'], 'weight': 35},
-        'stocks':  {'keywords': ['borsa','azioni','nasdaq','bitcoin','crypto','ethereum','market'], 'weight': 30},
-        'events':  {'keywords': ['quando apre','orari','programma','calendar','schedule'], 'weight': 25},
+        'weather': {'keywords': ['meteo','tempo','previsioni','temperatura','rain','forecast','weather','che tempo fa'], 'weight': 40},
+        'news':    {'keywords': ['notizie','news','breaking','ultime','cronaca','headlines','updates','cosa succede'], 'weight': 45},
+        'prices':  {'keywords': ['prezzo','costa','quotazione','quanto costa','price','value','worth','quanto vale'], 'weight': 35},
+        'sports':  {'keywords': ['partita','risultato','classifica','marcatori','match','score','league','serie a','champions'], 'weight': 40},
+        'stocks':  {'keywords': ['borsa','azioni','nasdaq','bitcoin','crypto','ethereum','market','btc','eth'], 'weight': 35},
+        'events':  {'keywords': ['quando apre','orari','programma','calendar','schedule','evento','eventi'], 'weight': 30},
         'traffic': {'keywords': ['traffico','code','incidente','viabilità','traffic','jam'], 'weight': 35},
-        'realtime':{'keywords': ['streaming','diretta','watch live','live'], 'weight': 40},
-        'health':  {'keywords': ['sintomi','malattia','farmaco','dose','posologia','guidelines'], 'weight': 30},
-        'finance': {'keywords': ['fed','inflazione','tasso','pil','earnings','guidance'], 'weight': 25},
-        'tech':    {'keywords': ['rilascio','release','versione','changelog','patch','v','build'], 'weight': 20}
+        'realtime':{'keywords': ['streaming','diretta','watch live','live','in diretta','in tempo reale'], 'weight': 45},
+        'health':  {'keywords': ['sintomi','malattia','farmaco','dose','posologia','guidelines','salute'], 'weight': 30},
+        'finance': {'keywords': ['fed','inflazione','tasso','pil','earnings','guidance','economia'], 'weight': 30},
+        'tech':    {'keywords': ['rilascio','release','versione','changelog','patch','v','build','aggiornamento'], 'weight': 25},
+        'facts':   {'keywords': ['statistiche','dati','cifre','numeri','percentuale','statistics','data'], 'weight': 30},
     }
 
     STABLE_KEYWORDS = [
@@ -69,10 +70,13 @@ class SmartSearchEngine:
     def _complexity(self, q: str) -> int:
         # lunghezza + connettivi + numeri = maggiore complessità
         words = len(q.split())
-        conn = len(re.findall(r'\b(e|ed|ma|perchè|perche|perché|quindi|tuttavia|and|or|but|because)\b', q))
+        conn = len(re.findall(r'\b(e|ed|ma|perchè|perche|perché|quindi|tuttavia|and|or|but|because|mentre|invece)\b', q))
         nums = len(re.findall(r'\d', q))
         punct = len(re.findall(r'[;:()\[\],]', q))
-        score = min(100, words*2 + conn*10 + nums*4 + punct*3)
+        # ENHANCED: Considera anche domande multiple e comparazioni
+        questions = len(re.findall(r'\?', q))
+        comparisons = len(re.findall(r'\b(vs|versus|contro|meglio|migliore|differenza|confronto|compare)\b', q, re.I))
+        score = min(100, words*2 + conn*10 + nums*4 + punct*3 + questions*8 + comparisons*12)
         return score
 
     # --- main ---
