@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -11,7 +12,7 @@ Features:
 - Automatic parameter extraction
 
 Author: Matteo (QuantumDev)
-Version: 2.0.0
+Version: 2.0.1 - FIXED: Tool name validation
 """
 
 from __future__ import annotations
@@ -307,6 +308,8 @@ class FunctionCaller:
         if not self.llm_func:
             return {"tools": [], "direct_response": True}
         
+        # Get list of available tool names - CRITICO per validazione
+        available_tools = [t.name for t in self.registry.list_tools() if t.enabled]
         tools_desc = self.registry.get_tools_description()
         
         prompt = f"""Analizza questa richiesta e determina quali tool usare.
@@ -315,11 +318,14 @@ RICHIESTA: {query}
 
 {tools_desc}
 
+IMPORTANTE: Usa SOLO i nomi tool esatti dalla lista sopra. NON inventare nomi.
+Tool disponibili: {', '.join(available_tools)}
+
 RISPONDI IN JSON:
 {{
     "needs_tools": true/false,
     "tools": [
-        {{"name": "tool_name", "arguments": {{"param": "value"}}, "reason": "why"}}
+        {{"name": "NOME_ESATTO_DALLA_LISTA", "arguments": {{"param": "value"}}, "reason": "why"}}
     ],
     "direct_response": true/false se risposta diretta senza tool,
     "parallel": true/false se i tool possono essere eseguiti in parallelo
@@ -330,15 +336,35 @@ Solo JSON, nessun altro testo."""
         try:
             response = await self.llm_func(
                 prompt,
-                "Sei un analizzatore di query. Rispondi SOLO in JSON valido.",
+                "Sei un analizzatore di query. Usa SOLO nomi tool dalla lista fornita. Rispondi SOLO in JSON valido.",
             )
             
             # Parse JSON from response
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
+            if not json_match:
+                log.warning("No JSON found in LLM response for query analysis")
+                return {"tools": [], "direct_response": True}
             
-            return {"tools": [], "direct_response": True}
+            result = json.loads(json_match.group())
+            
+            # CRITICO: Validate tool names exist in registry
+            if "tools" in result:
+                valid_tools = []
+                invalid_tools = []
+                for tc in result["tools"]:
+                    tool_name = tc.get("name", "")
+                    if tool_name in available_tools:
+                        valid_tools.append(tc)
+                    else:
+                        invalid_tools.append(tool_name)
+                        log.warning(f"LLM suggested invalid tool: '{tool_name}'. Available: {available_tools}")
+                
+                if invalid_tools:
+                    log.error(f"TOOL VALIDATION FAILED: Rejected tools {invalid_tools}")
+                
+                result["tools"] = valid_tools
+            
+            return result
             
         except Exception as e:
             log.error(f"Query analysis failed: {e}")
@@ -364,10 +390,12 @@ Solo JSON, nessun altro testo."""
         
         if not tool:
             call.error = f"Tool not found: {tool_name}"
+            log.error(f"Tool call failed: {tool_name} not found in registry")
             return call
         
         if not tool.enabled:
             call.error = f"Tool disabled: {tool_name}"
+            log.warning(f"Tool call skipped: {tool_name} is disabled")
             return call
         
         start_time = time.perf_counter()
@@ -381,10 +409,11 @@ Solo JSON, nessun altro testo."""
             
         except asyncio.TimeoutError:
             call.error = f"Timeout after {tool.timeout_s}s"
+            log.error(f"Tool {tool_name} timed out after {tool.timeout_s}s")
             
         except Exception as e:
             call.error = str(e)
-            log.error(f"Tool {tool_name} error: {e}")
+            log.error(f"Tool {tool_name} error: {e}", exc_info=True)
         
         call.duration_ms = int((time.perf_counter() - start_time) * 1000)
         return call
@@ -446,6 +475,7 @@ Solo JSON, nessun altro testo."""
                 
                 tools_to_call = analysis.get("tools", [])
                 if not tools_to_call:
+                    log.info("No valid tools selected by LLM, falling back to direct response")
                     break
                 
                 # Call tools
@@ -488,7 +518,7 @@ Solo JSON, nessun altro testo."""
         except Exception as e:
             result.error = str(e)
             result.success = False
-            log.error(f"Orchestration error: {e}")
+            log.error(f"Orchestration error: {e}", exc_info=True)
         
         result.total_duration_ms = int((time.perf_counter() - start_time) * 1000)
         return result
@@ -634,7 +664,7 @@ async def memory_search_tool(query: str, k: int = 5) -> Dict[str, Any]:
 # === Test ===
 if __name__ == "__main__":
     async def test():
-        print("🧪 Testing Function Calling System")
+        print("🧪 Testing Function Calling System v2.0.1")
         print("=" * 60)
         
         # Test registry
