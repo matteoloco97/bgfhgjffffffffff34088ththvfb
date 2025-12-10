@@ -148,6 +148,55 @@ class WebResearchAgent:
         }
 
     async def _fetch_docs_parallel(
+        self, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Scarica più documenti in parallelo con rate limiting.
+        
+        ENHANCEMENT: Now uses smart synthesis for better content extraction.
+        """
+        if not items:
+            return []
+
+        # Limita concorrenza
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def fetch_with_semaphore(item):
+            async with semaphore:
+                return await self._fetch_one(item)
+
+        tasks = [fetch_with_semaphore(item) for item in items]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        docs = []
+        for r in results:
+            if isinstance(r, dict) and r:
+                docs.append(r)
+            elif isinstance(r, Exception):
+                log.debug(f"Fetch error: {r}")
+
+        # ENHANCEMENT: Use smart synthesis to improve content quality
+        try:
+            from core.smart_synthesis import get_smart_synthesizer
+            synthesizer = get_smart_synthesizer()
+            
+            # Extract better text snippets from each doc
+            for doc in docs:
+                text = doc.get("text", "")
+                if text and len(text) > 200:
+                    # Extract key sentences for better quality
+                    key_sentences = synthesizer.extract_key_sentences(
+                        text, 
+                        query="",  # No specific query, just best sentences
+                        top_n=3
+                    )
+                    if key_sentences:
+                        # Replace text with key sentences for better synthesis
+                        doc["text"] = " ".join(key_sentences)
+        except Exception as e:
+            log.debug(f"Smart synthesis enhancement failed: {e}")
+
+        return docs
         self, results: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """

@@ -7,10 +7,11 @@ Features:
 - SerpAPI integration for better search results
 - DuckDuckGo fallback when SerpAPI unavailable
 - Content extraction from URLs
-- Snippet generation from page content
+- Smart synthesis with extractive summarization
+- Query expansion for better recall
 
 Author: Matteo (QuantumDev)
-Version: 2.0.0
+Version: 3.0.0 - Enhanced with smart synthesis
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ log = logging.getLogger(__name__)
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 SEARCH_TIMEOUT = int(os.getenv("ENHANCED_SEARCH_TIMEOUT", "10"))
 MAX_SNIPPET_LENGTH = int(os.getenv("MAX_SNIPPET_LENGTH", "500"))
+# ENHANCEMENT: Increased default sources for better coverage
+ENHANCED_SEARCH_SOURCES = int(os.getenv("ENHANCED_SEARCH_SOURCES", "8"))
 
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -216,14 +219,16 @@ def _search_with_duckduckgo(query: str, k: int = 5) -> List[Dict[str, Any]]:
 
 async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
     """
-    Enhanced web search with content extraction.
+    Enhanced web search with content extraction and smart synthesis.
     
     Uses SerpAPI if available, otherwise falls back to DuckDuckGo.
     Fetches and extracts content from URLs to create better snippets.
     
+    ENHANCEMENT v3.0: Now uses query expansion and smart synthesis.
+    
     Args:
         query: Search query
-        k: Number of results to return
+        k: Number of results to return (default: 5, max: ENHANCED_SEARCH_SOURCES)
         
     Returns:
         List of search results with title, url, and snippet
@@ -232,18 +237,53 @@ async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
         log.warning("Empty search query")
         return []
     
+    # Limit k to reasonable max
+    k = min(k, ENHANCED_SEARCH_SOURCES)
+    
     log.info(f"Enhanced search for: {query} (k={k})")
     
-    # Try SerpAPI first if available
-    results = _search_with_serpapi(query, k)
+    # ENHANCEMENT: Try query expansion for better results
+    search_queries = [query]
+    try:
+        from core.query_expander import get_query_expander
+        expander = get_query_expander()
+        expansion = expander.expand(query, max_expansions=3)
+        if len(expansion.expanded) > 1:
+            # Use original + best variant
+            search_queries = [query, expansion.expanded[1]]
+            log.info(f"Using expanded queries: {search_queries}")
+    except Exception as e:
+        log.debug(f"Query expansion not available: {e}")
     
-    # Fallback to DuckDuckGo
-    if not results:
-        results = _search_with_duckduckgo(query, k)
+    # Collect results from all query variants
+    all_results: List[Dict[str, Any]] = []
+    seen_urls: set = set()
     
-    if not results:
+    for search_query in search_queries:
+        # Try SerpAPI first if available
+        results = _search_with_serpapi(search_query, k)
+        
+        # Fallback to DuckDuckGo
+        if not results:
+            results = _search_with_duckduckgo(search_query, k)
+        
+        # Add unique results
+        for result in results:
+            url = result.get("url", "")
+            if url and url not in seen_urls:
+                all_results.append(result)
+                seen_urls.add(url)
+        
+        # Stop if we have enough
+        if len(all_results) >= k:
+            break
+    
+    if not all_results:
         log.warning("No search results found")
         return []
+    
+    # Limit to k results
+    all_results = all_results[:k]
     
     # Enhance results by fetching content asynchronously
     async def fetch_and_enhance(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -257,12 +297,28 @@ async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
         text = await loop.run_in_executor(None, _fetch_url_content, url, SEARCH_TIMEOUT)
         
         if text:
-            # Create enhanced snippet from actual content
-            snippet = _create_snippet(text)
+            # ENHANCEMENT: Use smart synthesis for better snippets
+            try:
+                from core.smart_synthesis import get_smart_synthesizer
+                synthesizer = get_smart_synthesizer()
+                key_sentences = synthesizer.extract_key_sentences(
+                    text, 
+                    query=query,
+                    top_n=3
+                )
+                if key_sentences:
+                    snippet = " ".join(key_sentences[:2])  # Use top 2 sentences
+                else:
+                    snippet = _create_snippet(text)
+            except Exception as e:
+                log.debug(f"Smart synthesis not available: {e}")
+                snippet = _create_snippet(text)
+            
             return {
                 "title": result.get("title", ""),
                 "url": url,
                 "snippet": snippet or result.get("snippet", ""),
+                "text": text[:1000],  # Store first 1000 chars for further processing
             }
         else:
             # Use original snippet if fetch failed
@@ -273,7 +329,7 @@ async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
             }
     
     # Fetch all results concurrently
-    tasks = [fetch_and_enhance(result) for result in results]
+    tasks = [fetch_and_enhance(result) for result in all_results]
     enhanced_results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Filter out errors and None values
