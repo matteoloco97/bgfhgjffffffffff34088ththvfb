@@ -21,7 +21,8 @@ SEARCH_LANG = os.getenv("SEARCH_LANG", "it-IT,it;q=0.9")
 
 DEBUG = os.getenv("WEBSEARCH_DEBUG", "0") == "1"
 PROVIDER_TIMEOUT_S = float(os.getenv("WEBSEARCH_PROVIDER_TIMEOUT_S", "4.5"))
-MAX_RESULTS_HARD = int(os.getenv("WEBSEARCH_MAX_RESULTS_HARD", "20"))
+# OPTIMIZATION: Increased from 20 to 30 for better coverage and diversity
+MAX_RESULTS_HARD = int(os.getenv("WEBSEARCH_MAX_RESULTS_HARD", "30"))
 
 # Which backend to use for web search. Supported values:
 #  - 'ddg'    : use DuckDuckGo/Bing HTML providers (default, legacy)
@@ -496,8 +497,8 @@ def _heuristic_results(query: str, num: int) -> List[Dict[str, str]]:
 
 # OPTIMIZATION: Cache più grande e TTL più lungo
 _CACHE: Dict[Tuple[str, int], Tuple[float, List[Dict[str, str]]]] = {}
-_CACHE_TTL = 120.0  # OPTIMIZED: 2 minuti invece di 30s per ridurre chiamate ripetute
-_CACHE_MAX_SIZE = 500  # OPTIMIZATION: Limite max per evitare memory leak
+_CACHE_TTL = 180.0  # OPTIMIZED: 3 minuti per query più stabili (era 120s)
+_CACHE_MAX_SIZE = 1000  # OPTIMIZATION: Aumentato da 500 a 1000 per migliore hit rate
 _CACHE_CLEANUP_FREQUENCY = 50  # Cleanup ogni N inserimenti
 
 def _cache_cleanup() -> None:
@@ -718,6 +719,8 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
       default   -> legacy sequential search (DDG -> Bing -> browserless fallback).
 
     Results are cached for a short TTL to avoid repeated network calls.
+    
+    ENHANCEMENT: Now uses intelligent query expansion for better results.
     """
     q = (query or "").strip()
     if not q or num <= 0:
@@ -732,88 +735,112 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
         return cached[:num]
 
     backend = SEARCH_BACKEND
-    # explicit single-backend mode
-    if backend in ("serpapi", "google"):
-        if backend == "serpapi":
-            try:
-                results = _search_serpapi(q, num)
-            except Exception:
-                results = []
-        else:
-            try:
-                results = _search_google_cse(q, num)
-            except Exception:
-                results = []
-        # fallback heuristics if nothing
-        if HEURISTIC_SEEDS_ENABLED and not results:
-            results = _heuristic_results(q, num)
-        norm = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
-        ranked = _rank_by_domain_policy(norm, q)
-        final = ranked[:num]
-        _cache_set(q, num, final)
-        return final
+    
+    # ENHANCEMENT: Use query expansion for better recall
+    # Try importing query expander
+    try:
+        from core.query_expander import get_query_expander
+        expander = get_query_expander()
+        expansion = expander.expand(q, max_expansions=3)
+        # Use expanded queries for better coverage
+        queries_to_try = expansion.expanded[:3]  # Try up to 3 variants
+        _log(f"Query expanded: {q} -> {queries_to_try}")
+    except Exception as e:
+        _log(f"Query expansion failed: {e}, using original query")
+        queries_to_try = [q]
+    
+    # Collect results from all query variants
+    all_results: List[Dict[str, str]] = []
+    seen_urls: set = set()
+    
+    for query_variant in queries_to_try:
+        # explicit single-backend mode
+        if backend in ("serpapi", "google"):
+            if backend == "serpapi":
+                try:
+                    results = _search_serpapi(query_variant, num)
+                except Exception:
+                    results = []
+            else:
+                try:
+                    results = _search_google_cse(query_variant, num)
+                except Exception:
+                    results = []
+            # Merge results avoiding duplicates
+            for r in results:
+                url = r.get("url", "")
+                if url and url not in seen_urls:
+                    all_results.append(r)
+                    seen_urls.add(url)
+            continue
 
-    # multi-backend aggregator mode
-    if backend == "multi":
-        final = _aggregate_multi(q, num)
-        _cache_set(q, num, final)
-        return final
+        # multi-backend aggregator mode
+        if backend == "multi":
+            results = _aggregate_multi(query_variant, num)
+            for r in results:
+                url = r.get("url", "")
+                if url and url not in seen_urls:
+                    all_results.append(r)
+                    seen_urls.add(url)
+            continue
 
-    # legacy sequential search (ddg/bing/browserless)
-    results: List[Dict[str, str]] = []
-    # 1) DDG POST
-    try:
-        results.extend(_search_ddg_html_post(q, num - len(results)))
-    except Exception:
-        pass
-    if len(results) >= num:
-        norm = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
-        final = _rank_by_domain_policy(norm, q)[:num]
-        _cache_set(q, num, final)
-        return final
-    # 2) DDG GET (mirrors)
-    try:
-        more = _search_ddg_html_get_all(q, num - len(results))
-        _append_unique(results, more, num)
-    except Exception:
-        pass
-    if len(results) >= num:
-        norm = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
-        final = _rank_by_domain_policy(norm, q)[:num]
-        _cache_set(q, num, final)
-        return final
-    # 3) DDG LITE
-    try:
-        more = _search_ddg_lite(q, num - len(results))
-        _append_unique(results, more, num)
-    except Exception:
-        pass
-    if len(results) >= num:
-        norm = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
-        final = _rank_by_domain_policy(norm, q)[:num]
-        _cache_set(q, num, final)
-        return final
-    # 4) Bing HTML
-    try:
-        more = _search_bing_html(q, num - len(results))
-        _append_unique(results, more, num)
-    except Exception:
-        pass
-    if len(results) >= num:
-        norm = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
-        final = _rank_by_domain_policy(norm, q)[:num]
-        _cache_set(q, num, final)
-        return final
-    # 5) optional browserless fallback
-    try:
-        more = _search_ddg_lite_via_browserless(q, num - len(results))
-        _append_unique(results, more, num)
-    except Exception:
-        pass
+        # legacy sequential search (ddg/bing/browserless)
+        results: List[Dict[str, str]] = []
+        # 1) DDG POST
+        try:
+            results.extend(_search_ddg_html_post(query_variant, num - len(results)))
+        except Exception:
+            pass
+        if len(results) >= num:
+            break
+        # 2) DDG GET (mirrors)
+        try:
+            more = _search_ddg_html_get_all(query_variant, num - len(results))
+            _append_unique(results, more, num)
+        except Exception:
+            pass
+        if len(results) >= num:
+            break
+        # 3) DDG LITE
+        try:
+            more = _search_ddg_lite(query_variant, num - len(results))
+            _append_unique(results, more, num)
+        except Exception:
+            pass
+        if len(results) >= num:
+            break
+        # 4) Bing HTML
+        try:
+            more = _search_bing_html(query_variant, num - len(results))
+            _append_unique(results, more, num)
+        except Exception:
+            pass
+        
+        # Merge results from this variant
+        for r in results:
+            url = r.get("url", "")
+            if url and url not in seen_urls:
+                all_results.append(r)
+                seen_urls.add(url)
+        
+        # Stop if we have enough results
+        if len(all_results) >= num:
+            break
+    
+    # If still no results, try browserless and heuristics
+    if not all_results:
+        try:
+            more = _search_ddg_lite_via_browserless(q, num)
+            _append_unique(all_results, more, num)
+        except Exception:
+            pass
+    
     # fallback heuristics
-    if HEURISTIC_SEEDS_ENABLED and not results:
-        results = _heuristic_results(q, num)
-    norm_all = [_normalize(r) for r in results if _ok_url(r.get("url", ""))]
+    if HEURISTIC_SEEDS_ENABLED and not all_results:
+        all_results = _heuristic_results(q, num)
+    
+    # Normalize and rank
+    norm_all = [_normalize(r) for r in all_results if _ok_url(r.get("url", ""))]
     final = _rank_by_domain_policy(norm_all, q)[:num]
     _cache_set(q, num, final)
     return final
