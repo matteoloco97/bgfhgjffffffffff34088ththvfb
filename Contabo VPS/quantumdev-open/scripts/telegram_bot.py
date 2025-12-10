@@ -500,15 +500,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             live_type = intent_result.get("live_type")
             url = intent_result.get("url")
             
-            # Log intent rilevato per debug
+            # Log intent rilevato per debug (no user data in production)
             log.info(
                 f"📊 Intent detected: {intent} (confidence={confidence:.2f}, "
-                f"reason={reason}, live_type={live_type})"
+                f"reason={reason}, live_type={live_type}, query_len={len(text)})"
             )
             
             # === WEB_READ: URL rilevato, usa /web/summarize automaticamente ===
             if intent == "WEB_READ" and url:
-                log.info(f"🌐 Autoweb WEB_READ: {url}")
+                log.info(f"🌐 Autoweb WEB_READ: url_len={len(url)}")
                 try:
                     final = await call_web_read(url, http, chat_id)
                     for part in split_text(final):
@@ -520,7 +520,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # === WEB_SEARCH: query web rilevata, usa /web/search automaticamente ===
             elif intent == "WEB_SEARCH":
-                log.info(f"🔍 Autoweb WEB_SEARCH: {text} (live_type={live_type})")
+                log.info(f"🔍 Autoweb WEB_SEARCH: live_type={live_type}, query_len={len(text)}")
                 try:
                     # Usa percorso veloce se live_type è impostato
                     if live_type in ("weather", "price", "sports", "schedule", "news"):
@@ -538,7 +538,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # === DIRECT_LLM: prosegui con /chat normale ===
             else:
-                log.info(f"💬 Direct LLM: {text[:50]}...")
+                log.info(f"💬 Direct LLM: query_len={len(text)}")
                 # Prosegue sotto con la logica normale di /chat
                 
         except Exception as e:

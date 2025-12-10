@@ -106,7 +106,10 @@ def test_telegram_bot_integration_logic():
             actual_method = "call_chat()"
             print(f"   ✅ Routing: {actual_method}")
         
-        assert expected_method in actual_method or actual_method in expected_method, \
+        # Verify routing matches expected
+        assert actual_method == expected_method or \
+               (expected_method == "call_web_summary_query() o call_web_research()" and 
+                actual_method in ["call_web_summary_query()", "call_web_research()"]), \
             f"Expected {expected_method}, got {actual_method}"
         print()
     
