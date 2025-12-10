@@ -225,19 +225,31 @@ class SmartIntentClassifier:
             # Squadre internazionali
             "real madrid", "barcellona", "barcelona", "psg",
             "manchester", "liverpool", "chelsea", "arsenal", "bayern",
-            # Competizioni
-            "serie a", "premier league", "champions", "europa league",
+            # Competizioni - EXPANDED with complete names
+            "serie a", "premier league", 
+            "champions", "champions league", "uefa champions",  # Complete "champions league"
+            "europa league", "uefa europa",  # Complete "uefa europa"
             "la liga", "bundesliga", "ligue 1",
+            "coppa italia", "coppa del mondo", "world cup",  # Italian/International cups
+            "europei", "mondiali",  # Championships
         ]
 
         # Terms indicating a schedule or time query, such as asking
         # when a match starts or what time an event occurs.
-        # EXTENDED: F1, MotoGP, eventi finanziari
+        # EXTENDED: F1, MotoGP, eventi finanziari, indirect interrogative forms
         self.schedule_keywords = [
             "orari", "orario", "a che ora",
             "quando gioca", "quando inizia", "quando parte",
             "what time", "schedule", "calendario",
             "prossima partita", "prossimo match",
+            # Indirect interrogative forms - EXPANDED
+            "se oggi gioca", "se domani gioca", "se stasera gioca",
+            "se c'è partita", "se ci sono partite",
+            "gioca oggi", "gioca stasera", "gioca domani",
+            "gioca",  # Standalone "gioca" also indicates schedule context
+            "partite di oggi", "partite oggi", "partite stasera",
+            "partite di",  # "partite di" pattern
+            "c'è la partita", "c'è la champions",
             # F1/Motorsport
             "f1", "formula 1", "formula1", "gran premio", "gp",
             "motogp", "moto gp",
@@ -588,6 +600,31 @@ class SmartIntentClassifier:
                 "url": None,
             }, source="pattern")
 
+        # PRIORITÀ: Schedule + temporal queries (ALTA PRIORITÀ)
+        # Query come "Sai se oggi gioca la Champions league?" devono essere riconosciute
+        # Use low_clean for keyword matching
+        has_schedule = any(k in low_clean for k in self.schedule_keywords)
+        has_temporal = any(k in low_clean for k in self.time_live_keywords)
+        
+        if has_schedule and has_temporal:
+            return self._normalize_result({
+                "intent": "WEB_SEARCH",
+                "confidence": 0.92,
+                "reason": "schedule_query_with_temporal",
+                "live_type": "schedule",
+                "url": None,
+            }, source="pattern")
+        
+        # Schedule queries normali (senza hint temporali espliciti)
+        if has_schedule:
+            return self._normalize_result({
+                "intent": "WEB_SEARCH",
+                "confidence": 0.88,
+                "reason": "schedule_or_time_query",
+                "live_type": "schedule",
+                "url": None,
+            }, source="pattern")
+
         # Live results: detect sports scores or standings requests when
         # accompanied by temporal hints (today, yesterday).  These
         # queries are best answered with a fresh web search.
@@ -603,16 +640,6 @@ class SmartIntentClassifier:
                 "url": None,
             }, source="pattern")
 
-        # Schedule/time requests: look up event times using live data.
-        # Use low_clean for keyword matching
-        if any(k in low_clean for k in self.schedule_keywords):
-            return self._normalize_result({
-                "intent": "WEB_SEARCH",
-                "confidence": 0.88,
-                "reason": "schedule_or_time_query",
-                "live_type": "schedule",
-                "url": None,
-            }, source="pattern")
 
         # Generic news queries or references to current events trigger a
         # search for recent headlines.
