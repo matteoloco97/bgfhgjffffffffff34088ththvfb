@@ -103,8 +103,9 @@ except Exception as e:
     _smart_intent = None
     log.warning(f"⚠️ SmartIntentClassifier not available: {e}")
 
-# === Utils ===
+# === Constants ===
 TG_MAX = 4096
+MIN_AUTOWEB_SUMMARY_LENGTH = 50  # Minimum characters for a valid autoweb summary
 
 
 def split_text(s: str, size: int = TG_MAX) -> list[str]:
@@ -608,84 +609,82 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await typing(context, chat_id)
     
     # ========== LIVELLO 1: Pattern Matching (SmartIntent) ==========
-    try:
-        from core.smart_intent_classifier import SmartIntentClassifier
-        classifier = SmartIntentClassifier()
-        classification = classifier.classify(text)
+    # Use cached instance of SmartIntentClassifier for efficiency
+    if _smart_intent:
+        try:
+            classification = _smart_intent.classify(text)
+            
+            intent = classification.get("intent")
+            confidence = classification.get("confidence", 0)
+            live_type = classification.get("live_type")
+            url = classification.get("url")
+            
+            # Log intent (metadata only, no user content)
+            log.info(
+                f"Intent: {intent} (confidence={confidence:.2f}, "
+                f"live_type={live_type}, query_len={len(text)})"
+            )
+            
+            # ===== AUTOWEB per WEB_SEARCH (pattern match) =====
+            if intent == "WEB_SEARCH" and confidence >= 0.75:
+                log.info("Autoweb: Triggering web search (pattern match)...")
+                try:
+                    web_result = await call_backend_json(
+                        http,
+                        QUANTUM_WEB_SEARCH_URL,
+                        payload={
+                            "q": text,
+                            "source": "tg",
+                            "source_id": str(chat_id),
+                            "k": 6,
+                            "summarize_top": 3
+                        },
+                        timeout=30.0
+                    )
+                    
+                    if web_result and not web_result.get("ok") is False:
+                        summary = web_result.get("summary", "").strip()
+                        if summary:
+                            # Success!
+                            sources_block = _format_sources_block(web_result)
+                            full_reply = summary
+                            if sources_block:
+                                full_reply += f"\n\n{sources_block}"
+                            
+                            for chunk in split_text(full_reply, 3500):
+                                await msg.reply_text(chunk, disable_web_page_preview=True)
+                            return
+                except Exception as e:
+                    log.warning(f"Autoweb search failed: {e}")
+                    # Fallback to chat below
+            
+            # ===== AUTOWEB per WEB_READ (URL) =====
+            elif intent == "WEB_READ" and url:
+                log.info(f"Autoweb: Reading URL {url[:50]}...")
+                try:
+                    read_result = await call_backend_json(
+                        http,
+                        QUANTUM_WEB_SUMMARY_URL,
+                        payload={
+                            "url": url,
+                            "source": "tg",
+                            "source_id": str(chat_id)
+                        },
+                        timeout=20.0
+                    )
+                    
+                    if read_result and not read_result.get("ok") is False:
+                        summary = read_result.get("summary", "").strip()
+                        if summary:
+                            for chunk in split_text(summary, 3500):
+                                await msg.reply_text(chunk, disable_web_page_preview=True)
+                            return
+                except Exception as e:
+                    log.warning(f"Autoweb URL read failed: {e}")
+                    # Fallback to chat below
         
-        intent = classification.get("intent")
-        confidence = classification.get("confidence", 0)
-        live_type = classification.get("live_type")
-        url = classification.get("url")
-        
-        # Log intent (metadata only, no user content)
-        log.info(
-            f"Intent: {intent} (confidence={confidence:.2f}, "
-            f"live_type={live_type}, query_len={len(text)})"
-        )
-        
-        # ===== AUTOWEB per WEB_SEARCH (pattern match) =====
-        if intent == "WEB_SEARCH" and confidence >= 0.75:
-            log.info("Autoweb: Triggering web search (pattern match)...")
-            try:
-                web_result = await call_backend_json(
-                    http,
-                    QUANTUM_WEB_SEARCH_URL,
-                    payload={
-                        "q": text,
-                        "source": "tg",
-                        "source_id": str(chat_id),
-                        "k": 6,
-                        "summarize_top": 3
-                    },
-                    timeout=30.0
-                )
-                
-                if web_result and not web_result.get("ok") is False:
-                    summary = web_result.get("summary", "").strip()
-                    if summary:
-                        # Success!
-                        sources_block = _format_sources_block(web_result)
-                        full_reply = summary
-                        if sources_block:
-                            full_reply += f"\n\n{sources_block}"
-                        
-                        for chunk in split_text(full_reply, 3500):
-                            await msg.reply_text(chunk, disable_web_page_preview=True)
-                        return
-            except Exception as e:
-                log.warning(f"Autoweb search failed: {e}")
-                # Fallback to chat below
-        
-        # ===== AUTOWEB per WEB_READ (URL) =====
-        elif intent == "WEB_READ" and url:
-            log.info(f"Autoweb: Reading URL {url[:50]}...")
-            try:
-                read_result = await call_backend_json(
-                    http,
-                    QUANTUM_WEB_SUMMARY_URL,
-                    payload={
-                        "url": url,
-                        "source": "tg",
-                        "source_id": str(chat_id)
-                    },
-                    timeout=20.0
-                )
-                
-                if read_result and not read_result.get("ok") is False:
-                    summary = read_result.get("summary", "").strip()
-                    if summary:
-                        for chunk in split_text(summary, 3500):
-                            await msg.reply_text(chunk, disable_web_page_preview=True)
-                        return
-            except Exception as e:
-                log.warning(f"Autoweb URL read failed: {e}")
-                # Fallback to chat below
-    
-    except ImportError:
-        log.warning("SmartIntentClassifier not available, skipping autoweb")
-    except Exception as e:
-        log.error(f"Intent classification error: {e}")
+        except Exception as e:
+            log.error(f"Intent classification error: {e}")
     
     # ========== LIVELLO 2: Semantic Analysis (NEW) ==========
     should_search, reason = should_auto_search_semantic(text)
@@ -708,7 +707,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if web_result and not web_result.get("ok") is False:
                 summary = web_result.get("summary", "").strip()
-                if summary and len(summary) > 50:  # Check it's substantial
+                if summary and len(summary) > MIN_AUTOWEB_SUMMARY_LENGTH:  # Check it's substantial
                     sources_block = _format_sources_block(web_result)
                     full_reply = summary
                     if sources_block:

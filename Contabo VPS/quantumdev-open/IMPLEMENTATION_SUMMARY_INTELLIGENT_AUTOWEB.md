@@ -206,9 +206,10 @@ INTENT_LLM_MIN_CONFIDENCE=0.40
 
 ### Rollback Plan
 Se necessario rollback, rimuovere:
-1. Funzione `should_auto_search_semantic()` (linee 108-204)
-2. Level 2 logic in `handle_message()` (linee 665-698)
-3. Ripristinare vecchia versione handle_message
+1. Funzione `should_auto_search_semantic()` dalla sezione "Utils" dopo le imports
+2. Sezione "LIVELLO 2: Semantic Analysis" nel metodo `handle_message()`
+3. Ripristinare versione precedente di handle_message dal commit precedente
+4. Rimuovere costante `MIN_AUTOWEB_SUMMARY_LENGTH`
 
 ---
 

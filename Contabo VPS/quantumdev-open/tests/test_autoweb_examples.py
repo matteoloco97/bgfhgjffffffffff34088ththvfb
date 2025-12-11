@@ -23,6 +23,10 @@ def should_auto_search_semantic(text: str) -> tuple[bool, str]:
     """
     Analisi semantica per decidere se fare autoweb.
     (Imported logic from telegram_bot.py)
+    
+    NOTE: This function is intentionally duplicated here for test isolation.
+    The tests should not depend on the implementation module to avoid
+    circular dependencies and to allow independent testing of the logic.
     """
     text_lower = text.lower().strip()
     
