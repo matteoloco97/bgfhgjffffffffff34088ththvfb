@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-# scripts/telegram_bot.py — Smart Intent + Autoweb automatico (PATCH 2025-12-10)
-# - NUOVO: SmartIntentClassifier integrato per autoweb automatico intelligente
+# scripts/telegram_bot.py — Smart Intent + Autoweb automatico intelligente (PATCH 2025-12-11)
+# - Sistema ibrido intelligente a 3 livelli per autoweb universale:
+#   • LIVELLO 1: SmartIntentClassifier pattern matching (meteo, prezzi, sport, news)
+#   • LIVELLO 2: Analisi semantica (eventi temporali, tech, aziende, geopolitica)
+#   • LIVELLO 3: Fallback intelligente a /chat con fallback autoweb
 # - Intent WEB_SEARCH → /web/search automatico
 # - Intent WEB_READ → /web/summarize automatico con URL
 # - Intent DIRECT_LLM → /chat normale
+# - Semantic autoweb per query complesse: "Cos'è successo oggi?", "Nuovo iPhone?", etc.
 # - /web e /read continuano a funzionare come comandi manuali (backward compatible)
 # - Calculator locale (se disponibile)
 # - Attribution pulita: fonti reali quando si usa il web + badge cache opzionale
@@ -12,6 +16,7 @@
 # - PATCH 18/11: supporto QUANTUM_WEB_SEARCH_URL + fonti lette anche da "results"
 # - PATCH 21/11: testi /start e /help allineati a Jarvis (AI personale incensurata)
 # - PATCH 10/12: SmartIntentClassifier per autoweb automatico
+# - PATCH 11/12: Semantic autoweb analysis per copertura universale query
 
 from telegram import Update
 from telegram.ext import (
@@ -520,21 +525,26 @@ async def call_web_read(url: str, http: aiohttp.ClientSession, chat_id: int) -> 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    autoweb_status = "🤖 Autoweb ATTIVO" if _smart_intent else "⚠️ Autoweb NON DISPONIBILE"
+    autoweb_status = "🤖 Autoweb INTELLIGENTE ATTIVO (3 livelli)" if _smart_intent else "⚠️ Autoweb NON DISPONIBILE"
     await update.message.reply_text(
         "🧠 Jarvis – AI personale di Matteo (QuantumDev)\n"
         "\n"
         f"{autoweb_status}\n"
         "\n"
         "• 💬 Chatta normalmente per usare Jarvis su qualsiasi tema (business, crypto, coding, vita reale…)\n"
-        "• 🌐 Autoweb intelligente: query su meteo, prezzi, sport, news vengono elaborate automaticamente via web\n"
+        "• 🌐 Autoweb intelligente con 3 livelli:\n"
+        "  → Pattern Match: meteo, prezzi, sport, news\n"
+        "  → Semantic Analysis: eventi attuali, tech, aziende, geopolitica\n"
+        "  → Fallback intelligente: sempre una risposta informata\n"
         "• 🔗 Invia un URL per ottenere automaticamente un riassunto della pagina\n"
         "• 🧮 Se scrivi un'espressione tipo 2+2*10 provo a calcolarla in locale\n"
         "• 🛠️ Comandi manuali: /web <query> per forzare ricerca web, /read <url> per leggere pagine\n"
         "\n"
-        "Esempi autoweb:\n"
-        "• 'Meteo Roma?' → Ricerca web automatica\n"
-        "• 'Prezzo Bitcoin?' → Quotazione in tempo reale\n"
+        "Esempi autoweb intelligente:\n"
+        "• 'Meteo Roma?' → Ricerca web automatica (pattern)\n"
+        "• 'Cos'è successo oggi in Ucraina?' → Web search (semantic)\n"
+        "• 'Nuovo iPhone 16?' → Info aggiornate (semantic)\n"
+        "• 'Cosa ha annunciato OpenAI?' → Notizie recenti (semantic)\n"
         "• 'https://example.com' → Riassunto automatico\n"
         "• 'Ciao come stai?' → Chat normale con LLM"
     )
