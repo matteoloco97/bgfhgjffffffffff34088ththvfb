@@ -151,6 +151,17 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 |----------|---------|-------------|
 | `LLM_INTENT_ENABLED` | `false` | Abilita LLM-based intent classification |
 | `INTENT_FEEDBACK_ENABLED` | `false` | Abilita telemetria intent |
+| `INTENT_LLM_MIN_CONFIDENCE` | `0.40` | Confidenza minima per LLM intent classification |
+
+## Intelligent Autoweb Configuration (NEW)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEMANTIC_AUTOWEB_ENABLED` | `1` | Abilita analisi semantica per autoweb intelligente |
+| `SEMANTIC_MIN_QUERY_LENGTH` | `4` | Lunghezza minima query per analisi semantica (parole) |
+| `WEB_SEARCH_DEFAULT_K` | `6` | Numero default di risultati web search |
+| `WEB_SEARCH_DEFAULT_SUMMARIZE_TOP` | `3` | Numero default di documenti da riassumere |
+| `WEB_SEARCH_TIMEOUT` | `30` | Timeout web search in secondi |
 
 ## Search Diversifier
 

@@ -106,6 +106,103 @@ def split_text(s: str, size: int = TG_MAX) -> list[str]:
     return [s[i:i + size] for i in range(0, len(s), size)] if s else []
 
 
+def should_auto_search_semantic(text: str) -> tuple[bool, str]:
+    """
+    Analisi semantica per decidere se fare autoweb.
+    
+    Questa funzione analizza il testo della query per identificare pattern semantici
+    che indicano la necessità di cercare informazioni aggiornate sul web.
+    
+    Returns:
+        (should_search, reason) - True se è necessaria la ricerca web, motivo della decisione
+    """
+    text_lower = text.lower().strip()
+    
+    # Pattern semantici che indicano necessità di web search
+    
+    # 1. Eventi temporali (oggi, recente, ultimo, nuovo)
+    temporal_indicators = [
+        'oggi', 'ieri', 'recente', 'recentemente', 'ultimo', 'ultima',
+        'nuovo', 'nuova', 'attuale', 'attuali', 'corrente',
+        'questo mese', 'questa settimana', 'quest\'anno',
+        'aggiornamento', 'aggiornamenti', 'novità'
+    ]
+    has_temporal = any(ind in text_lower for ind in temporal_indicators)
+    
+    # 2. Verbi di ricerca/scoperta
+    search_verbs = [
+        'cos\'è successo', 'cosa succede', 'cosa è cambiato',
+        'scoperta', 'scoperte', 'annunciato', 'rivelato',
+        'lanciato', 'rilasciato', 'pubblicato', 'ha annunciato'
+    ]
+    has_search_verb = any(verb in text_lower for verb in search_verbs)
+    
+    # 3. Prodotti/tech (spesso hanno aggiornamenti)
+    tech_products = [
+        'iphone', 'ipad', 'macbook', 'airpods',
+        'samsung galaxy', 'pixel', 'android',
+        'windows', 'macos', 'ios',
+        'chatgpt', 'claude', 'gemini', 'copilot',
+        'tesla', 'model', 'cybertruck'
+    ]
+    has_tech_product = any(prod in text_lower for prod in tech_products)
+    
+    # 4. Aziende tech/finance (info spesso cambiano)
+    companies = [
+        'openai', 'anthropic', 'google', 'microsoft', 'apple',
+        'meta', 'facebook', 'amazon', 'nvidia', 'tesla',
+        'spacex', 'twitter', 'x.com'
+    ]
+    has_company = any(comp in text_lower for comp in companies)
+    
+    # 5. Eventi geopolitici/finanziari
+    events = [
+        'guerra', 'conflitto', 'crisi', 'elezioni', 'voto',
+        'mercato', 'borsa', 'inflazione', 'tassi',
+        'fed', 'bce', 'governo', 'parlamento', 'situazione'
+    ]
+    has_event = any(ev in text_lower for ev in events)
+    
+    # 6. Query interrogative su fatti verificabili
+    factual_patterns = [
+        'quanto costa', 'quanto vale', 'quanti',
+        'qual è il', 'quale è', 'chi è il', 'chi ha',
+        'dove si trova', 'dove è', 'quando è',
+        'come funziona il nuovo', 'cosa fa',
+        'è vero che', 'è successo che'
+    ]
+    has_factual = any(pat in text_lower for pat in factual_patterns)
+    
+    # Decisione con priorità
+    
+    # Alta priorità: eventi temporali + verbi di ricerca/scoperta
+    if has_temporal and (has_search_verb or has_factual):
+        return True, "temporal_event_query"
+    
+    # Alta priorità: prodotti tech + indicatori temporali
+    if has_tech_product and has_temporal:
+        return True, "tech_product_update"
+    
+    # Media priorità: company + (temporal o factual o search verb)
+    if has_company and (has_temporal or has_factual or has_search_verb):
+        return True, "company_info_query"
+    
+    # Media priorità: eventi geopolitici/finanziari + temporal
+    if has_event and has_temporal:
+        return True, "geopolitical_or_financial_event"
+    
+    # Media priorità: eventi geopolitici/finanziari standalone (sempre search)
+    if has_event and any(kw in text_lower for kw in ['guerra', 'conflitto', 'elezioni', 'mercato', 'borsa', 'inflazione']):
+        return True, "geopolitical_or_financial_event"
+    
+    # Bassa priorità: query fattuali complesse
+    if has_factual and len(text_lower.split()) >= 4:
+        # Query factual lunga probabilmente richiede info aggiornate
+        return True, "complex_factual_query"
+    
+    return False, "no_search_needed"
+
+
 def first_url(s: str | None) -> str | None:
     if not s:
         return None
@@ -465,9 +562,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle incoming messages with intelligent autoweb routing.
+    
+    Flow:
+    1. Check calculator
+    2. SmartIntentClassifier (pattern matching) - LEVEL 1
+    3. Semantic analysis (NEW) - LEVEL 2
+    4. Execute autoweb if needed
+    5. Fallback to /chat - LEVEL 3
+    """
     msg = update.message
     if not msg or not msg.text:
         return
+    
     text = msg.text.strip()
     chat_id = update.effective_chat.id
     http = context.application.bot_data["http"]
@@ -488,71 +596,134 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await typing(context, chat_id)
-
-    # === NUOVO: SmartIntentClassifier per autoweb automatico ===
-    intent_result = None
-    if _smart_intent:
+    
+    # ========== LIVELLO 1: Pattern Matching (SmartIntent) ==========
+    try:
+        from core.smart_intent_classifier import SmartIntentClassifier
+        classifier = SmartIntentClassifier()
+        classification = classifier.classify(text)
+        
+        intent = classification.get("intent")
+        confidence = classification.get("confidence", 0)
+        live_type = classification.get("live_type")
+        url = classification.get("url")
+        
+        # Log intent (metadata only, no user content)
+        log.info(
+            f"Intent: {intent} (confidence={confidence:.2f}, "
+            f"live_type={live_type}, query_len={len(text)})"
+        )
+        
+        # ===== AUTOWEB per WEB_SEARCH (pattern match) =====
+        if intent == "WEB_SEARCH" and confidence >= 0.75:
+            log.info("Autoweb: Triggering web search (pattern match)...")
+            try:
+                web_result = await call_backend_json(
+                    http,
+                    QUANTUM_WEB_SEARCH_URL,
+                    payload={
+                        "q": text,
+                        "source": "tg",
+                        "source_id": str(chat_id),
+                        "k": 6,
+                        "summarize_top": 3
+                    },
+                    timeout=30.0
+                )
+                
+                if web_result and not web_result.get("ok") is False:
+                    summary = web_result.get("summary", "").strip()
+                    if summary:
+                        # Success!
+                        sources_block = _format_sources_block(web_result)
+                        full_reply = summary
+                        if sources_block:
+                            full_reply += f"\n\n{sources_block}"
+                        
+                        for chunk in split_text(full_reply, 3500):
+                            await msg.reply_text(chunk, disable_web_page_preview=True)
+                        return
+            except Exception as e:
+                log.warning(f"Autoweb search failed: {e}")
+                # Fallback to chat below
+        
+        # ===== AUTOWEB per WEB_READ (URL) =====
+        elif intent == "WEB_READ" and url:
+            log.info(f"Autoweb: Reading URL {url[:50]}...")
+            try:
+                read_result = await call_backend_json(
+                    http,
+                    QUANTUM_WEB_SUMMARY_URL,
+                    payload={
+                        "url": url,
+                        "source": "tg",
+                        "source_id": str(chat_id)
+                    },
+                    timeout=20.0
+                )
+                
+                if read_result and not read_result.get("ok") is False:
+                    summary = read_result.get("summary", "").strip()
+                    if summary:
+                        for chunk in split_text(summary, 3500):
+                            await msg.reply_text(chunk, disable_web_page_preview=True)
+                        return
+            except Exception as e:
+                log.warning(f"Autoweb URL read failed: {e}")
+                # Fallback to chat below
+    
+    except ImportError:
+        log.warning("SmartIntentClassifier not available, skipping autoweb")
+    except Exception as e:
+        log.error(f"Intent classification error: {e}")
+    
+    # ========== LIVELLO 2: Semantic Analysis (NEW) ==========
+    should_search, reason = should_auto_search_semantic(text)
+    
+    if should_search:
+        log.info(f"Autoweb: Semantic trigger ({reason})...")
         try:
-            intent_result = _smart_intent.classify(text)
-            intent = intent_result.get("intent", "DIRECT_LLM")
-            confidence = intent_result.get("confidence", 0.0)
-            reason = intent_result.get("reason", "")
-            live_type = intent_result.get("live_type")
-            url = intent_result.get("url")
-            
-            # Log intent rilevato per debug (no user data in production)
-            log.info(
-                f"📊 Intent detected: {intent} (confidence={confidence:.2f}, "
-                f"reason={reason}, live_type={live_type}, query_len={len(text)})"
+            web_result = await call_backend_json(
+                http,
+                QUANTUM_WEB_SEARCH_URL,
+                payload={
+                    "q": text,
+                    "source": "tg",
+                    "source_id": str(chat_id),
+                    "k": 6,
+                    "summarize_top": 3
+                },
+                timeout=30.0
             )
             
-            # === WEB_READ: URL rilevato, usa /web/summarize automaticamente ===
-            if intent == "WEB_READ" and url:
-                log.info(f"🌐 Autoweb WEB_READ: url_len={len(url)}")
-                try:
-                    final = await call_web_read(url, http, chat_id)
-                    for part in split_text(final):
-                        await msg.reply_text(part, disable_web_page_preview=not SOURCE_PREVIEW)
-                    return
-                except Exception as e:
-                    log.warning(f"⚠️ Autoweb WEB_READ failed: {e}, fallback to /chat")
-                    # Fallback a /chat se autoweb fallisce
-            
-            # === WEB_SEARCH: query web rilevata, usa /web/search automaticamente ===
-            elif intent == "WEB_SEARCH":
-                log.info(f"🔍 Autoweb WEB_SEARCH: live_type={live_type}, query_len={len(text)}")
-                try:
-                    # Usa percorso veloce se live_type è impostato
-                    if live_type in ("weather", "price", "sports", "schedule", "news"):
-                        final = await call_web_summary_query(text, http, chat_id)
-                    else:
-                        # Usa ricerca avanzata per query complesse
-                        final = await call_web_research(text, http, chat_id)
+            if web_result and not web_result.get("ok") is False:
+                summary = web_result.get("summary", "").strip()
+                if summary and len(summary) > 50:  # Check it's substantial
+                    sources_block = _format_sources_block(web_result)
+                    full_reply = summary
+                    if sources_block:
+                        full_reply += f"\n\n{sources_block}"
                     
-                    for part in split_text(final):
-                        await msg.reply_text(part, disable_web_page_preview=not SOURCE_PREVIEW)
+                    for chunk in split_text(full_reply, 3500):
+                        await msg.reply_text(chunk, disable_web_page_preview=True)
                     return
-                except Exception as e:
-                    log.warning(f"⚠️ Autoweb WEB_SEARCH failed: {e}, fallback to /chat")
-                    # Fallback a /chat se autoweb fallisce
-            
-            # === DIRECT_LLM: prosegui con /chat normale ===
-            else:
-                log.info(f"💬 Direct LLM: query_len={len(text)}")
-                # Prosegue sotto con la logica normale di /chat
-                
         except Exception as e:
-            log.warning(f"⚠️ Intent classification failed: {e}, fallback to /chat")
-            # Se la classificazione fallisce, prosegui con /chat normale
+            log.warning(f"Semantic autoweb failed: {e}")
+            # Fallback to chat below
     
-    # === Flusso normale: chiamata a /chat ===
+    # ========== LIVELLO 3: Fallback a /chat ==========
     data = await call_chat(text, http, chat_id)
     reply = (data.get("reply") or "").strip()
+    
     if not reply:
-        await msg.reply_text("Non riesco a rispondere ora. Se vuoi cercare online usa /web <query>.")
+        await msg.reply_text(
+            "Non riesco a rispondere ora. "
+            "Prova con /web <query> per cercare informazioni online."
+        )
         return
-    for part in split_text(reply):
-        await msg.reply_text(part, disable_web_page_preview=True)
+    
+    for chunk in split_text(reply, 3500):
+        await msg.reply_text(chunk, disable_web_page_preview=True)
 
 # === Comandi manuali ===
 
