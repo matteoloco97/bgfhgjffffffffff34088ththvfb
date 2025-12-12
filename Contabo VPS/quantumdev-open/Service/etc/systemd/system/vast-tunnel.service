@@ -1,0 +1,13 @@
+[Unit]
+Description=Vast.ai GPU Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/ssh -N -L 127.0.0.1:9011:localhost:9011 -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes root@154.42.3.35 -p 31206
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
