@@ -7,6 +7,7 @@ Tests the cache functionality without requiring a running server.
 
 import sys
 import os
+import traceback
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -72,7 +73,6 @@ def test_cache_get_set():
         return True
     except Exception as e:
         print(f"  ❌ Cache get/set failed: {e}")
-        import traceback
         traceback.print_exc()
         return False
 
@@ -149,7 +149,6 @@ def test_cache_stats():
         return True
     except Exception as e:
         print(f"  ❌ Stats test failed: {e}")
-        import traceback
         traceback.print_exc()
         return False
 
@@ -225,7 +224,6 @@ def test_quantum_api_integration():
         return True
     except Exception as e:
         print(f"  ❌ Integration test failed: {e}")
-        import traceback
         traceback.print_exc()
         return False
 
@@ -253,7 +251,6 @@ def main():
             results.append(result)
         except Exception as e:
             print(f"\n❌ Test failed with exception: {e}")
-            import traceback
             traceback.print_exc()
             results.append(False)
     

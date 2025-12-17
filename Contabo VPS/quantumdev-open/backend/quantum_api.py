@@ -1947,11 +1947,8 @@ async def multi_cache_clear(req: CacheClearReq) -> Dict[str, Any]:
     
     try:
         if req.level in ("l1", "all"):
-            ml_cache._l1_cache.clear()
-            # Also clear the LRU tracking
-            if hasattr(ml_cache, '_l1_access_order'):
-                ml_cache._l1_access_order.clear()
-            log.info("L1 cache cleared")
+            cleared_count = ml_cache.clear_l1()
+            log.info(f"L1 cache cleared ({cleared_count} items)")
         
         if req.level in ("l2", "all"):
             try:
@@ -2831,7 +2828,7 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     
     cached_response = ml_cache.get(cache_key)
     if cached_response:
-        cache_latency_ms = int((time.perf_counter() - start_time) * 1000)
+        cache_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
         log.info(f"[CACHE HIT] {text[:50]}... (source: {src}, latency: {cache_latency_ms}ms)")
         return {
             "reply": cached_response,
@@ -3057,7 +3054,7 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
             except Exception as e:
                 log.warning(f"Multi-level cache set error (hw): {e}")
         
-        hw_latency_ms = int((time.perf_counter() - start_time) * 1000)
+        hw_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         return {
             "reply": reply_hw,
@@ -3170,7 +3167,7 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
             log.warning(f"Multi-level cache set error: {e}")
     
     # Calculate total latency
-    total_latency_ms = int((time.perf_counter() - start_time) * 1000)
+    total_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
     return {
         "reply": reply_text,
