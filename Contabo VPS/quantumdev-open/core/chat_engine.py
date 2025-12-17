@@ -59,6 +59,8 @@ def _build_chat_url(base_or_chat: str) -> str:
     return f"{u}/v1/chat/completions"
 
 # === ENV config (OTTIMIZZATO per A6000 48GB) ===
+# NOTA: Porta 5000 è il default per text-generation-webui API
+# Per deployment esistenti su porta 9011, impostare LLM_ENDPOINT nel .env
 LLM_ENDPOINT_BASE = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:5000/v1")
 LLM_ENDPOINT = _build_chat_url(LLM_ENDPOINT_BASE)
 

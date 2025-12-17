@@ -49,12 +49,12 @@ class LLMPreset:
 PRESETS: Dict[str, LLMPreset] = {
     "web_synthesis": LLMPreset(
         temperature=0.2,  # Bassa per consistenza e velocità
-        max_tokens=256,   # Aumentato per sintesi più complete
+        max_tokens=256,   # ~100 parole (1 token ≈ 0.75 parole per italiano)
         stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:", "###"],
         repetition_penalty=1.1,
         presence_penalty=0.6,
         top_p=0.9,
-        description="Web synthesis (max 100 words, optimized for accuracy)"
+        description="Web synthesis (~100 words, optimized for accuracy)"
     ),
     
     "chat": LLMPreset(
