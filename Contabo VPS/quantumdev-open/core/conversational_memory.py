@@ -494,6 +494,120 @@ class ConversationalMemory:
         except Exception as e:
             log.error(f"Summarization failed: {e}")
     
+    async def prune_context_semantically(
+        self,
+        messages: List[Message],
+        current_query: str,
+        max_tokens: int = 4000
+    ) -> List[Message]:
+        """
+        Intelligent context pruning using semantic similarity.
+        
+        Strategy:
+        1. Always keep first message (initial context)
+        2. Always keep last 3 messages (immediate context)
+        3. For middle messages: calculate semantic similarity with current query
+        4. Sort by similarity and keep top-N until max_tokens
+        
+        Args:
+            messages: List of conversation messages
+            current_query: Current user query for relevance calculation
+            max_tokens: Maximum tokens for pruned context
+            
+        Returns:
+            Pruned list of messages ordered by importance
+        """
+        if len(messages) <= 5:
+            # Too few messages to prune
+            return messages
+        
+        # Separate messages into fixed and prunable sections
+        first_msg = messages[0]
+        last_3 = messages[-3:]
+        middle_msgs = messages[1:-3] if len(messages) > 4 else []
+        
+        if not middle_msgs:
+            return messages
+        
+        # Calculate token budget
+        first_tokens = approx_tokens(first_msg.content)
+        last_tokens = sum(approx_tokens(m.content) for m in last_3)
+        available_tokens = max_tokens - first_tokens - last_tokens
+        
+        if available_tokens <= 0:
+            # Not enough budget, return essentials only
+            return [first_msg] + last_3
+        
+        # Try semantic similarity if vector memory available
+        vm = _get_vector_memory()
+        if vm:
+            try:
+                # Get embedding function
+                from core.vector_memory import _get_embedding_function
+                embed_fn = _get_embedding_function()
+                
+                if embed_fn:
+                    # Embed current query
+                    query_embedding = embed_fn([current_query])[0]
+                    
+                    # Score middle messages by similarity
+                    scored_middle = []
+                    for msg in middle_msgs:
+                        msg_embedding = embed_fn([msg.content])[0]
+                        
+                        # Calculate cosine similarity
+                        import numpy as np
+                        similarity = float(np.dot(query_embedding, msg_embedding) / 
+                                         (np.linalg.norm(query_embedding) * np.linalg.norm(msg_embedding)))
+                        
+                        scored_middle.append((msg, similarity))
+                    
+                    # Sort by similarity (descending)
+                    scored_middle.sort(key=lambda x: x[1], reverse=True)
+                    
+                    # Select top messages within token budget
+                    selected_middle = []
+                    used_tokens = 0
+                    
+                    for msg, similarity in scored_middle:
+                        msg_tokens = approx_tokens(msg.content)
+                        if used_tokens + msg_tokens <= available_tokens:
+                            selected_middle.append(msg)
+                            used_tokens += msg_tokens
+                        else:
+                            break
+                    
+                    # Reconstruct in chronological order
+                    all_selected = [first_msg] + selected_middle + last_3
+                    
+                    # Sort by timestamp to maintain conversation flow
+                    all_selected.sort(key=lambda m: m.timestamp)
+                    
+                    log.debug(
+                        f"Semantic pruning: {len(messages)} → {len(all_selected)} messages "
+                        f"({first_tokens + used_tokens + last_tokens}/{max_tokens} tokens)"
+                    )
+                    
+                    return all_selected
+                    
+            except Exception as e:
+                log.warning(f"Semantic pruning failed, using simple selection: {e}")
+        
+        # Fallback: simple recency-based selection
+        selected_middle = []
+        used_tokens = 0
+        
+        # Take most recent middle messages first
+        for msg in reversed(middle_msgs):
+            msg_tokens = approx_tokens(msg.content)
+            if used_tokens + msg_tokens <= available_tokens:
+                selected_middle.insert(0, msg)  # Insert at beginning to maintain order
+                used_tokens += msg_tokens
+            else:
+                break
+        
+        return [first_msg] + selected_middle + last_3
+    
     def build_context(
         self,
         session: ConversationSession,

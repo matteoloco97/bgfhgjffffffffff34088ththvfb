@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 USER_PROFILE_COLLECTION = os.getenv("USER_PROFILE_COLLECTION", "user_profile")
 USER_PROFILE_ENABLED = os.getenv("USER_PROFILE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
 USER_PROFILE_MAX_AGE_DAYS = int(os.getenv("USER_PROFILE_MAX_AGE_DAYS", "3650"))  # 10 anni di ritenzione (i fatti personali non scadono facilmente)
+MEMORY_MIN_RELEVANCE = float(os.getenv("MEMORY_MIN_RELEVANCE", "0.65"))  # Minimum relevance threshold for memory retrieval
 
 # Default user ID for Matteo (can be extended for multi-user)
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "matteo")
@@ -193,19 +194,21 @@ def query_user_profile(
     user_id: str,
     query_text: str,
     top_k: int = 5,
-    category: Optional[str] = None
+    category: Optional[str] = None,
+    min_relevance: Optional[float] = None
 ) -> List[Dict[str, Any]]:
     """
-    Query user profile facts.
+    Query user profile facts with relevance filtering.
     
     Args:
         user_id: User identifier
         query_text: Query text for semantic search
         top_k: Number of results to return
         category: Optional category filter
+        min_relevance: Minimum relevance threshold (0-1). Defaults to MEMORY_MIN_RELEVANCE env var.
         
     Returns:
-        List of matching facts with metadata
+        List of matching facts with metadata, filtered by relevance
     """
     if not USER_PROFILE_ENABLED:
         return []
@@ -214,33 +217,46 @@ def query_user_profile(
     if col is None:
         return []
     
+    # Use provided min_relevance or fall back to config
+    relevance_threshold = min_relevance if min_relevance is not None else MEMORY_MIN_RELEVANCE
+    
     try:
         # Build where filter
         where_filter = {"user_id": user_id}
         if category:
             where_filter["category"] = category
         
-        # Query collection
+        # Query collection - Over-fetch to allow filtering
+        fetch_count = top_k * 2 if relevance_threshold > 0 else top_k
         results = col.query(
             query_texts=[query_text],
-            n_results=top_k,
+            n_results=fetch_count,
             where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
         
-        # Format results
+        # Format and filter results by relevance
         facts = []
         if results and results.get("ids") and results["ids"][0]:
             for i in range(len(results["ids"][0])):
-                fact = {
-                    "id": results["ids"][0][i],
-                    "text": results["documents"][0][i] if results.get("documents") else "",
-                    "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
-                    "distance": results["distances"][0][i] if results.get("distances") else 1.0,
-                }
-                facts.append(fact)
+                distance = results["distances"][0][i] if results.get("distances") else 1.0
+                # Convert distance to similarity (ChromaDB uses cosine distance, so similarity = 1 - distance)
+                similarity = 1.0 - distance
+                
+                # Filter by relevance threshold
+                if similarity >= relevance_threshold:
+                    fact = {
+                        "id": results["ids"][0][i],
+                        "text": results["documents"][0][i] if results.get("documents") else "",
+                        "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                        "distance": distance,
+                        "similarity": similarity,
+                    }
+                    facts.append(fact)
         
-        return facts
+        # Sort by similarity (descending) and limit to top_k
+        facts.sort(key=lambda x: x["similarity"], reverse=True)
+        return facts[:top_k]
         
     except Exception as e:
         log.error(f"Failed to query user profile: {e}")
