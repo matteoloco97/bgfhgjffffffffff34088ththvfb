@@ -21,15 +21,15 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-# Environment configuration
+# Environment configuration - OTTIMIZZATO per massima ritenzione
 EPISODIC_COLLECTION = os.getenv("EPISODIC_MEMORY_COLLECTION", "conversation_history")
 EPISODIC_ENABLED = os.getenv("EPISODIC_MEMORY_ENABLED", "1").strip() in ("1", "true", "yes", "on")
 
-# Buffer and summarization thresholds
-EPISODIC_BUFFER_SIZE = int(os.getenv("EPISODIC_BUFFER_SIZE", "10"))  # max messages before summarization
-EPISODIC_BUFFER_TOKEN_LIMIT = int(os.getenv("EPISODIC_BUFFER_TOKEN_LIMIT", "2000"))  # token-based threshold
+# Buffer and summarization thresholds - OTTIMIZZATI
+EPISODIC_BUFFER_SIZE = int(os.getenv("EPISODIC_BUFFER_SIZE", "20"))  # max messaggi prima di summarization (aumentato da 10)
+EPISODIC_BUFFER_TOKEN_LIMIT = int(os.getenv("EPISODIC_BUFFER_TOKEN_LIMIT", "4000"))  # token-based threshold (aumentato da 2000)
 EPISODIC_SUMMARIZE_ENABLED = os.getenv("EPISODIC_SUMMARIZE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
-EPISODIC_MAX_AGE_DAYS = int(os.getenv("EPISODIC_MAX_AGE_DAYS", "90"))
+EPISODIC_MAX_AGE_DAYS = int(os.getenv("EPISODIC_MAX_AGE_DAYS", "365"))  # 1 anno di ritenzione (aumentato da 90)
 
 # In-memory buffers per conversation (session-based, not persistent)
 _conversation_buffers: Dict[str, deque] = {}

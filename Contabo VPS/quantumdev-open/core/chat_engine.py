@@ -63,13 +63,13 @@ LLM_ENDPOINT_BASE = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:9011/v1")
 LLM_ENDPOINT = _build_chat_url(LLM_ENDPOINT_BASE)
 
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-32b-awq")
-LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.7)
-LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 512)
+LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.75)  # Leggermente più creativo (da 0.7)
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 2048)  # Risposte più lunghe (da 512)
 
-# Budget/contesto (hard cap)
-LLM_MAX_CTX             = _env_int("LLM_MAX_CTX", 8192)
+# Budget/contesto (hard cap) - OTTIMIZZATO per massima capacità
+LLM_MAX_CTX             = _env_int("LLM_MAX_CTX", 32768)  # 32K context (aumentato da 8192)
 LLM_OUTPUT_BUDGET_TOK   = _env_int("LLM_OUTPUT_BUDGET_TOK", LLM_MAX_TOKENS)
-LLM_SAFETY_MARGIN_TOK   = _env_int("LLM_SAFETY_MARGIN_TOK", 256)
+LLM_SAFETY_MARGIN_TOK   = _env_int("LLM_SAFETY_MARGIN_TOK", 512)  # Margine aumentato (da 256)
 
 # Timeout & retry
 REQ_TIMEOUT_S = _env_float("LLM_HTTP_TIMEOUT_S", 60.0)
@@ -94,7 +94,7 @@ def _build_payload(user_text: str, system_prompt: str) -> Dict[str, Any]:
 
     # Hard cap input: (ctx - out_budget - safety)
     input_budget = max(512, LLM_MAX_CTX - LLM_OUTPUT_BUDGET_TOK - LLM_SAFETY_MARGIN_TOK)
-    sys_trim = trim_to_tokens(sys_full, min(600, LLM_MAX_CTX // 8))  # persona non enorme
+    sys_trim = trim_to_tokens(sys_full, min(2000, LLM_MAX_CTX // 6))  # Persona più elaborata (da 600 a 2000 token max)
     user_trim = (user_text or "").strip()
 
     # Se sfora, taglia il messaggio utente dando priorità alla coda (informazione recente)
