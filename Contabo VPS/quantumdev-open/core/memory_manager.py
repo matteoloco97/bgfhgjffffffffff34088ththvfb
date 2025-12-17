@@ -44,10 +44,10 @@ except Exception as e:
     log.warning(f"Episodic memory not available: {e}")
     EPISODIC_AVAILABLE = False
 
-# Environment configuration
-MEMORY_PROFILE_TOP_K = int(os.getenv("MEMORY_PROFILE_TOP_K", "5"))
-MEMORY_EPISODIC_TOP_K = int(os.getenv("MEMORY_EPISODIC_TOP_K", "3"))
-MEMORY_MAX_CONTEXT_TOKENS = int(os.getenv("MEMORY_MAX_CONTEXT_TOKENS", "800"))
+# Environment configuration - OTTIMIZZATO per massima capacità memoria
+MEMORY_PROFILE_TOP_K = int(os.getenv("MEMORY_PROFILE_TOP_K", "10"))  # Aumentato da 5 a 10
+MEMORY_EPISODIC_TOP_K = int(os.getenv("MEMORY_EPISODIC_TOP_K", "5"))  # Aumentato da 3 a 5
+MEMORY_MAX_CONTEXT_TOKENS = int(os.getenv("MEMORY_MAX_CONTEXT_TOKENS", "2000"))  # Aumentato da 800 a 2000
 
 # Secret/sensitive data patterns (basic filtering)
 SENSITIVE_PATTERNS = [

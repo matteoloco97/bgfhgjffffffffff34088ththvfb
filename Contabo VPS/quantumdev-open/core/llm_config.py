@@ -58,18 +58,38 @@ PRESETS: Dict[str, LLMPreset] = {
     ),
     
     "chat": LLMPreset(
-        temperature=0.7,
-        max_tokens=512,
+        temperature=0.75,  # Leggermente più creativo
+        max_tokens=2048,   # Risposte più complete (aumentato da 512)
         stop_sequences=[],
         repetition_penalty=1.0,
         presence_penalty=0.0,
         top_p=0.95,
-        description="Standard conversational chat"
+        description="Standard conversational chat with extended responses"
+    ),
+    
+    "chat_extended": LLMPreset(
+        temperature=0.7,
+        max_tokens=4096,   # Per risposte molto lunghe e articolate
+        stop_sequences=[],
+        repetition_penalty=1.02,
+        presence_penalty=0.1,
+        top_p=0.95,
+        description="Extended chat for complex topics requiring detailed responses"
+    ),
+    
+    "reasoning": LLMPreset(
+        temperature=0.3,   # Bassa per ragionamento logico
+        max_tokens=3000,   # Spazio per reasoning chain
+        stop_sequences=["CONCLUSIONE FINALE:", "---"],
+        repetition_penalty=1.05,
+        presence_penalty=0.2,
+        top_p=0.9,
+        description="Deep reasoning and analysis with step-by-step thinking"
     ),
     
     "code_generation": LLMPreset(
         temperature=0.3,
-        max_tokens=1024,
+        max_tokens=2048,   # Aumentato per codice più lungo
         stop_sequences=["```\n\n", "# END", "// END"],
         repetition_penalty=1.05,
         presence_penalty=0.2,
@@ -79,7 +99,7 @@ PRESETS: Dict[str, LLMPreset] = {
     
     "creative_writing": LLMPreset(
         temperature=0.9,
-        max_tokens=2048,
+        max_tokens=4096,   # Aumentato per contenuti creativi lunghi
         stop_sequences=["THE END", "---END---"],
         repetition_penalty=1.05,
         presence_penalty=0.3,
@@ -89,12 +109,22 @@ PRESETS: Dict[str, LLMPreset] = {
     
     "factual_qa": LLMPreset(
         temperature=0.1,
-        max_tokens=256,
+        max_tokens=512,    # Aumentato da 256
         stop_sequences=["\n\n", "---"],
         repetition_penalty=1.0,
         presence_penalty=0.5,
         top_p=0.85,
         description="Factual Q&A with very low temperature"
+    ),
+    
+    "uncensored": LLMPreset(
+        temperature=0.8,
+        max_tokens=3000,
+        stop_sequences=[],
+        repetition_penalty=1.02,
+        presence_penalty=0.1,
+        top_p=0.95,
+        description="Uncensored mode for direct, unfiltered responses"
     ),
 }
 

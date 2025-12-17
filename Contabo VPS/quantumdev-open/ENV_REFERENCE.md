@@ -2,31 +2,48 @@
 
 Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jarvis/QuantumDev.
 
-> **Version 2.0.0 - QuantumDev Max** 🚀
+> **Version 4.0.0 - QuantumDev Max Uncensored** 🚀🧠
 
 ---
 
-## QuantumDev Max Features (NEW)
+## QuantumDev Max Features (OTTIMIZZATO v4)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLE_CONVERSATIONAL_MEMORY` | `true` | Abilita memoria conversazionale 32K |
+| `ENABLE_CONVERSATIONAL_MEMORY` | `true` | Abilita memoria conversazionale 64K |
 | `ENABLE_FUNCTION_CALLING` | `true` | Abilita orchestrazione tool autonoma |
 | `ENABLE_REASONING_TRACES` | `true` | Abilita tracciamento ragionamento |
 | `ENABLE_ARTIFACTS` | `true` | Abilita sistema artifacts |
+| `ENABLE_PROACTIVE_SUGGESTIONS` | `true` | Suggerimenti proattivi (abilitato) |
 | `VERBOSE_REASONING` | `false` | Mostra log dettagliati reasoning |
 
-## Context Management (NEW)
+## Context Management (OTTIMIZZATO v4)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MAX_CONTEXT_TOKENS` | `32000` | Finestra contesto massima (32K) |
-| `SLIDING_WINDOW_SIZE` | `10` | Ultimi N turni in sliding window |
-| `SUMMARIZATION_THRESHOLD` | `20` | Turni prima di auto-summarization |
-| `SUMMARIZATION_TOKEN_LIMIT` | `2000` | Max token per summarization |
-| `SESSION_TTL` | `604800` | TTL sessioni in secondi (7 giorni) |
+| `MAX_CONTEXT_TOKENS` | `65536` | Finestra contesto massima (64K - aumentato) |
+| `SLIDING_WINDOW_SIZE` | `20` | Ultimi N turni in sliding window (aumentato) |
+| `SUMMARIZATION_THRESHOLD` | `30` | Turni prima di auto-summarization (aumentato) |
+| `SUMMARIZATION_TOKEN_LIMIT` | `4000` | Max token per summarization (aumentato) |
+| `SESSION_TTL` | `2592000` | TTL sessioni in secondi (30 giorni - aumentato) |
+| `CONVERSATION_TTL_DAYS` | `30` | Durata conversazioni in giorni (aumentato) |
+| `PERSIST_ARCHIVE_ENABLED` | `true` | Archiviazione sessioni (abilitato) |
 | `ARTIFACT_TTL` | `604800` | TTL artifacts in secondi (7 giorni) |
 | `MAX_ARTIFACTS_PER_USER` | `100` | Max artifacts salvati per utente |
+
+## Personal Memory System (OTTIMIZZATO v4)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `USER_PROFILE_ENABLED` | `true` | Abilita memoria profilo utente |
+| `USER_PROFILE_MAX_AGE_DAYS` | `3650` | Ritenzione fatti utente (10 anni) |
+| `EPISODIC_MEMORY_ENABLED` | `true` | Abilita memoria episodica |
+| `EPISODIC_BUFFER_SIZE` | `20` | Messaggi prima di summarization (aumentato) |
+| `EPISODIC_BUFFER_TOKEN_LIMIT` | `4000` | Token limit buffer (aumentato) |
+| `EPISODIC_MAX_AGE_DAYS` | `365` | Ritenzione memoria episodica (1 anno) |
+| `MEMORY_PROFILE_TOP_K` | `10` | Fatti profilo da recuperare (aumentato) |
+| `MEMORY_EPISODIC_TOP_K` | `5` | Riassunti episodici da recuperare (aumentato) |
+| `MEMORY_MAX_CONTEXT_TOKENS` | `2000` | Token massimi per contesto memoria (aumentato) |
 
 ## Tool Orchestration (NEW)
 
@@ -37,18 +54,18 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 
 ---
 
-## LLM Configuration
+## LLM Configuration (OTTIMIZZATO v4)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_ENDPOINT` | - | URL dell'endpoint LLM (es: `http://localhost:8080`) |
 | `TUNNEL_ENDPOINT` | - | URL del tunnel Cloudflare (opzionale) |
 | `LLM_MODEL` | `qwen2.5-32b-awq` | Nome del modello LLM |
-| `LLM_TEMPERATURE` | `0.7` | Temperatura per la generazione |
-| `LLM_MAX_TOKENS` | `512` | Max token per risposta |
-| `LLM_MAX_CTX` | `8192` | Contesto massimo in token |
-| `LLM_OUTPUT_BUDGET_TOK` | `512` | Budget token per output |
-| `LLM_SAFETY_MARGIN_TOK` | `256` | Margine sicurezza token |
+| `LLM_TEMPERATURE` | `0.75` | Temperatura per la generazione (aumentato) |
+| `LLM_MAX_TOKENS` | `2048` | Max token per risposta (aumentato) |
+| `LLM_MAX_CTX` | `32768` | Contesto massimo in token (aumentato a 32K) |
+| `LLM_OUTPUT_BUDGET_TOK` | `2048` | Budget token per output (aumentato) |
+| `LLM_SAFETY_MARGIN_TOK` | `512` | Margine sicurezza token (aumentato) |
 
 ## Web Search Configuration
 
@@ -225,32 +242,50 @@ QUANTUM_SHARED_SECRET=your_secret_here
 ## Esempio .env completo (con tutti gli agenti)
 
 ```env
-# === LLM ===
+# === LLM (OTTIMIZZATO v4) ===
 LLM_ENDPOINT=http://localhost:8080
 TUNNEL_ENDPOINT=https://your-tunnel.trycloudflare.com
 LLM_MODEL=qwen2.5-32b-awq
-LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=512
+LLM_TEMPERATURE=0.75
+LLM_MAX_TOKENS=2048
+LLM_MAX_CTX=32768
+LLM_OUTPUT_BUDGET_TOK=2048
+LLM_SAFETY_MARGIN_TOK=512
 
 # === Redis ===
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
 
-# === QuantumDev Max Features (NEW) ===
+# === QuantumDev Max Features (OTTIMIZZATO v4) ===
 ENABLE_CONVERSATIONAL_MEMORY=true
 ENABLE_FUNCTION_CALLING=true
 ENABLE_REASONING_TRACES=true
 ENABLE_ARTIFACTS=true
+ENABLE_PROACTIVE_SUGGESTIONS=true
 
-# === Context Management (NEW) ===
-MAX_CONTEXT_TOKENS=32000
-SLIDING_WINDOW_SIZE=10
-SUMMARIZATION_THRESHOLD=20
-SESSION_TTL=604800
+# === Context Management (OTTIMIZZATO v4) ===
+MAX_CONTEXT_TOKENS=65536
+SLIDING_WINDOW_SIZE=20
+SUMMARIZATION_THRESHOLD=30
+SUMMARIZATION_TOKEN_LIMIT=4000
+SESSION_TTL=2592000
+CONVERSATION_TTL_DAYS=30
+PERSIST_ARCHIVE_ENABLED=true
 ARTIFACT_TTL=604800
 
-# === Tool Orchestration (NEW) ===
+# === Personal Memory (OTTIMIZZATO v4) ===
+USER_PROFILE_ENABLED=1
+USER_PROFILE_MAX_AGE_DAYS=3650
+EPISODIC_MEMORY_ENABLED=1
+EPISODIC_BUFFER_SIZE=20
+EPISODIC_BUFFER_TOKEN_LIMIT=4000
+EPISODIC_MAX_AGE_DAYS=365
+MEMORY_PROFILE_TOP_K=10
+MEMORY_EPISODIC_TOP_K=5
+MEMORY_MAX_CONTEXT_TOKENS=2000
+
+# === Tool Orchestration ===
 MAX_ORCHESTRATION_TURNS=5
 TOOL_TIMEOUT_S=30
 
@@ -262,23 +297,25 @@ ODDS_API_KEY=your_key_here
 
 # === Cache TTL ===
 LIVE_CACHE_TTL_WEATHER=1800
-LIVE_CACHE_TTL_PRICE=60
-LIVE_CACHE_TTL_SPORTS=300
-LIVE_CACHE_TTL_NEWS=600
+LIVE_CACHE_TTL_PRICE=30
+LIVE_CACHE_TTL_SPORTS=180
+LIVE_CACHE_TTL_NEWS=300
 LIVE_CACHE_TTL_BETTING=300
-LIVE_CACHE_TTL_TRADING=120
+LIVE_CACHE_TTL_TRADING=60
 
 # === Features ===
 WEB_SEARCH_DEEP_MODE=true
 USE_RERANKER=true
 DIVERSIFIER_ENABLED=true
+LLM_INTENT_ENABLED=1
+INTENT_FEEDBACK_ENABLED=true
 
 # === Tools (BLOCK 4 & 5) ===
 TOOLS_MATH_ENABLED=true
 TOOLS_PYTHON_EXEC_ENABLED=false
 TOOLS_DOCS_ENABLED=true
 TOOLS_OCR_ENABLED=true
-OCR_MAX_IMAGE_SIZE_MB=10
+OCR_MAX_IMAGE_SIZE_MB=20
 OCR_DEFAULT_LANG=eng+ita
 
 # === Telegram ===
@@ -287,3 +324,27 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 # === Admin ===
 QUANTUM_SHARED_SECRET=your_secret_here
 ```
+
+---
+
+## Note sulla Configurazione v4
+
+### Cambiamenti Principali
+
+1. **Context Window Esteso**: Da 32K a 64K token per conversazioni più lunghe
+2. **Memoria Persistente Estesa**: Fino a 10 anni per fatti personali, 1 anno per conversazioni
+3. **Risposte Più Complete**: Max token aumentati da 512 a 2048
+4. **Sliding Window Più Ampio**: Da 10 a 20 turni visibili
+5. **Suggerimenti Proattivi**: Abilitati di default
+6. **Archiviazione Sessioni**: Backup automatico delle conversazioni
+
+### Requisiti Hardware
+
+Con queste impostazioni ottimizzate, assicurati di avere:
+- **GPU VRAM**: Almeno 24GB per context window esteso
+- **RAM**: Almeno 32GB per ChromaDB e cache
+- **Storage**: SSD con almeno 50GB liberi per persistenza
+
+### Personalizzazione
+
+Vedi il file `ENV_OPTIMIZED_V4.env` per una configurazione completa pronta all'uso.

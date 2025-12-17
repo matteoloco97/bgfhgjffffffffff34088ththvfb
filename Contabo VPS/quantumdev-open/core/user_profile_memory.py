@@ -20,10 +20,10 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-# Environment configuration
+# Environment configuration - OTTIMIZZATO
 USER_PROFILE_COLLECTION = os.getenv("USER_PROFILE_COLLECTION", "user_profile")
 USER_PROFILE_ENABLED = os.getenv("USER_PROFILE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
-USER_PROFILE_MAX_AGE_DAYS = int(os.getenv("USER_PROFILE_MAX_AGE_DAYS", "365"))
+USER_PROFILE_MAX_AGE_DAYS = int(os.getenv("USER_PROFILE_MAX_AGE_DAYS", "3650"))  # 10 anni di ritenzione (i fatti personali non scadono facilmente)
 
 # Default user ID for Matteo (can be extended for multi-user)
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "matteo")
