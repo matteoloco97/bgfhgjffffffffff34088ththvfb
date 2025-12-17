@@ -79,6 +79,7 @@ if ROOT not in sys.path:
 # === CORE ===
 from core.persona_store import get_persona, set_persona, reset_persona
 from core.web_tools import fetch_and_extract
+from core.multi_level_cache import get_multi_level_cache
 
 # Mini-cache web (import resiliente)
 try:
@@ -379,6 +380,9 @@ load_dotenv()
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# Initialize multi-level cache
+ml_cache = get_multi_level_cache()
 
 # ============================= ENV ===================================
 
@@ -1899,6 +1903,70 @@ def cache_flush(req: FlushReq) -> Dict[str, Any]:
     return {"ok": True, "flushed_items": int(n or 0), "namespace": (req.ns or "ALL")}
 
 
+# --------- Multi-Level Cache Endpoints (L1/L2) ---------
+@app.get("/cache/stats")
+async def multi_cache_stats() -> Dict[str, Any]:
+    """
+    Get multi-level cache statistics.
+    
+    Returns:
+        {
+            "l1_hits": 150,
+            "l2_hits": 45,
+            "misses": 30,
+            "total_requests": 225,
+            "hit_rate": 0.867,
+            "l1_size": 87
+        }
+    """
+    try:
+        stats = ml_cache.get_stats()
+        return stats
+    except Exception as e:
+        log.error(f"/cache/stats error: {e}")
+        return {"error": str(e)}
+
+
+class CacheClearReq(BaseModel):
+    level: str = "all"
+    admin_secret: str
+
+
+@app.post("/cache/clear")
+async def multi_cache_clear(req: CacheClearReq) -> Dict[str, Any]:
+    """
+    Clear cache (admin only).
+    
+    Args:
+        level: "l1", "l2", or "all"
+        admin_secret: Must match QUANTUM_SHARED_SECRET
+    """
+    if req.admin_secret != QUANTUM_SHARED_SECRET:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    
+    try:
+        if req.level in ("l1", "all"):
+            cleared_count = ml_cache.clear_l1()
+            log.info(f"L1 cache cleared ({cleared_count} items)")
+        
+        if req.level in ("l2", "all"):
+            try:
+                from core.semantic_cache import get_semantic_cache
+                semcache = get_semantic_cache()
+                # Clear semantic cache (implementation depends on semantic_cache.py)
+                if hasattr(semcache, 'clear'):
+                    semcache.clear()
+                log.info("L2 cache cleared")
+            except Exception as e:
+                log.warning(f"L2 cache clear failed: {e}")
+        
+        return {"status": "ok", "cleared": req.level}
+    except Exception as e:
+        log.error(f"/cache/clear error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 # --------- Endpoints admin (list/update) ---------
 @app.get("/endpoints")
 def endpoints_list() -> Dict[str, Any]:
@@ -2754,6 +2822,24 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     conversation_id = f"{src}:{sid}"
     user_id = os.getenv("DEFAULT_USER_ID", "matteo")  # Can be extended for multi-user
 
+    # =================== Multi-Level Cache Check (L1/L2) ===================
+    cache_key = f"{src}:{sid}:{text}"
+    start_time = time.perf_counter()
+    
+    cached_response = ml_cache.get(cache_key)
+    if cached_response:
+        cache_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log.info(f"[CACHE HIT] {text[:50]}... (source: {src}, latency: {cache_latency_ms}ms)")
+        return {
+            "reply": cached_response,
+            "cached": True,
+            "cache_level": "multi_level",
+            "latency_ms": cache_latency_ms,
+        }
+    
+    # Cache MISS - proceed with normal processing
+    log.info(f"[CACHE MISS] {text[:50]}... (source: {src})")
+
     # =================== NEW: Process "remember" statements ===================
     try:
         from core.memory_manager import process_user_message
@@ -2960,7 +3046,22 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
             except Exception as e:
                 log.warning(f"Semantic cache write (hw) failed: {e}")
 
-        return {"reply": reply_hw}
+        # Cache hardware response in multi-level cache
+        if reply_hw and len(reply_hw) > 10:
+            try:
+                ml_cache.set(cache_key, reply_hw)
+                log.info(f"[CACHED] HW response for: {text[:50]}...")
+            except Exception as e:
+                log.warning(f"Multi-level cache set error (hw): {e}")
+        
+        hw_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        return {
+            "reply": reply_hw,
+            "cached": False,
+            "cache_level": None,
+            "latency_ms": hw_latency_ms,
+        }
 
     # =================== Costruzione contesto dai facts (OLD LEGACY SYSTEM) ===================
     mem_context = ""
@@ -3057,7 +3158,23 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
         except Exception as e:
             log.warning(f"Semantic cache write (/chat) failed: {e}")
 
-    return {"reply": reply_text}
+    # Cache successful response in multi-level cache
+    if reply_text and len(reply_text) > 10:
+        try:
+            ml_cache.set(cache_key, reply_text)
+            log.info(f"[CACHED] Response for: {text[:50]}...")
+        except Exception as e:
+            log.warning(f"Multi-level cache set error: {e}")
+    
+    # Calculate total latency
+    total_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    return {
+        "reply": reply_text,
+        "cached": False,
+        "cache_level": None,
+        "latency_ms": total_latency_ms,
+    }
 
 
 # ========================= /unified endpoint (Master Orchestrator) =========================
