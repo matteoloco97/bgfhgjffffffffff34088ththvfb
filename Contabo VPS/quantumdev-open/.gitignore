@@ -60,3 +60,14 @@ htmlcov/
 tmp/
 temp/
 *.tmp
+
+# Backup files
+*.backup-*
+*_backup_*
+*.old
+
+# Deprecated docs
+IMPLEMENTATION_*.md
+SESSION_SUMMARY.md
+PERSONA_CLEANUP_SUMMARY.md
+
