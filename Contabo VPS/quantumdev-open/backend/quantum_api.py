@@ -3235,6 +3235,27 @@ async def unified_endpoint(payload: dict = Body(...)) -> Dict[str, Any]:
         }
 
 
+@app.post("/analyze")
+async def analyze_query_debug(text: str = Body(..., embed=True)) -> Dict[str, Any]:
+    """
+    Debug endpoint: Analyze query without executing.
+    
+    Returns complexity, token budget, and recommended strategy.
+    """
+    try:
+        from core.query_analyzer_v2 import get_query_analyzer
+        
+        analyzer = get_query_analyzer()
+        score = analyzer.analyze(text)
+        
+        return score.to_dict()
+    except Exception as e:
+        log.error(f"/analyze error: {e}")
+        return {
+            "error": str(e)
+        }
+
+
 @app.post("/persona/set")
 async def persona_set(payload: dict = Body(...)) -> Dict[str, Any]:
     src = payload.get("source", "tg")
