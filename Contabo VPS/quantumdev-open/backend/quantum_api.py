@@ -3338,6 +3338,7 @@ async def chat_stream(payload: dict = Body(...)):
                     elapsed_ms = chunk.get("elapsed_ms", 0)
                     
                     # Record conversation turn for episodic memory
+                    # Note: Using reply_with_llm as reference (not streaming) for memory system
                     try:
                         from core.memory_manager import record_conversation_turn
                         record_result = await record_conversation_turn(
@@ -3345,7 +3346,7 @@ async def chat_stream(payload: dict = Body(...)):
                             user_message=text,
                             assistant_message=accumulated_text,
                             user_id=user_id,
-                            llm_func=reply_with_llm
+                            llm_func=reply_with_llm  # Use non-streaming for memory consistency
                         )
                         if record_result.get("summarized"):
                             log.info(f"[memory] Created conversation summary for {conversation_id}")

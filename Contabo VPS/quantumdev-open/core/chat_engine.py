@@ -327,8 +327,9 @@ async def reply_with_llm_streaming(
     total_tokens = 0
     accumulated_text = ""
     
-    # Retry logic for streaming
-    for attempt in range(1, RETRY_ATTEMPTS + 2):
+    # Retry logic for streaming (initial attempt + retries)
+    max_attempts = RETRY_ATTEMPTS + 1
+    for attempt in range(1, max_attempts + 1):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -343,7 +344,7 @@ async def reply_with_llm_streaming(
                         log.error(error_msg)
                         
                         # If this is not the last attempt, retry
-                        if attempt < RETRY_ATTEMPTS + 1:
+                        if attempt < max_attempts:
                             await asyncio.sleep(RETRY_BACKOFF_S * attempt)
                             continue
                         
@@ -382,6 +383,8 @@ async def reply_with_llm_streaming(
                                     
                                     if content:
                                         accumulated_text += content
+                                        # Note: This is a chunk count, not actual token count
+                                        # Actual token count is reported by the LLM in done message
                                         total_tokens += 1
                                         
                                         yield {
@@ -413,7 +416,7 @@ async def reply_with_llm_streaming(
                     
         except asyncio.TimeoutError as e:
             log.warning(f"Streaming timeout on attempt {attempt}")
-            if attempt < RETRY_ATTEMPTS + 1:
+            if attempt < max_attempts:
                 await asyncio.sleep(RETRY_BACKOFF_S * attempt)
                 continue
             
@@ -427,7 +430,7 @@ async def reply_with_llm_streaming(
             
         except Exception as e:
             log.error(f"Streaming error on attempt {attempt}: {e}")
-            if attempt < RETRY_ATTEMPTS + 1:
+            if attempt < max_attempts:
                 await asyncio.sleep(RETRY_BACKOFF_S * attempt)
                 continue
             
