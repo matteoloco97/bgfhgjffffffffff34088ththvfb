@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-core/adaptive_token_allocator.py — Adaptive Token Allocation Strategy
+core/adaptive_token_allocator.py - Adaptive Token Allocation Strategy
 
 Dynamically allocates token budgets based on query complexity analysis.
 Inspired by Claude's adaptive token allocation approach.
@@ -53,7 +53,7 @@ class TokenAllocationStrategy:
     ]
     
     SIMPLE_PATTERNS = [
-        r'\b(cos[\'è]|what is|chi è|who is)\b',
+        r"\b(cos['']è|what is|chi è|who is)\b",
         r'^.{1,30}$'
     ]
     

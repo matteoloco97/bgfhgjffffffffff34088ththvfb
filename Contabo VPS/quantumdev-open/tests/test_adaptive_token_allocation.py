@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-tests/test_adaptive_token_allocation.py — Unit tests for adaptive token allocation
+tests/test_adaptive_token_allocation.py - Unit tests for adaptive token allocation
 
 Tests for:
 - TokenAllocationStrategy (complexity analysis and token budgets)

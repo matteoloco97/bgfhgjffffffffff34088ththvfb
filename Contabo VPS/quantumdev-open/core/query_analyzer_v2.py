@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-core/query_analyzer_v2.py — Advanced Query Analyzer
+core/query_analyzer_v2.py - Advanced Query Analyzer
 
 Multi-dimensional query analysis for optimal strategy selection.
 Analyzes uncertainty, time sensitivity, and recommends execution strategy.
