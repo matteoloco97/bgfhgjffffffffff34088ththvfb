@@ -1,8 +1,22 @@
 # core/web_search.py — resilient multi-provider + heuristic fallback (patched+snippets)
 import os, re, html, time
+import asyncio
+import logging
 from typing import List, Dict, Tuple, Optional
 from urllib.parse import urlparse, parse_qs, unquote, quote_plus, urlunparse, urlencode
 import requests
+
+# Aiohttp for parallel/async operations
+try:
+    import aiohttp
+    from aiohttp import ClientSession, TCPConnector, ClientTimeout
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    aiohttp = None  # type: ignore
+    ClientSession = None  # type: ignore
+    TCPConnector = None  # type: ignore
+    ClientTimeout = None  # type: ignore
+    AIOHTTP_AVAILABLE = False
 
 # Additional deps for domain ranking
 try:
@@ -10,6 +24,8 @@ try:
 except Exception:
     yaml = None  # if pyyaml is unavailable the policy will not be applied
 from functools import lru_cache
+
+log = logging.getLogger(__name__)
 
 # ===================== Config =====================
 
@@ -152,6 +168,83 @@ _adapter = HTTPAdapter(
 )
 _session.mount("http://", _adapter)
 _session.mount("https://", _adapter)
+
+# ===================== AIOHTTP GLOBAL SESSION (Phase 2 - Priority 5) =====================
+
+# Global HTTP session for async operations with connection pooling
+_http_session: Optional[ClientSession] = None
+_session_lock: Optional[asyncio.Lock] = None
+
+# HTTP Connection Pool Configuration
+HTTP_POOL_SIZE = int(os.getenv('HTTP_POOL_SIZE', '50'))
+HTTP_POOL_PER_HOST = int(os.getenv('HTTP_POOL_PER_HOST', '10'))
+WEB_FETCH_TIMEOUT_S = float(os.getenv('WEB_FETCH_TIMEOUT_S', '10.0'))
+FETCH_TIMEOUT_CONNECT = float(os.getenv('FETCH_TIMEOUT_CONNECT', '2.0'))
+FETCH_TIMEOUT_READ = float(os.getenv('FETCH_TIMEOUT_READ', '6.0'))
+
+
+async def get_http_session() -> Optional[ClientSession]:
+    """
+    Get or create global HTTP session with connection pooling.
+    
+    Returns:
+        ClientSession with connection pooling configured, or None if aiohttp not available
+    """
+    global _http_session, _session_lock
+    
+    if not AIOHTTP_AVAILABLE:
+        log.warning("aiohttp not available, cannot create async HTTP session")
+        return None
+    
+    # Initialize lock on first call
+    if _session_lock is None:
+        _session_lock = asyncio.Lock()
+    
+    async with _session_lock:
+        if _http_session is None or _http_session.closed:
+            try:
+                connector = TCPConnector(
+                    limit=HTTP_POOL_SIZE,
+                    limit_per_host=HTTP_POOL_PER_HOST,
+                    ttl_dns_cache=300,
+                    enable_cleanup_closed=True,
+                    force_close=False,
+                    keepalive_timeout=30
+                )
+                
+                timeout = ClientTimeout(
+                    total=WEB_FETCH_TIMEOUT_S,
+                    connect=FETCH_TIMEOUT_CONNECT,
+                    sock_read=FETCH_TIMEOUT_READ
+                )
+                
+                _http_session = ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    headers={
+                        'User-Agent': UA,
+                        'Accept-Language': SEARCH_LANG,
+                    }
+                )
+                
+                log.info(
+                    f"HTTP session pool initialized: {HTTP_POOL_SIZE} total, "
+                    f"{HTTP_POOL_PER_HOST} per host, timeout={WEB_FETCH_TIMEOUT_S}s"
+                )
+            except Exception as e:
+                log.error(f"Failed to create HTTP session: {e}")
+                return None
+    
+    return _http_session
+
+
+async def close_http_session():
+    """Cleanup HTTP session on shutdown."""
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+        _http_session = None
+        log.info("HTTP session closed")
 
 def _http_get(url: str, timeout: float) -> str:
     r = _session.get(url, timeout=timeout, allow_redirects=True)
