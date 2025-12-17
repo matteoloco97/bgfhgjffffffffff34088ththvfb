@@ -218,6 +218,10 @@ Questa documentazione elenca tutte le variabili d'ambiente configurabili per Jar
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | - | Token bot Telegram |
+| `TELEGRAM_STREAMING_ENABLED` | `0` | Abilita risposte progressive (streaming SSE, 1=on, 0=off) |
+| `TELEGRAM_SOURCE_PREVIEW` | `0` | Abilita anteprime URL in Telegram |
+| `TELEGRAM_SHOW_SOURCES` | `1` | Mostra elenco fonti nei risultati |
+| `TELEGRAM_SHOW_CACHE_BADGE` | `1` | Mostra badge "(da cache)" |
 
 ---
 
