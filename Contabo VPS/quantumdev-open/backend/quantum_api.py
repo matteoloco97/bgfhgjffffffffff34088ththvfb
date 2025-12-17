@@ -59,6 +59,7 @@ from typing import Optional, List, Dict, Tuple, Any
 
 import redis
 from fastapi import FastAPI, Request, Body, UploadFile, File
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from pydantic import BaseModel, Field
@@ -102,8 +103,16 @@ except Exception:  # pragma: no cover
         return base
 
 
-from core.chat_engine import reply_with_llm
+from core.chat_engine import reply_with_llm, reply_with_llm_streaming
 from core.memory_autosave import autosave
+from core.streaming_utils import (
+    format_sse_message,
+    create_thinking_message,
+    create_token_message,
+    create_done_message,
+    create_error_message,
+    get_sse_headers,
+)
 
 # LLM config presets for optimized parameters
 try:
@@ -3175,6 +3184,213 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
         "cache_level": None,
         "latency_ms": total_latency_ms,
     }
+
+
+# ========================= /chat/stream endpoint (SSE Streaming) =========================
+@app.post("/chat/stream")
+async def chat_stream(payload: dict = Body(...)):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    
+    Returns a progressive response with:
+    - Thinking phase updates
+    - Token-by-token LLM output
+    - Completion message
+    
+    Payload format (same as /chat):
+        - messages: list[dict] with role/content (OpenAI-style)
+        - OR text: str (legacy format)
+        - source: str (default: "gui")
+        - source_id: str (default: "default")
+        - system_prompt: str (optional)
+    
+    SSE message types:
+        - {"type": "thinking", "content": "..."}
+        - {"type": "token", "text": "...", "index": N}
+        - {"type": "done", "total_tokens": N}
+        - {"type": "error", "message": "..."}
+    """
+    
+    async def event_generator():
+        """Async generator for SSE streaming."""
+        try:
+            # ======== Parse input (same as /chat) ========
+            messages = payload.get("messages")
+            text: str = ""
+            explicit_sys_from_messages: str = ""
+
+            if isinstance(messages, list) and messages:
+                # OpenAI-like format
+                for m in reversed(messages):
+                    if isinstance(m, dict) and m.get("role") == "user":
+                        text = (m.get("content") or "").strip()
+                        break
+
+                # Extract system messages
+                sys_parts: List[str] = []
+                for m in messages:
+                    if isinstance(m, dict) and m.get("role") == "system":
+                        c = (m.get("content") or "").strip()
+                        if c:
+                            sys_parts.append(c)
+                if sys_parts:
+                    explicit_sys_from_messages = "\n\n".join(sys_parts)
+
+                src = payload.get("source") or "gui"
+                sid = str(payload.get("source_id") or "default")
+            else:
+                # Legacy format
+                src = payload.get("source", "tg")
+                sid = str(payload.get("source_id") or "")
+                text = (payload.get("text") or "").strip()
+                explicit_sys_from_messages = ""
+
+            user_sys_prompt = (payload.get("system_prompt") or "").strip()
+
+            if not text:
+                yield create_error_message("Missing text parameter", "missing_text")
+                return
+            if not sid:
+                sid = "default"
+
+            # Determine conversation_id and user_id
+            conversation_id = f"{src}:{sid}"
+            user_id = os.getenv("DEFAULT_USER_ID", "matteo")
+
+            # ======== Send thinking phase message ========
+            yield create_thinking_message("Processing query...")
+
+            # ======== Process memory (simplified for streaming) ========
+            try:
+                from core.memory_manager import process_user_message
+                memory_process = await process_user_message(user_id, conversation_id, text)
+                if memory_process.get("fact_saved"):
+                    log.info(f"[memory] Saved user profile fact: {memory_process.get('fact_id')}")
+            except Exception as e:
+                log.warning(f"Memory processing failed: {e}")
+
+            # ======== Build persona ========
+            try:
+                persona_store = await get_persona(src, sid)
+            except Exception:
+                persona_store = None
+
+            base_sys = user_sys_prompt or persona_store or DEFAULT_SYSTEM_PROMPT
+            if explicit_sys_from_messages:
+                base_sys = explicit_sys_from_messages + "\n\n" + base_sys
+
+            # Add strict rules
+            strict_rules = (
+                "Regole interne dure (ANTI-HALLUCINATION & FACT-FIRST):\n"
+                "1. Non inventare mai numeri, date, nomi di modello hardware o importi se NON sono nella domanda o nei facts interni.\n"
+                "2. Se ti mancano dettagli specifici, dillo esplicitamente ('non ho questo dato in memoria' / 'qui sto parlando in generale').\n"
+                "3. Quando rispondi su Jarvis, QuantumDev, Quantum Edge AI o il mio ecosistema, considera i facts in memoria (Chroma) "
+                "come fonte primaria e non contraddirli.\n"
+                "4. Se usi conoscenza generale, chiarisci che è 'in generale', non riferita alla mia infrastruttura reale.\n"
+                "5. Evita frasi vaghe tipo 'potrebbe' / 'forse' quando parli di configurazioni reali: se non sai, dillo.\n"
+            )
+
+            # ======== Gather memory context ========
+            memory_context_dict = {"profile_context": "", "episodic_context": ""}
+            try:
+                from core.memory_manager import gather_memory_context
+                memory_context_dict = await gather_memory_context(user_id, conversation_id, text)
+            except Exception as e:
+                log.warning(f"Gather memory context failed: {e}")
+
+            # ======== Build final system prompt ========
+            full_sys = (
+                base_sys.strip()
+                + "\n\n"
+                + INCENSURATO_PROMPT
+                + "\n\n"
+                + strict_rules
+            )
+            
+            if memory_context_dict.get("profile_context"):
+                full_sys += "\n\n" + memory_context_dict["profile_context"]
+            
+            if memory_context_dict.get("episodic_context"):
+                full_sys += "\n\n" + memory_context_dict["episodic_context"]
+
+            sys_trim = trim_to_tokens(full_sys, 600)
+
+            # ======== Send thinking complete ========
+            yield create_thinking_message("Generating response...")
+
+            # ======== Stream LLM response ========
+            token_count = 0
+            accumulated_text = ""
+            
+            async for chunk in reply_with_llm_streaming(text, sys_trim):
+                chunk_type = chunk.get("type")
+                
+                if chunk_type == "token":
+                    # Stream token to client
+                    token_text = chunk.get("text", "")
+                    accumulated_text += token_text
+                    token_count += 1
+                    yield create_token_message(token_text, token_count - 1)
+                    
+                elif chunk_type == "done":
+                    # LLM finished
+                    total_tokens = chunk.get("total_tokens", token_count)
+                    elapsed_ms = chunk.get("elapsed_ms", 0)
+                    
+                    # Record conversation turn for episodic memory
+                    # Note: Using reply_with_llm as reference (not streaming) for memory system
+                    try:
+                        from core.memory_manager import record_conversation_turn
+                        record_result = await record_conversation_turn(
+                            conversation_id=conversation_id,
+                            user_message=text,
+                            assistant_message=accumulated_text,
+                            user_id=user_id,
+                            llm_func=reply_with_llm  # Use non-streaming for memory consistency
+                        )
+                        if record_result.get("summarized"):
+                            log.info(f"[memory] Created conversation summary for {conversation_id}")
+                    except Exception as e:
+                        log.warning(f"Record conversation turn failed: {e}")
+                    
+                    # Autosave output
+                    try:
+                        if accumulated_text:
+                            asv_out = autosave(accumulated_text, source="chat_reply_stream")
+                            if any([asv_out.get("facts"), asv_out.get("prefs"), asv_out.get("bet")]):
+                                log.info(f"[autosave:chat_reply_stream] {asv_out}")
+                    except Exception as e:
+                        log.warning(f"AutoSave chat_reply_stream failed: {e}")
+                    
+                    # Send completion
+                    yield create_done_message(
+                        total_tokens=total_tokens,
+                        metadata={
+                            "elapsed_ms": elapsed_ms,
+                            "source": src,
+                            "source_id": sid,
+                        }
+                    )
+                    break
+                    
+                elif chunk_type == "error":
+                    # Stream error
+                    error_msg = chunk.get("message", "Unknown error")
+                    error_code = chunk.get("code", "error")
+                    yield create_error_message(error_msg, error_code)
+                    break
+
+        except Exception as e:
+            log.error(f"Streaming error: {e}")
+            yield create_error_message(str(e), "stream_exception")
+            yield create_done_message(0, metadata={"error": True})
+
+    # Return StreamingResponse with SSE headers
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=get_sse_headers()
+    )
 
 
 # ========================= /unified endpoint (Master Orchestrator) =========================
