@@ -3248,7 +3248,7 @@ async def chat_stream(payload: dict = Body(...)):
             user_sys_prompt = (payload.get("system_prompt") or "").strip()
 
             if not text:
-                yield create_error_message("text mancante", "missing_text")
+                yield create_error_message("Missing text parameter", "missing_text")
                 return
             if not sid:
                 sid = "default"
@@ -3258,7 +3258,7 @@ async def chat_stream(payload: dict = Body(...)):
             user_id = os.getenv("DEFAULT_USER_ID", "matteo")
 
             # ======== Send thinking phase message ========
-            yield create_thinking_message("Elaborazione query...")
+            yield create_thinking_message("Processing query...")
 
             # ======== Process memory (simplified for streaming) ========
             try:
@@ -3316,7 +3316,7 @@ async def chat_stream(payload: dict = Body(...)):
             sys_trim = trim_to_tokens(full_sys, 600)
 
             # ======== Send thinking complete ========
-            yield create_thinking_message("Generazione risposta...")
+            yield create_thinking_message("Generating response...")
 
             # ======== Stream LLM response ========
             token_count = 0

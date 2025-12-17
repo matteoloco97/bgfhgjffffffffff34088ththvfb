@@ -280,17 +280,17 @@ async def reply_with_llm_streaming(
     Parameters
     ----------
     user_text : str
-        Testo del messaggio utente.
+        User message text.
     persona : str
-        System prompt/persona per il contesto.
+        System prompt/persona for context.
     temperature : float, optional
-        Override della temperatura (default da env LLM_TEMPERATURE).
+        Override temperature (default from env LLM_TEMPERATURE).
     max_tokens : int, optional
-        Override del max tokens (default da env LLM_MAX_TOKENS).
+        Override max tokens (default from env LLM_MAX_TOKENS).
     stop_sequences : list, optional
-        Sequenze di stop opzionali.
+        Optional stop sequences.
     repetition_penalty : float, optional
-        Penalità per ripetizioni (supporto dipende dal backend).
+        Repetition penalty (support depends on backend).
     
     Yields
     ------
@@ -303,7 +303,7 @@ async def reply_with_llm_streaming(
     Raises
     ------
     RuntimeError
-        Se tutti i tentativi falliscono (dopo yield dei token già inviati).
+        If all retry attempts fail (after yielding already sent tokens).
     """
     import aiohttp
     

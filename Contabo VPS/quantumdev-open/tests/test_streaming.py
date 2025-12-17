@@ -150,7 +150,7 @@ async def test_stream_with_fallback_error():
         raise RuntimeError("Stream failed")
     
     results = []
-    async for chunk in failing_generator():
+    async for chunk in stream_with_fallback(failing_generator()):
         results.append(chunk)
     
     # Should have start message and error message
