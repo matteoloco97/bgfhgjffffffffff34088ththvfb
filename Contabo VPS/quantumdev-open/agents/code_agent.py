@@ -30,8 +30,9 @@ log = logging.getLogger(__name__)
 
 # ===================== CONFIG =====================
 
-CODE_AGENT_TIMEOUT = float(os.getenv("CODE_AGENT_TIMEOUT", "30.0"))
-CODE_MAX_TOKENS = int(os.getenv("CODE_MAX_TOKENS", "2048"))
+CODE_AGENT_TIMEOUT = float(os.getenv("CODE_AGENT_TIMEOUT", "60.0"))
+CODE_MAX_TOKENS = int(os.getenv("CODE_MAX_TOKENS", "8192"))
+CODE_TEMPERATURE = float(os.getenv("CODE_TEMPERATURE", "0.3"))  # Lower for more precise code
 
 # ===================== LANGUAGE MAPPING =====================
 
@@ -145,50 +146,109 @@ def _build_generation_prompt(
     context: str = "",
 ) -> str:
     """
-    Costruisce prompt per generazione codice.
+    Costruisce prompt ottimizzato per generazione codice di alta qualità.
+    
+    Ottimizzato per:
+    - Codice production-ready
+    - Best practices e pattern moderni
+    - Error handling robusto
+    - Type hints e documentazione
     """
     lang_display = language.capitalize() if language else "appropriato"
     
-    prompt = f"""Sei Jarvis, assistente di programmazione esperto. Genera codice {lang_display} per la seguente richiesta.
+    # Language-specific best practices
+    lang_hints = {
+        "python": """
+- Usa type hints (Python 3.10+)
+- Segui PEP 8 e PEP 257 (docstrings)
+- Usa context managers (with) per risorse
+- Preferisci f-strings per formattazione
+- Usa async/await se appropriato""",
+        "javascript": """
+- Usa ES6+ syntax (const, let, arrow functions)
+- Preferisci async/await a callbacks
+- Usa destructuring dove appropriato
+- Aggiungi JSDoc comments
+- Gestisci errori con try/catch""",
+        "typescript": """
+- Usa TypeScript strict mode patterns
+- Definisci interface/type per ogni struttura dati
+- Evita 'any', usa tipi specifici
+- Usa generics dove appropriato
+- Aggiungi JSDoc/TSDoc comments""",
+        "go": """
+- Segui Go idioms (error handling esplicito)
+- Usa defer per cleanup
+- Preferisci composition a inheritance
+- Documenta con GoDoc style
+- Gestisci errori con if err != nil""",
+        "rust": """
+- Usa Result<T, E> per error handling
+- Preferisci ownership e borrowing corretti
+- Usa match per pattern matching
+- Documenta con rustdoc
+- Usa #[derive] appropriatamente""",
+    }
+    
+    lang_specific = lang_hints.get(language, "- Segui le best practices del linguaggio")
+    
+    prompt = f"""Sei un Senior Software Engineer con 15+ anni di esperienza. Genera codice {lang_display} di qualità PRODUCTION-READY.
 
 === RICHIESTA ===
 {description}
 
-=== REGOLE ===
-1. Genera codice COMPLETO e FUNZIONANTE, non placeholder o "..." 
-2. Includi TUTTI gli import/require necessari
-3. Aggiungi commenti inline per le parti importanti
-4. Usa best practices e naming conventions standard
-5. Gestisci gli errori in modo appropriato
+=== REQUISITI DI QUALITÀ ===
+
+**CODICE:**
+1. ✅ Codice COMPLETO, FUNZIONANTE e TESTABILE - MAI placeholder o "..."
+2. ✅ TUTTI gli import/require necessari all'inizio
+3. ✅ Error handling robusto (try/catch, Result types, etc.)
+4. ✅ Input validation dove appropriato
+5. ✅ Naming chiaro e descrittivo (no abbreviazioni criptiche)
+
+**BEST PRACTICES {lang_display.upper()}:**
+{lang_specific}
+
+**STRUTTURA:**
+1. Modularità: funzioni piccole con responsabilità singola
+2. Riutilizzabilità: parametri configurabili, no valori hardcoded
+3. Leggibilità: codice auto-documentante + commenti per logica complessa
+4. Performance: algoritmi efficienti, evita operazioni O(n²) inutili
 
 === FORMATO RISPOSTA ===
 
-📌 **[Titolo breve del componente]**
+📌 **[Nome descrittivo del componente]**
 
-**📋 Piano:**
-1. [Passo 1]
-2. [Passo 2]
-3. [Passo 3]
+**📋 Architettura:**
+1. [Componente/Funzione principale]
+2. [Helper functions]
+3. [Data structures]
 
 **💻 Codice:**
 ```{language or 'python'}
-[codice completo qui]
+[codice completo qui - NESSUN placeholder]
 ```
 
-**🚀 Come usarlo:**
-1. [Passo 1 per eseguire]
-2. [Passo 2]
-3. [Passo 3]
+**🧪 Esempio d'uso:**
+```{language or 'python'}
+[esempio pratico di come usare il codice]
+```
 
-**⚠️ Note:**
-• [Eventuali dipendenze da installare]
-• [Limitazioni o considerazioni]
+**🚀 Setup:**
+1. [Dipendenze da installare: `pip install X` / `npm install X`]
+2. [Configurazione necessaria]
+3. [Come eseguire]
+
+**⚠️ Note importanti:**
+• [Limitazioni note]
+• [Edge cases da considerare]
+• [Suggerimenti per estensione futura]
 """
 
     if context:
         prompt += f"\n=== CONTESTO AGGIUNTIVO ===\n{context}\n"
     
-    prompt += "\nGENERA ORA:"
+    prompt += "\n🎯 GENERA CODICE PRODUCTION-READY ORA:"
     
     return prompt
 
@@ -199,134 +259,218 @@ def _build_debug_prompt(
     description: str = "",
 ) -> str:
     """
-    Costruisce prompt per debug di codice.
+    Costruisce prompt avanzato per debug e fix di codice.
+    
+    Usa analisi multi-step per identificare root cause.
     """
-    prompt = f"""Sei Jarvis, esperto debugger. Analizza e correggi il seguente codice.
+    prompt = f"""Sei un Senior Debugger con expertise in analisi di codice e root cause analysis.
 
-=== CODICE CON ERRORE ===
+=== CODICE DA ANALIZZARE ===
 ```
 {code}
 ```
 
-=== ERRORE ===
+=== ERRORE/PROBLEMA ===
 {error_message}
 
 """
     
     if description:
-        prompt += f"=== DESCRIZIONE PROBLEMA ===\n{description}\n\n"
+        prompt += f"=== CONTESTO AGGIUNTIVO ===\n{description}\n\n"
     
-    prompt += """=== REGOLE ===
-1. Identifica la CAUSA ESATTA dell'errore
-2. Fornisci il codice CORRETTO e completo
-3. Spiega cosa era sbagliato e perché
-4. Se ci sono altri potenziali problemi, segnalali
+    prompt += """=== PROCESSO DI DEBUG ===
+
+**STEP 1 - Analisi dell'errore:**
+- Tipo di errore (syntax, runtime, logic, type)
+- Stack trace analysis (se disponibile)
+- Linea/e coinvolte
+
+**STEP 2 - Root Cause Analysis:**
+- Perché questo errore si verifica?
+- Quali assunzioni sono state violate?
+- Ci sono problemi di stato o race conditions?
+
+**STEP 3 - Fix e Prevenzione:**
+- Correggi il bug specifico
+- Aggiungi validazione input se mancante
+- Migliora error handling
+- Suggerisci test per prevenire regressioni
 
 === FORMATO RISPOSTA ===
 
-🔧 **Debug: [breve descrizione problema]**
+🔧 **Debug Report: [tipo di bug]**
 
-**❌ Problema identificato:**
-[Spiegazione chiara del bug]
+**🔍 Analisi:**
+• Tipo errore: [syntax/runtime/logic/type]
+• Causa root: [spiegazione concisa]
+• Linee coinvolte: [numeri linea]
 
-**✅ Codice corretto:**
+**❌ Problema:**
+[Spiegazione dettagliata del bug - cosa accade e perché]
+
+**✅ Codice Corretto:**
 ```
-[codice fixato qui]
+[codice COMPLETO fixato - non solo lo snippet]
 ```
 
-**📝 Cosa è cambiato:**
-• [Modifica 1 e perché]
-• [Modifica 2 e perché]
+**📝 Modifiche Applicate:**
+1. [Modifica 1]: [perché necessaria]
+2. [Modifica 2]: [perché necessaria]
 
-**⚠️ Suggerimenti aggiuntivi:**
-• [Altri miglioramenti possibili]
+**🛡️ Prevenzione Futura:**
+• [Come evitare questo bug in futuro]
+• [Test case suggerito]
 
-ANALIZZA E CORREGGI ORA:"""
+**⚠️ Attenzione:**
+• [Altri potenziali problemi trovati durante l'analisi]
+"""
+    
+    prompt += "\n🎯 ANALIZZA E CORREGGI ORA:"
     
     return prompt
 
 
 def _build_explain_prompt(code: str, language: str = "") -> str:
     """
-    Costruisce prompt per spiegazione codice.
+    Costruisce prompt per spiegazione codice dettagliata.
+    
+    Produce analisi multi-livello con focus su comprensione e apprendimento.
     """
-    prompt = f"""Sei Jarvis, esperto programmatore. Spiega il seguente codice in modo chiaro.
+    prompt = f"""Sei un Software Architect esperto in code review e mentoring.
 
-=== CODICE DA SPIEGARE ===
+=== CODICE DA ANALIZZARE ===
 ```{language}
 {code}
 ```
 
-=== REGOLE ===
-1. Spiega cosa fa il codice nel complesso
-2. Analizza ogni parte importante
-3. Identifica pattern e tecniche usate
-4. Evidenzia potenziali problemi o miglioramenti
+=== ANALISI RICHIESTA ===
+
+Fornisci una spiegazione completa a tre livelli:
+1. **Alto livello**: Cosa fa il codice e perché
+2. **Medio livello**: Struttura e flusso di esecuzione
+3. **Basso livello**: Dettagli implementativi importanti
 
 === FORMATO RISPOSTA ===
 
-📖 **Spiegazione Codice**
+📖 **Code Analysis Report**
 
-**🎯 Scopo generale:**
-[Cosa fa questo codice in 1-2 frasi]
+**🎯 Overview:**
+[Cosa fa questo codice - 2-3 frasi chiare]
 
-**🔍 Analisi dettagliata:**
-• [Parte 1]: [spiegazione]
-• [Parte 2]: [spiegazione]
-• [Parte 3]: [spiegazione]
+**📊 Struttura:**
+```
+[ASCII diagram del flusso/architettura se appropriato]
+```
 
-**🛠️ Tecniche usate:**
-• [Tecnica/pattern 1]
-• [Tecnica/pattern 2]
+**🔍 Analisi Linea per Linea:**
 
-**⚠️ Note/Suggerimenti:**
-• [Potenziali miglioramenti]
-• [Cose da tenere a mente]
+| Sezione | Linee | Descrizione |
+|---------|-------|-------------|
+| [Nome] | [X-Y] | [Cosa fa] |
 
-SPIEGA ORA:"""
+**🛠️ Pattern e Tecniche:**
+• [Pattern 1]: [spiegazione e perché è usato]
+• [Pattern 2]: [spiegazione e perché è usato]
+
+**⚡ Complessità:**
+• Time: O([...])
+• Space: O([...])
+
+**✅ Punti di Forza:**
+• [Cosa è fatto bene]
+
+**⚠️ Potenziali Miglioramenti:**
+• [Suggerimento 1]
+• [Suggerimento 2]
+
+**📚 Concetti Chiave da Capire:**
+• [Concetto 1]: [breve spiegazione]
+• [Concetto 2]: [breve spiegazione]
+
+🎯 ANALIZZA ORA:"""
     
     return prompt
 
 
 def _build_test_prompt(code: str, language: str = "python") -> str:
     """
-    Costruisce prompt per generazione test.
+    Costruisce prompt per generazione test completi.
+    
+    Genera test suite con copertura completa.
     """
-    prompt = f"""Sei Jarvis, esperto di testing. Genera test unitari per il seguente codice.
+    # Test framework per linguaggio
+    test_frameworks = {
+        "python": "pytest (preferito) o unittest",
+        "javascript": "Jest o Mocha/Chai",
+        "typescript": "Jest con ts-jest",
+        "go": "testing package nativo",
+        "rust": "cargo test",
+        "java": "JUnit 5",
+        "csharp": "xUnit o NUnit",
+    }
+    
+    framework = test_frameworks.get(language, "framework standard del linguaggio")
+    
+    prompt = f"""Sei un QA Engineer senior specializzato in test-driven development.
 
 === CODICE DA TESTARE ===
 ```{language}
 {code}
 ```
 
-=== REGOLE ===
-1. Genera test COMPLETI che coprono i casi principali
-2. Includi test per casi limite (edge cases)
-3. Includi test per gestione errori
-4. Usa il framework di test standard per il linguaggio
+=== REQUISITI TEST SUITE ===
+
+**Framework:** {framework}
+
+**Tipi di Test Richiesti:**
+1. ✅ Unit test per ogni funzione/metodo pubblico
+2. ✅ Test per casi normali (happy path)
+3. ✅ Test per edge cases (valori limite, empty, null)
+4. ✅ Test per error handling (eccezioni, errori attesi)
+5. ✅ Test per validazione input
+
+**Best Practices:**
+- Naming: test_[funzione]_[scenario]_[risultato atteso]
+- Arrange-Act-Assert pattern
+- Un assert per test (quando possibile)
+- Mock dipendenze esterne
+- Test isolati e indipendenti
 
 === FORMATO RISPOSTA ===
 
-🧪 **Test Suite**
+🧪 **Test Suite Completa**
 
-**📋 Casi di test:**
-• [Caso 1]: [cosa testa]
-• [Caso 2]: [cosa testa]
-• [Caso 3]: [cosa testa]
+**📊 Coverage Matrix:**
 
-**💻 Codice test:**
+| Funzione | Happy Path | Edge Cases | Errors |
+|----------|------------|------------|--------|
+| [nome]   | ✅/❌      | ✅/❌      | ✅/❌   |
+
+**📋 Test Cases:**
+1. `test_[nome]`: [descrizione]
+2. `test_[nome]`: [descrizione]
+3. `test_[nome]`: [descrizione]
+
+**💻 Codice Test:**
 ```{language}
-[codice test completo]
+[test suite COMPLETA - non abbreviare]
 ```
 
-**🚀 Come eseguire:**
-1. [Comando per eseguire i test]
+**🚀 Esecuzione:**
+```bash
+[comando per eseguire i test]
+```
 
-**⚠️ Copertura:**
-• [Quali scenari sono coperti]
-• [Eventuali scenari da aggiungere]
+**📈 Copertura Stimata:**
+• Linee: ~[X]%
+• Branch: ~[X]%
+• Scenari mancanti: [elenco]
 
-GENERA TEST ORA:"""
+**💡 Suggerimenti:**
+• [Test aggiuntivi consigliati]
+• [Miglioramenti al codice per testabilità]
+
+🎯 GENERA TEST SUITE ORA:"""
     
     return prompt
 

@@ -65,16 +65,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-# Configuration - OTTIMIZZATO per massima capacità cognitiva
+# Configuration - OTTIMIZZATO per A6000 48GB con 64K context
 ENABLE_CONVERSATIONAL_MEMORY = _env_bool("ENABLE_CONVERSATIONAL_MEMORY", True)
-MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 65536)  # 64K context window (aumentato da 32K)
-SLIDING_WINDOW_SIZE = _env_int("SLIDING_WINDOW_SIZE", 20)  # Ultimi 20 turni (aumentato da 10)
-SUMMARIZATION_THRESHOLD = _env_int("SUMMARIZATION_THRESHOLD", 30)  # Summarize dopo 30 turni (aumentato da 20)
-SESSION_TTL = _env_int("SESSION_TTL", 2592000)  # 30 giorni in secondi (aumentato da 7 giorni)
-SUMMARIZATION_TOKEN_LIMIT = _env_int("SUMMARIZATION_TOKEN_LIMIT", 4000)  # Max token per summarization (aumentato da 2000)
+MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 65536)  # 64K context window (A6000)
+SLIDING_WINDOW_SIZE = _env_int("SLIDING_WINDOW_SIZE", 30)  # Ultimi 30 turni
+SUMMARIZATION_THRESHOLD = _env_int("SUMMARIZATION_THRESHOLD", 40)  # Summarize dopo 40 turni
+SESSION_TTL = _env_int("SESSION_TTL", 7776000)  # 90 giorni in secondi
+SUMMARIZATION_TOKEN_LIMIT = _env_int("SUMMARIZATION_TOKEN_LIMIT", 8000)  # Max token per summarization
 
 # Extended persistence configuration - OTTIMIZZATO
-CONVERSATION_TTL_DAYS = _env_int("CONVERSATION_TTL_DAYS", 30)  # 30 giorni (aumentato da 7)
+CONVERSATION_TTL_DAYS = _env_int("CONVERSATION_TTL_DAYS", 90)  # 90 giorni
 PERSIST_ARCHIVE_ENABLED = _env_bool("PERSIST_ARCHIVE_ENABLED", True)  # Abilitato di default
 ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "./data/archive")
 
