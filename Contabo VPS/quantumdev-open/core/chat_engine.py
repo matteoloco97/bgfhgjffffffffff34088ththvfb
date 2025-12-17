@@ -58,23 +58,25 @@ def _build_chat_url(base_or_chat: str) -> str:
         return f"{u.rstrip('/')}/chat/completions"
     return f"{u}/v1/chat/completions"
 
-# === ENV config (coerente con quantum_api) ===
-LLM_ENDPOINT_BASE = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:9011/v1")
+# === ENV config (OTTIMIZZATO per A6000 48GB) ===
+# NOTA: Porta 5000 è il default per text-generation-webui API
+# Per deployment esistenti su porta 9011, impostare LLM_ENDPOINT nel .env
+LLM_ENDPOINT_BASE = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:5000/v1")
 LLM_ENDPOINT = _build_chat_url(LLM_ENDPOINT_BASE)
 
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-32b-awq")
-LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.75)  # Leggermente più creativo (da 0.7)
-LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 2048)  # Risposte più lunghe (da 512)
+LLM_MODEL = os.getenv("LLM_MODEL", "DeepSeek-R1-Distill-Qwen-32B-abliterated-Q6_K")
+LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.7)  # Bilanciato: preciso ma creativo
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 4096)  # Risposte più lunghe (GPU 48GB)
 
-# Budget/contesto (hard cap) - OTTIMIZZATO per massima capacità
-LLM_MAX_CTX             = _env_int("LLM_MAX_CTX", 32768)  # 32K context (aumentato da 8192)
+# Budget/contesto (hard cap) - OTTIMIZZATO per A6000 48GB VRAM
+LLM_MAX_CTX             = _env_int("LLM_MAX_CTX", 65536)  # 64K context (A6000 può gestirlo)
 LLM_OUTPUT_BUDGET_TOK   = _env_int("LLM_OUTPUT_BUDGET_TOK", LLM_MAX_TOKENS)
-LLM_SAFETY_MARGIN_TOK   = _env_int("LLM_SAFETY_MARGIN_TOK", 512)  # Margine aumentato (da 256)
+LLM_SAFETY_MARGIN_TOK   = _env_int("LLM_SAFETY_MARGIN_TOK", 1024)  # Margine aumentato
 
-# Timeout & retry
-REQ_TIMEOUT_S = _env_float("LLM_HTTP_TIMEOUT_S", 60.0)
-RETRY_ATTEMPTS = _env_int("LLM_RETRY_ATTEMPTS", 2)
-RETRY_BACKOFF_S = _env_float("LLM_RETRY_BACKOFF_S", 0.6)
+# Timeout & retry - ottimizzati per modello 32B
+REQ_TIMEOUT_S = _env_float("LLM_HTTP_TIMEOUT_S", 180.0)  # 3 minuti per risposte lunghe
+RETRY_ATTEMPTS = _env_int("LLM_RETRY_ATTEMPTS", 3)
+RETRY_BACKOFF_S = _env_float("LLM_RETRY_BACKOFF_S", 1.0)
 
 # === HTTP helper (async wrapper su requests) ===
 async def _post(url: str, payload: dict, timeout: float) -> requests.Response:

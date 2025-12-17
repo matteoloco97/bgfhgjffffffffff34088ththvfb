@@ -45,31 +45,31 @@ class LLMPreset:
     description: str
 
 
-# Preset ottimizzati per diversi task
+# Preset ottimizzati per diversi task (A6000 48GB)
 PRESETS: Dict[str, LLMPreset] = {
     "web_synthesis": LLMPreset(
         temperature=0.2,  # Bassa per consistenza e velocità
-        max_tokens=120,   # Hard limit per velocità (max 50 parole)
+        max_tokens=256,   # ~100 parole (1 token ≈ 0.75 parole per italiano)
         stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:", "###"],
         repetition_penalty=1.1,
         presence_penalty=0.6,
         top_p=0.9,
-        description="Ultra-concise web synthesis (max 50 words, optimized for speed)"
+        description="Web synthesis (~100 words, optimized for accuracy)"
     ),
     
     "chat": LLMPreset(
-        temperature=0.75,  # Leggermente più creativo
-        max_tokens=2048,   # Risposte più complete (aumentato da 512)
+        temperature=0.7,   # Bilanciato
+        max_tokens=4096,   # Risposte complete (A6000 può gestire)
         stop_sequences=[],
-        repetition_penalty=1.0,
-        presence_penalty=0.0,
+        repetition_penalty=1.02,
+        presence_penalty=0.1,
         top_p=0.95,
         description="Standard conversational chat with extended responses"
     ),
     
     "chat_extended": LLMPreset(
         temperature=0.7,
-        max_tokens=4096,   # Per risposte molto lunghe e articolate
+        max_tokens=8192,   # Per risposte molto lunghe e articolate
         stop_sequences=[],
         repetition_penalty=1.02,
         presence_penalty=0.1,
@@ -78,8 +78,8 @@ PRESETS: Dict[str, LLMPreset] = {
     ),
     
     "reasoning": LLMPreset(
-        temperature=0.3,   # Bassa per ragionamento logico
-        max_tokens=3000,   # Spazio per reasoning chain
+        temperature=0.2,   # Molto bassa per ragionamento preciso
+        max_tokens=6000,   # Spazio per chain-of-thought
         stop_sequences=["CONCLUSIONE FINALE:", "---"],
         repetition_penalty=1.05,
         presence_penalty=0.2,
@@ -88,28 +88,38 @@ PRESETS: Dict[str, LLMPreset] = {
     ),
     
     "code_generation": LLMPreset(
-        temperature=0.3,
-        max_tokens=2048,   # Aumentato per codice più lungo
-        stop_sequences=["```\n\n", "# END", "// END"],
+        temperature=0.3,   # Bassa per codice preciso
+        max_tokens=8192,   # Codice lungo (A6000)
+        stop_sequences=["```\n\n", "# END", "// END", "---END---"],
         repetition_penalty=1.05,
         presence_penalty=0.2,
         top_p=0.95,
-        description="Code generation with low temperature for consistency"
+        description="Production-ready code generation with high precision"
+    ),
+    
+    "code_debug": LLMPreset(
+        temperature=0.2,   # Molto preciso per debug
+        max_tokens=4096,
+        stop_sequences=["---", "```\n\n"],
+        repetition_penalty=1.03,
+        presence_penalty=0.15,
+        top_p=0.9,
+        description="Code debugging and analysis"
     ),
     
     "creative_writing": LLMPreset(
-        temperature=0.9,
-        max_tokens=4096,   # Aumentato per contenuti creativi lunghi
+        temperature=0.9,   # Alta per creatività
+        max_tokens=8192,   # Contenuti creativi lunghi
         stop_sequences=["THE END", "---END---"],
-        repetition_penalty=1.05,
-        presence_penalty=0.3,
+        repetition_penalty=1.08,
+        presence_penalty=0.4,
         top_p=0.98,
         description="Creative writing with high temperature"
     ),
     
     "factual_qa": LLMPreset(
-        temperature=0.1,
-        max_tokens=512,    # Aumentato da 256
+        temperature=0.1,   # Molto bassa per fatti
+        max_tokens=1024,
         stop_sequences=["\n\n", "---"],
         repetition_penalty=1.0,
         presence_penalty=0.5,
@@ -117,9 +127,19 @@ PRESETS: Dict[str, LLMPreset] = {
         description="Factual Q&A with very low temperature"
     ),
     
+    "research": LLMPreset(
+        temperature=0.4,
+        max_tokens=6000,
+        stop_sequences=["---", "CONCLUSIONE:"],
+        repetition_penalty=1.05,
+        presence_penalty=0.3,
+        top_p=0.92,
+        description="Research synthesis combining multiple sources"
+    ),
+    
     "uncensored": LLMPreset(
         temperature=0.8,
-        max_tokens=3000,
+        max_tokens=4096,
         stop_sequences=[],
         repetition_penalty=1.02,
         presence_penalty=0.1,
