@@ -423,26 +423,112 @@ class ThinkingStepContext:
         return False  # Don't suppress exceptions
 
 
-# === Singleton Instance ===
-_tracer_instance: Optional[ReasoningTracer] = None
-
-
-def get_reasoning_tracer(enabled: Optional[bool] = None) -> ReasoningTracer:
+# === Dummy Tracer for Zero Overhead ===
+class DummyTracer:
     """
-    Get or create ReasoningTracer singleton.
+    No-op tracer for zero overhead when reasoning traces are disabled.
+    All methods are no-ops that return immediately.
+    """
+    
+    def __init__(self):
+        """Initialize dummy tracer."""
+        self.enabled = False
+    
+    def start_trace(self, query: str, metadata: Optional[Dict[str, Any]] = None) -> "DummyTracer":
+        """No-op start_trace."""
+        return self
+    
+    def add_step(
+        self,
+        type: ThinkingType,
+        title: str,
+        content: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """No-op add_step."""
+        return None
+    
+    def complete_step(
+        self,
+        step: Any,
+        content: Optional[str] = None,
+        success: bool = True,
+    ) -> None:
+        """No-op complete_step."""
+        pass
+    
+    def analysis(self, title: str, content: str = "") -> None:
+        """No-op analysis."""
+        return None
+    
+    def planning(self, title: str, content: str = "") -> None:
+        """No-op planning."""
+        return None
+    
+    def execution(self, title: str, content: str = "") -> None:
+        """No-op execution."""
+        return None
+    
+    def reflection(self, title: str, content: str = "") -> None:
+        """No-op reflection."""
+        return None
+    
+    def synthesis(self, title: str, content: str = "") -> None:
+        """No-op synthesis."""
+        return None
+    
+    def correction(self, title: str, content: str = "") -> None:
+        """No-op correction."""
+        return None
+    
+    def complete_trace(
+        self,
+        final_answer: str = "",
+        success: bool = True,
+        error: Optional[str] = None,
+    ) -> None:
+        """No-op complete_trace."""
+        return None
+    
+    @property
+    def current_trace(self) -> None:
+        """No-op current_trace."""
+        return None
+    
+    def get_recent_traces(self, n: int = 10) -> List:
+        """No-op get_recent_traces."""
+        return []
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """No-op get_stats."""
+        return {"total_traces": 0, "enabled": False}
+
+
+# === Singleton Instance ===
+_tracer_instance: Optional[Any] = None
+
+
+def get_reasoning_tracer(enabled: Optional[bool] = None) -> Any:
+    """
+    Get or create ReasoningTracer singleton with zero-overhead DummyTracer when disabled.
     
     Args:
-        enabled: Whether to enable tracing
+        enabled: Whether to enable tracing. If None, uses ENABLE_REASONING_TRACES env var.
         
     Returns:
-        ReasoningTracer instance
+        ReasoningTracer instance if enabled, DummyTracer if disabled
     """
     global _tracer_instance
     
     if _tracer_instance is None:
-        _tracer_instance = ReasoningTracer(
-            enabled=enabled if enabled is not None else ENABLE_REASONING_TRACES
-        )
+        should_enable = enabled if enabled is not None else ENABLE_REASONING_TRACES
+        
+        if should_enable:
+            _tracer_instance = ReasoningTracer(enabled=True)
+            log.info("ReasoningTracer initialized (enabled)")
+        else:
+            _tracer_instance = DummyTracer()
+            log.info("DummyTracer initialized (zero overhead)")
     
     return _tracer_instance
 
