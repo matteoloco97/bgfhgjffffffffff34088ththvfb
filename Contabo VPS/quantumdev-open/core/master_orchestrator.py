@@ -27,6 +27,10 @@ from enum import Enum
 
 from dotenv import load_dotenv
 
+# Import adaptive token allocation modules
+from core.adaptive_token_allocator import get_token_allocator
+from core.query_analyzer_v2 import get_query_analyzer
+
 load_dotenv()
 
 log = logging.getLogger(__name__)
@@ -357,6 +361,10 @@ class MasterOrchestrator:
         self.llm_func = llm_func
         self.analyzer = QueryAnalyzer()
         
+        # Adaptive token allocation components
+        self.token_allocator = get_token_allocator()
+        self.query_analyzer = get_query_analyzer()
+        
         # Component instances (lazy loaded)
         self._memory = None
         self._caller = None
@@ -518,6 +526,18 @@ class MasterOrchestrator:
             except Exception as e:
                 log.warning(f"Failed to build personal memory context: {e}")
             
+            # === STEP 3C: Adaptive Token Allocation (NUOVO) ===
+            # Analyze query complexity and allocate token budget dynamically
+            query_score = self.query_analyzer.analyze(clean_query)
+            token_budget = query_score.metadata["token_budget"]
+            context.metadata["query_score"] = query_score.to_dict()
+            
+            log.info(
+                f"Adaptive: tokens={token_budget}, "
+                f"strategy={query_score.recommended_strategy}, "
+                f"complexity={query_score.complexity}"
+            )
+            
             # Step 4: Execute strategy
             response_text = ""
             
@@ -545,7 +565,11 @@ class MasterOrchestrator:
                             query=query,
                             tool_context=tool_context
                         )
-                        response_text = await self.llm_func(enhanced_prompt, HYBRID_SYNTHESIS_SYSTEM)
+                        response_text = await self.llm_func(
+                            enhanced_prompt,
+                            HYBRID_SYNTHESIS_SYSTEM,
+                            max_tokens=token_budget
+                        )
             
             elif strategy == ResponseStrategy.MEMORY_RECALL and self.memory:
                 if trace:
@@ -561,7 +585,11 @@ class MasterOrchestrator:
                         f"Rispondi basandoti sul contesto."
                     )
                     if self.llm_func:
-                        response_text = await self.llm_func(prompt, "")
+                        response_text = await self.llm_func(
+                            prompt,
+                            "",
+                            max_tokens=token_budget
+                        )
                 
                 if trace:
                     self._complete_step(trace, f"Found {len(relevant)} relevant memories")
@@ -592,7 +620,12 @@ class MasterOrchestrator:
                     )
                 
                 system = "\n".join(system_parts) if system_parts else ""
-                response_text = await self.llm_func(clean_query, system)
+                # Use adaptive token budget
+                response_text = await self.llm_func(
+                    clean_query,
+                    system,
+                    max_tokens=token_budget
+                )
                 
                 if trace:
                     self._complete_step(trace, f"Generated {len(response_text)} chars")
