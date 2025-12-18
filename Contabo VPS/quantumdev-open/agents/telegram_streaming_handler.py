@@ -34,6 +34,9 @@ MAX_MESSAGE_LENGTH = 4096    # Telegram message length limit
 STREAM_TIMEOUT_S = 120       # Total timeout for stream
 CONNECT_TIMEOUT_S = 10       # Connection timeout
 
+# Message truncation
+ELLIPSIS_LENGTH = 3          # Length of "..." for truncation
+
 
 class StreamingError(Exception):
     """Exception raised when streaming fails."""
@@ -89,7 +92,8 @@ class TelegramStreamingHandler:
         
         try:
             # Create HTTP client with streaming support
-            async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)) as client:
+            timeout_config = httpx.Timeout(STREAM_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
                 # Make streaming request
                 async with client.stream("POST", url, json=payload) as response:
                     # Check response status
@@ -260,7 +264,9 @@ class TelegramStreamingHandler:
             return text
         
         # Truncate and add ellipsis
-        truncated = text[:MAX_MESSAGE_LENGTH - 4] + "..."
+        ellipsis = "..."
+        truncate_at = MAX_MESSAGE_LENGTH - len(ellipsis)
+        truncated = text[:truncate_at] + ellipsis
         log.warning(f"Text truncated from {len(text)} to {len(truncated)} chars")
         return truncated
 

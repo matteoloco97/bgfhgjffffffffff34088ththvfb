@@ -626,7 +626,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 Jarvis – AI personale di Matteo (QuantumDev)\n"
         "\n"
-        f"{autoweb_status}"
+        f"{autoweb_status}\n"
         f"{streaming_info}\n"
         "\n"
         "• 💬 Chatta normalmente per usare Jarvis su qualsiasi tema (business, crypto, coding, vita reale…)\n"
