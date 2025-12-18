@@ -23,7 +23,7 @@ import hashlib
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
-from core.web_tools import fetch_and_extract
+from core.web_tools import fetch_and_extract, fetch_and_extract_async, parallel_fetch_urls
 from core.chat_engine import reply_with_llm
 
 log = logging.getLogger(__name__)
@@ -121,19 +121,14 @@ class WebResearchAgent:
         return deduped
 
     async def _fetch_one(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Scarica una singola pagina."""
+        """Scarica una singola pagina usando fetch_and_extract_async."""
         url = item.get("url") or ""
         if not url:
             return None
 
         try:
-            text, _ = await asyncio.wait_for(
-                fetch_and_extract(url),
-                timeout=WEB_RESEARCH_FETCH_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            log.debug(f"Timeout fetching {url}")
-            return None
+            # Use the new async version with built-in timeout and retries
+            text, _ = await fetch_and_extract_async(url, timeout=WEB_RESEARCH_FETCH_TIMEOUT_S)
         except Exception as e:
             log.debug(f"Error fetching {url}: {e}")
             return None
@@ -201,31 +196,6 @@ class WebResearchAgent:
             log.debug(f"Smart synthesis enhancement failed: {e}")
 
         return docs
-        self, results: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch parallelo con limite di concorrenza.
-        Usa asyncio.Semaphore per limitare richieste simultanee.
-        """
-        sem = asyncio.Semaphore(self.max_concurrent)
-        extracts: List[Dict[str, Any]] = []
-
-        async def _bounded_fetch(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            async with sem:
-                return await self._fetch_one(item)
-
-        tasks = [
-            asyncio.create_task(_bounded_fetch(r))
-            for r in results[:self.max_docs]
-        ]
-
-        done = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for d in done:
-            if isinstance(d, dict) and d.get("text"):
-                extracts.append(d)
-
-        return extracts
 
     def _estimate_quality(self, extracts: List[Dict[str, Any]], query: str) -> float:
         """
