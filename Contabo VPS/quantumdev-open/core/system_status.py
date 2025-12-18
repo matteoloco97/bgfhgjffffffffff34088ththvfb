@@ -29,7 +29,17 @@ try:
 except ImportError:
     PYNVML_AVAILABLE = False
 
+# Remote GPU monitoring (optional)
+try:
+    from core.gpu_monitor import get_gpu_monitor
+    REMOTE_GPU_MONITOR_AVAILABLE = True
+except ImportError:
+    REMOTE_GPU_MONITOR_AVAILABLE = False
+
 log = logging.getLogger(__name__)
+
+# Configuration for GPU monitoring mode
+GPU_MONITORING_MODE = os.getenv("GPU_MONITORING_MODE", "auto")  # auto, local, remote, disabled
 
 
 def get_cpu_metrics() -> Dict[str, Any]:
@@ -201,12 +211,19 @@ def get_uptime_metrics() -> Dict[str, Any]:
 
 def get_gpu_metrics() -> Dict[str, Any]:
     """
-    Get GPU metrics using pynvml (NVIDIA GPUs).
+    Get GPU metrics using local pynvml or remote SSH monitoring.
+    
+    Monitoring mode is determined by GPU_MONITORING_MODE env var:
+    - 'auto': Try remote first, fallback to local
+    - 'local': Use pynvml only (local GPU)
+    - 'remote': Use SSH monitoring only (remote GPU)
+    - 'disabled': No GPU monitoring
     
     Returns:
         Dictionary with GPU metrics including:
         - gpus: List of GPU info dictionaries
-        - error: Error message if pynvml is not available or failed
+        - error: Error message if monitoring not available or failed
+        - monitoring_mode: 'local', 'remote', or 'none'
         
         Each GPU dict contains:
         - index: GPU index
@@ -217,92 +234,138 @@ def get_gpu_metrics() -> Dict[str, Any]:
         - utilization_percent: GPU utilization percentage (or None)
         - temperature: GPU temperature in Celsius (or None)
     """
-    if not PYNVML_AVAILABLE:
+    mode = GPU_MONITORING_MODE.lower()
+    
+    # Check if GPU monitoring is disabled
+    if mode == "disabled":
         return {
             "gpus": [],
-            "error": "pynvml_not_installed"
+            "error": "gpu_monitoring_disabled",
+            "monitoring_mode": "none",
         }
     
-    try:
-        pynvml.nvmlInit()
-        device_count = pynvml.nvmlDeviceGetCount()
-        
-        if device_count == 0:
+    # Try remote monitoring first if mode is 'remote' or 'auto'
+    if mode in ("remote", "auto") and REMOTE_GPU_MONITOR_AVAILABLE:
+        try:
+            monitor = get_gpu_monitor()
+            metrics = monitor.get_metrics()
+            
+            # Add monitoring mode info
+            metrics["monitoring_mode"] = "remote"
+            
+            # If successful or cached, return remote metrics
+            if metrics.get("status") in ("ok", "cached"):
+                return metrics
+            
+            # Remote failed - log and try local if auto mode
+            log.warning(f"Remote GPU monitoring failed: {metrics.get('error')}")
+            if mode == "remote":
+                # Remote mode only - return error
+                return metrics
+            # Otherwise fall through to try local
+            
+        except Exception as e:
+            log.error(f"Error getting remote GPU metrics: {e}")
+            if mode == "remote":
+                return {
+                    "gpus": [],
+                    "error": f"remote_monitoring_failed: {str(e)}",
+                    "monitoring_mode": "remote",
+                }
+            # Otherwise fall through to try local
+    
+    # Try local monitoring if mode is 'local' or 'auto' (with remote failed)
+    if mode in ("local", "auto") and PYNVML_AVAILABLE:
+        try:
+            pynvml.nvmlInit()
+            device_count = pynvml.nvmlDeviceGetCount()
+            
+            if device_count == 0:
+                pynvml.nvmlShutdown()
+                return {
+                    "gpus": [],
+                    "error": "no_gpu_detected",
+                    "monitoring_mode": "local",
+                }
+            
+            gpus = []
+            for i in range(device_count):
+                try:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    name = pynvml.nvmlDeviceGetName(handle)
+                    
+                    # Memory info
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    total_vram = int(mem_info.total)
+                    used_vram = int(mem_info.used)
+                    vram_percent = round((mem_info.used / mem_info.total) * 100, 2) if mem_info.total > 0 else 0.0
+                    
+                    # Utilization
+                    util_percent = None
+                    try:
+                        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                        util_percent = float(util.gpu)
+                    except Exception:
+                        pass
+                    
+                    # Temperature
+                    temp = None
+                    try:
+                        temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+                    except Exception:
+                        pass
+                    
+                    gpu_info: Dict[str, Any] = {
+                        "index": i,
+                        "name": name if isinstance(name, str) else name.decode('utf-8'),
+                        "memory_total": total_vram,
+                        "memory_used": used_vram,
+                        "memory_percent": vram_percent,
+                        "utilization_percent": util_percent,
+                        "temperature": temp,
+                    }
+                    
+                    gpus.append(gpu_info)
+                    
+                except Exception as e:
+                    log.warning(f"Error reading GPU {i} metrics: {e}")
+                    gpus.append({
+                        "index": i,
+                        "name": f"GPU {i}",
+                        "memory_total": 0,
+                        "memory_used": 0,
+                        "memory_percent": 0.0,
+                        "utilization_percent": None,
+                        "temperature": None,
+                        "error": f"gpu_{i}_read_failed: {str(e)}",
+                    })
+            
             pynvml.nvmlShutdown()
+            
+            return {
+                "gpus": gpus,
+                "error": None,
+                "monitoring_mode": "local",
+            }
+            
+        except Exception as e:
+            log.error(f"Error initializing local GPU monitoring: {e}")
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
             return {
                 "gpus": [],
-                "error": "no_gpu_detected"
+                "error": f"nvml_init_failed: {str(e)}",
+                "monitoring_mode": "local",
             }
-        
-        gpus = []
-        for i in range(device_count):
-            try:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                name = pynvml.nvmlDeviceGetName(handle)
-                
-                # Memory info
-                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                total_vram = int(mem_info.total)
-                used_vram = int(mem_info.used)
-                vram_percent = round((mem_info.used / mem_info.total) * 100, 2) if mem_info.total > 0 else 0.0
-                
-                # Utilization
-                util_percent = None
-                try:
-                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    util_percent = float(util.gpu)
-                except Exception:
-                    pass
-                
-                # Temperature
-                temp = None
-                try:
-                    temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
-                except Exception:
-                    pass
-                
-                gpu_info: Dict[str, Any] = {
-                    "index": i,
-                    "name": name if isinstance(name, str) else name.decode('utf-8'),
-                    "memory_total": total_vram,
-                    "memory_used": used_vram,
-                    "memory_percent": vram_percent,
-                    "utilization_percent": util_percent,
-                    "temperature": temp,
-                }
-                
-                gpus.append(gpu_info)
-                
-            except Exception as e:
-                log.warning(f"Error reading GPU {i} metrics: {e}")
-                gpus.append({
-                    "index": i,
-                    "name": f"GPU {i}",
-                    "memory_total": 0,
-                    "memory_used": 0,
-                    "memory_percent": 0.0,
-                    "utilization_percent": None,
-                    "temperature": None,
-                    "error": f"gpu_{i}_read_failed: {str(e)}",
-                })
-        
-        pynvml.nvmlShutdown()
-        
-        return {
-            "gpus": gpus,
-            "error": None,
-        }
-        
-    except Exception as e:
-        log.error(f"Error initializing GPU monitoring: {e}")
-        try:
-            pynvml.nvmlShutdown()
-        except Exception:
-            pass
-        return {
-            "gpus": [],
-            "error": f"nvml_init_failed: {str(e)}"
-        }
+    
+    # No monitoring available
+    return {
+        "gpus": [],
+        "error": "no_gpu_monitoring_available",
+        "monitoring_mode": "none",
+    }
 
 
 def get_system_status() -> Dict[str, Any]:

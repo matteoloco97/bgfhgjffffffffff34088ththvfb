@@ -9,6 +9,7 @@ Systematic health checks for all major subsystems:
   - Redis cache
   - ChromaDB
   - System status
+  - GPU monitoring (local or remote)
 
 Each check is isolated and never crashes the entire process.
 """
@@ -32,11 +33,13 @@ AUTOBUG_ENABLE_WEB_SEARCH = os.getenv("AUTOBUG_ENABLE_WEB_SEARCH", "1") == "1"
 AUTOBUG_ENABLE_REDIS = os.getenv("AUTOBUG_ENABLE_REDIS", "1") == "1"
 AUTOBUG_ENABLE_CHROMA = os.getenv("AUTOBUG_ENABLE_CHROMA", "1") == "1"
 AUTOBUG_ENABLE_SYSTEM = os.getenv("AUTOBUG_ENABLE_SYSTEM", "1") == "1"
+AUTOBUG_ENABLE_GPU = os.getenv("AUTOBUG_ENABLE_GPU", "1") == "1"
 
 AUTOBUG_LLM_TIMEOUT_S = float(os.getenv("AUTOBUG_LLM_TIMEOUT_S", "15.0"))
 AUTOBUG_WEB_TIMEOUT_S = float(os.getenv("AUTOBUG_WEB_TIMEOUT_S", "10.0"))
 AUTOBUG_REDIS_TIMEOUT_S = float(os.getenv("AUTOBUG_REDIS_TIMEOUT_S", "5.0"))
 AUTOBUG_CHROMA_TIMEOUT_S = float(os.getenv("AUTOBUG_CHROMA_TIMEOUT_S", "10.0"))
+AUTOBUG_GPU_TIMEOUT_S = float(os.getenv("AUTOBUG_GPU_TIMEOUT_S", "10.0"))
 
 
 # ======================== Check Result ========================
@@ -525,6 +528,109 @@ def check_ocr() -> CheckResult:
         )
 
 
+def check_gpu() -> CheckResult:
+    """
+    Test GPU monitoring system (local or remote).
+    
+    Returns:
+        CheckResult with test outcome.
+    """
+    start = time.monotonic()
+    
+    if not AUTOBUG_ENABLE_GPU:
+        return CheckResult(
+            name="gpu",
+            enabled=False,
+            ok=False,
+            latency_ms=None,
+            error="check_disabled",
+        )
+    
+    try:
+        from core.gpu_monitor import get_gpu_monitor
+        
+        # Get GPU monitor instance
+        monitor = get_gpu_monitor()
+        
+        # Get current metrics
+        metrics = monitor.get_metrics()
+        
+        latency_ms = (time.monotonic() - start) * 1000
+        
+        # Check status
+        status = metrics.get("status", "unknown")
+        gpus = metrics.get("gpus", [])
+        
+        if status in ("ok", "cached"):
+            # GPU monitoring is working
+            if len(gpus) > 0:
+                # Get first GPU info for details
+                gpu0 = gpus[0]
+                
+                # Check health
+                is_healthy = monitor.is_healthy()
+                should_alert, alerts = monitor.should_alert()
+                
+                return CheckResult(
+                    name="gpu",
+                    enabled=True,
+                    ok=True,
+                    latency_ms=round(latency_ms, 2),
+                    details={
+                        "gpu_count": len(gpus),
+                        "gpu_name": gpu0.get("name", "Unknown"),
+                        "vram_percent": gpu0.get("memory_percent", 0),
+                        "temperature": gpu0.get("temperature", 0),
+                        "utilization": gpu0.get("utilization_percent", 0),
+                        "is_healthy": is_healthy,
+                        "should_alert": should_alert,
+                        "status": status,
+                        "monitoring_mode": metrics.get("monitoring_mode", "unknown"),
+                    },
+                )
+            else:
+                # No GPUs detected
+                return CheckResult(
+                    name="gpu",
+                    enabled=True,
+                    ok=False,
+                    latency_ms=round(latency_ms, 2),
+                    error="no_gpu_detected",
+                    details={"status": status},
+                )
+        else:
+            # Error status
+            error_msg = metrics.get("error", "unknown_error")
+            return CheckResult(
+                name="gpu",
+                enabled=True,
+                ok=False,
+                latency_ms=round(latency_ms, 2),
+                error=f"gpu_monitoring_error: {error_msg}",
+                details={"status": status},
+            )
+        
+    except ImportError as e:
+        latency_ms = (time.monotonic() - start) * 1000
+        return CheckResult(
+            name="gpu",
+            enabled=True,
+            ok=False,
+            latency_ms=round(latency_ms, 2),
+            error=f"import_failed: {str(e)}",
+        )
+    except Exception as e:
+        latency_ms = (time.monotonic() - start) * 1000
+        log.error(f"GPU check failed: {e}")
+        return CheckResult(
+            name="gpu",
+            enabled=True,
+            ok=False,
+            latency_ms=round(latency_ms, 2),
+            error=f"gpu_check_failed: {str(e)}",
+        )
+
+
 # ======================== Master Function ========================
 
 def run_autobug_checks() -> Dict[str, Any]:
@@ -540,6 +646,7 @@ def run_autobug_checks() -> Dict[str, Any]:
     - AUTOBUG_ENABLE_REDIS: Enable Redis check
     - AUTOBUG_ENABLE_CHROMA: Enable ChromaDB check
     - AUTOBUG_ENABLE_SYSTEM: Enable system status check
+    - AUTOBUG_ENABLE_GPU: Enable GPU monitoring check
     
     Returns:
         Dictionary with:
@@ -548,7 +655,7 @@ def run_autobug_checks() -> Dict[str, Any]:
             - finished_at: ISO timestamp
             - duration_ms: total runtime in milliseconds
             - checks: list of CheckResult dictionaries with:
-                - name: str ("llm", "web", "redis", "chroma", "system")
+                - name: str ("llm", "web", "redis", "chroma", "system", "ocr", "gpu")
                 - enabled: bool
                 - ok: bool
                 - latency_ms: float | None
@@ -597,6 +704,9 @@ def run_autobug_checks() -> Dict[str, Any]:
     
     # 6. OCR (fast, optional)
     checks.append(check_ocr())
+    
+    # 7. GPU (fast-medium, remote monitoring)
+    checks.append(check_gpu())
     
     finished_at = datetime.now(timezone.utc)
     duration_ms = (time.monotonic() - start_time) * 1000

@@ -71,6 +71,8 @@ BACKEND_CHAT_URL = QUANTUM_UNIFIED_URL or QUANTUM_CHAT_URL
 # Tools and system endpoints
 QUANTUM_SYSTEM_STATUS_URL = os.getenv("QUANTUM_SYSTEM_STATUS_URL", "http://127.0.0.1:8081/system/status").strip()
 QUANTUM_AUTOBUG_URL = os.getenv("QUANTUM_AUTOBUG_URL", "http://127.0.0.1:8081/autobug/run").strip()
+QUANTUM_GPU_URL = os.getenv("QUANTUM_GPU_URL", "http://127.0.0.1:8081/system/gpu").strip()
+QUANTUM_GPU_ALERTS_URL = os.getenv("QUANTUM_GPU_ALERTS_URL", "http://127.0.0.1:8081/system/gpu/alerts").strip()
 QUANTUM_MATH_URL = os.getenv("QUANTUM_MATH_URL", "http://127.0.0.1:8081/tools/math").strip()
 QUANTUM_PYTHON_URL = os.getenv("QUANTUM_PYTHON_URL", "http://127.0.0.1:8081/tools/python").strip()
 
@@ -660,6 +662,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /health – stato del backend QuantumDev\n"
         "• /status – stato del sistema (CPU, RAM, disk, GPU, uptime)\n"
         "• /autobug – diagnostica completa di tutti i subsistemi\n"
+        "• /gpu – stato GPU (VRAM, utilizzo, temperatura)\n"
+        "• /gpu_history – cronologia metriche GPU (60 minuti)\n"
+        "• /gpu_alerts – alert GPU recenti (24 ore)\n"
         "• /math <expr> – calcolatrice (es: /math 2*(3+5.5))\n"
         "• /py <code> – esegui codice Python (solo admin)\n"
         "• /web <query> – ricerca web (live + ricerca avanzata)\n"
@@ -1304,6 +1309,232 @@ async def py_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Errore: {e}")
 
 
+async def gpu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /gpu command - Display current GPU status.
+    Shows GPU name, VRAM usage, utilization, and temperature.
+    """
+    http = context.application.bot_data["http"]
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    try:
+        # Call /system/gpu endpoint
+        gpu_url = os.getenv("QUANTUM_GPU_URL", "http://127.0.0.1:8081/system/gpu").strip()
+        data = await call_backend_json(http, gpu_url, method="GET", timeout=10.0)
+        
+        current = data.get("current", {})
+        health = data.get("health", {})
+        status = current.get("status", "unknown")
+        gpus = current.get("gpus", [])
+        
+        # Build message
+        lines = ["🖥️ GPU Status:\n"]
+        
+        # Status
+        status_emoji = "✅" if status in ("ok", "cached") else "❌"
+        lines.append(f"{status_emoji} Status: {status.upper()}")
+        
+        if current.get("monitoring_mode"):
+            lines.append(f"📡 Mode: {current['monitoring_mode'].upper()}")
+        
+        if not gpus:
+            lines.append("\n❌ No GPU detected or monitoring unavailable")
+            if current.get("error"):
+                lines.append(f"Error: {current['error']}")
+        else:
+            # Show each GPU
+            for gpu in gpus:
+                gpu_name = gpu.get("name", "Unknown")
+                gpu_idx = gpu.get("index", 0)
+                
+                lines.append(f"\n🎮 GPU {gpu_idx}: {gpu_name}")
+                
+                # VRAM
+                vram_used_gb = gpu.get("memory_used", 0) / (1024**3)
+                vram_total_gb = gpu.get("memory_total", 0) / (1024**3)
+                vram_percent = gpu.get("memory_percent", 0.0)
+                vram_emoji = "🟢" if vram_percent < 80 else "🟡" if vram_percent < 90 else "🔴"
+                lines.append(f"{vram_emoji} VRAM: {vram_used_gb:.1f} / {vram_total_gb:.1f} GB ({vram_percent:.1f}%)")
+                
+                # Utilization
+                util = gpu.get("utilization_percent", 0.0)
+                util_emoji = "⚡" if util > 50 else "💤"
+                lines.append(f"{util_emoji} Utilization: {util:.1f}%")
+                
+                # Temperature
+                temp = gpu.get("temperature", 0.0)
+                temp_emoji = "🟢" if temp < 70 else "🟡" if temp < 80 else "🔴"
+                lines.append(f"{temp_emoji} Temperature: {temp:.1f}°C")
+                
+                # Power (if available)
+                power = gpu.get("power_draw")
+                if power is not None:
+                    lines.append(f"⚡ Power: {power:.1f}W")
+        
+        # Health status
+        is_healthy = health.get("is_healthy", False)
+        health_emoji = "✅" if is_healthy else "⚠️"
+        lines.append(f"\n{health_emoji} Health: {'HEALTHY' if is_healthy else 'ATTENTION NEEDED'}")
+        
+        # Active alerts
+        alerts = health.get("alerts", [])
+        if alerts:
+            lines.append("\n🚨 Active Alerts:")
+            for alert in alerts[:3]:  # Show up to 3 alerts
+                lines.append(f"  • {alert}")
+        
+        # Cache info
+        cache_age = current.get("cache_age_seconds")
+        if cache_age is not None:
+            lines.append(f"\n⏱️ Cache age: {cache_age:.1f}s")
+        
+        message = "\n".join(lines)
+        await update.message.reply_text(message)
+        
+    except Exception as e:
+        log.error(f"/gpu command error: {e}")
+        await update.message.reply_text(f"❌ Errore nel recupero dello stato GPU: {e}")
+
+
+async def gpu_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /gpu_history command - Show GPU metrics history (last 60 minutes).
+    Displays VRAM and temperature trends.
+    """
+    http = context.application.bot_data["http"]
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    try:
+        # Call /system/gpu endpoint with history
+        gpu_url = os.getenv("QUANTUM_GPU_URL", "http://127.0.0.1:8081/system/gpu").strip()
+        data = await call_backend_json(http, f"{gpu_url}?history_minutes=60", method="GET", timeout=10.0)
+        
+        history = data.get("history", [])
+        
+        if not history:
+            await update.message.reply_text("📊 No GPU history available yet")
+            return
+        
+        # Build message with history summary
+        lines = ["📊 GPU History (Last 60 minutes):\n"]
+        lines.append(f"📈 Data points: {len(history)}\n")
+        
+        # Calculate stats from history
+        if history:
+            # Get first GPU stats from each entry
+            vram_values = []
+            temp_values = []
+            util_values = []
+            
+            for entry in history:
+                metrics = entry.get("metrics", {})
+                gpus = metrics.get("gpus", [])
+                if gpus:
+                    gpu = gpus[0]
+                    vram_values.append(gpu.get("memory_percent", 0))
+                    temp_values.append(gpu.get("temperature", 0))
+                    util_values.append(gpu.get("utilization_percent", 0))
+            
+            if vram_values:
+                lines.append("💾 VRAM Usage:")
+                lines.append(f"  • Current: {vram_values[-1]:.1f}%")
+                lines.append(f"  • Average: {sum(vram_values)/len(vram_values):.1f}%")
+                lines.append(f"  • Max: {max(vram_values):.1f}%")
+                lines.append(f"  • Min: {min(vram_values):.1f}%")
+            
+            if temp_values:
+                lines.append("\n🌡️ Temperature:")
+                lines.append(f"  • Current: {temp_values[-1]:.1f}°C")
+                lines.append(f"  • Average: {sum(temp_values)/len(temp_values):.1f}°C")
+                lines.append(f"  • Max: {max(temp_values):.1f}°C")
+                lines.append(f"  • Min: {min(temp_values):.1f}°C")
+            
+            if util_values:
+                lines.append("\n⚡ Utilization:")
+                lines.append(f"  • Current: {util_values[-1]:.1f}%")
+                lines.append(f"  • Average: {sum(util_values)/len(util_values):.1f}%")
+                lines.append(f"  • Max: {max(util_values):.1f}%")
+        
+        message = "\n".join(lines)
+        await update.message.reply_text(message)
+        
+    except Exception as e:
+        log.error(f"/gpu_history command error: {e}")
+        await update.message.reply_text(f"❌ Errore nel recupero della cronologia GPU: {e}")
+
+
+async def gpu_alerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /gpu_alerts command - Show recent GPU alerts (last 24 hours).
+    """
+    http = context.application.bot_data["http"]
+    
+    # Show typing indicator
+    await typing(context, update.effective_chat.id)
+    
+    try:
+        # Call /system/gpu/alerts endpoint
+        alerts_url = os.getenv("QUANTUM_GPU_ALERTS_URL", "http://127.0.0.1:8081/system/gpu/alerts").strip()
+        data = await call_backend_json(http, f"{alerts_url}?hours=24", method="GET", timeout=10.0)
+        
+        alert_status = data.get("status", {})
+        active_alerts = data.get("active_alerts", [])
+        history = data.get("history", [])
+        
+        # Build message
+        lines = ["🚨 GPU Alerts (Last 24 Hours):\n"]
+        
+        # Status
+        enabled = alert_status.get("enabled", False)
+        running = alert_status.get("running", False)
+        
+        status_emoji = "✅" if enabled and running else "❌"
+        lines.append(f"{status_emoji} Alerting: {'ENABLED' if enabled else 'DISABLED'}")
+        
+        if enabled:
+            active_count = alert_status.get("active_alerts", 0)
+            lines.append(f"📊 Active alerts: {active_count}")
+        
+        # Active alerts
+        if active_alerts:
+            lines.append("\n⚠️ Currently Active:")
+            for alert in active_alerts[:5]:  # Show up to 5
+                level = alert.get("level", "info")
+                level_emoji = "🔴" if level == "critical" else "🟡" if level == "warning" else "ℹ️"
+                message_text = alert.get("message", "Unknown")
+                lines.append(f"{level_emoji} {message_text}")
+        
+        # Recent history
+        if history:
+            lines.append(f"\n📜 Recent History ({len(history)} alerts):")
+            for alert in history[:5]:  # Show up to 5
+                level = alert.get("level", "info")
+                resolved = alert.get("resolved", False)
+                level_emoji = "🔴" if level == "critical" else "🟡" if level == "warning" else "ℹ️"
+                resolved_emoji = "✅" if resolved else "🔴"
+                message_text = alert.get("message", "Unknown")
+                
+                # Truncate long messages
+                if len(message_text) > 60:
+                    message_text = message_text[:57] + "..."
+                
+                lines.append(f"{resolved_emoji} {level_emoji} {message_text}")
+        
+        if not active_alerts and not history:
+            lines.append("\n✅ No alerts in the last 24 hours")
+        
+        message = "\n".join(lines)
+        await update.message.reply_text(message)
+        
+    except Exception as e:
+        log.error(f"/gpu_alerts command error: {e}")
+        await update.message.reply_text(f"❌ Errore nel recupero degli alert GPU: {e}")
+
+
 # Error handler
 
 
@@ -1330,6 +1561,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("autobug", autobug_cmd))
+    app.add_handler(CommandHandler("gpu", gpu_cmd))
+    app.add_handler(CommandHandler("gpu_history", gpu_history_cmd))
+    app.add_handler(CommandHandler("gpu_alerts", gpu_alerts_cmd))
     app.add_handler(CommandHandler("math", math_cmd))
     app.add_handler(CommandHandler("py", py_cmd))
     app.add_handler(CommandHandler("flushcache", flush_cache))
