@@ -85,6 +85,12 @@ QUANTUM_PERSONA_SET_URL = os.getenv("QUANTUM_PERSONA_SET_URL", "http://127.0.0.1
 QUANTUM_PERSONA_GET_URL = os.getenv("QUANTUM_PERSONA_GET_URL", "http://127.0.0.1:8081/persona/get").strip()
 QUANTUM_PERSONA_RESET_URL = os.getenv("QUANTUM_PERSONA_RESET_URL", "http://127.0.0.1:8081/persona/reset").strip()
 
+# Streaming endpoint
+QUANTUM_CHAT_STREAM_URL = os.getenv("QUANTUM_CHAT_STREAM_URL", "http://127.0.0.1:8081/chat/stream").strip()
+
+# Streaming configuration
+TELEGRAM_STREAMING_ENABLED = os.getenv("TELEGRAM_STREAMING_ENABLED", "0").strip() in ("1", "true", "True", "yes")
+
 # UI flags
 SOURCE_PREVIEW = os.getenv("TELEGRAM_SOURCE_PREVIEW", "0").strip() != "0"  # anteprime Telegram
 SHOW_SOURCES = os.getenv("TELEGRAM_SHOW_SOURCES", "1").strip() != "0"      # mostra elenco fonti
@@ -102,6 +108,19 @@ try:
 except Exception as e:
     _smart_intent = None
     log.warning(f"⚠️ SmartIntentClassifier not available: {e}")
+
+# === Streaming handler (if enabled) ===
+_streaming_handler = None
+if TELEGRAM_STREAMING_ENABLED:
+    try:
+        from agents.telegram_streaming_handler import TelegramStreamingHandler
+        log.info("✅ Streaming handler loaded (will initialize on startup)")
+    except Exception as e:
+        log.error(f"❌ Failed to load streaming handler: {e}")
+        TELEGRAM_STREAMING_ENABLED = False
+
+# === Per-user streaming preferences ===
+_user_streaming_prefs: dict[int, bool] = {}  # chat_id -> streaming_enabled
 
 # === Constants ===
 TG_MAX = 4096
@@ -287,9 +306,22 @@ def _detect_live_type(q: str) -> str | None:
 
 async def on_startup(app):
     app.bot_data["http"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180))
+    
+    # Initialize streaming handler if enabled
+    global _streaming_handler
+    if TELEGRAM_STREAMING_ENABLED:
+        try:
+            from agents.telegram_streaming_handler import TelegramStreamingHandler
+            _streaming_handler = TelegramStreamingHandler(app.bot)
+            log.info("✅ Streaming handler initialized")
+        except Exception as e:
+            log.error(f"❌ Failed to initialize streaming handler: {e}")
+    
+    streaming_status = "ENABLED" if TELEGRAM_STREAMING_ENABLED else "DISABLED"
     log.info(
         "🌐 HTTP session ready\n"
         "  Chat endpoint: %s\n"
+        "  Streaming: %s (%s)\n"
         "  System status: %s\n"
         "  AutoBug: %s\n"
         "  Math: %s\n"
@@ -298,6 +330,8 @@ async def on_startup(app):
         "  Web summarize: %s\n"
         "  Web research: %s",
         BACKEND_CHAT_URL,
+        streaming_status,
+        QUANTUM_CHAT_STREAM_URL if TELEGRAM_STREAMING_ENABLED else "N/A",
         QUANTUM_SYSTEM_STATUS_URL,
         QUANTUM_AUTOBUG_URL,
         QUANTUM_MATH_URL,
@@ -343,6 +377,59 @@ async def _post_json_retry(http: aiohttp.ClientSession, url: str, payload: dict)
         log.warning("⚠️ Retry %s per %s: %s", status, url, payload.get("q") or payload.get("url") or "")
         status, data, txt = await _post_json(http, url, payload)
     return status, data, txt
+
+
+def is_streaming_enabled_for_user(chat_id: int) -> bool:
+    """Check if streaming is enabled for a specific user."""
+    # Global setting must be enabled
+    if not TELEGRAM_STREAMING_ENABLED:
+        return False
+    
+    # Check user preference (default to True if streaming is globally enabled)
+    return _user_streaming_prefs.get(chat_id, True)
+
+
+def set_user_streaming_preference(chat_id: int, enabled: bool):
+    """Set streaming preference for a specific user."""
+    _user_streaming_prefs[chat_id] = enabled
+    log.info(f"User {chat_id} streaming preference: {enabled}")
+
+
+async def call_chat_streaming(
+    text: str,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    initial_message = None
+) -> tuple[str, bool]:
+    """
+    Call chat endpoint with streaming support.
+    
+    Returns:
+        (response_text, success)
+    """
+    if not _streaming_handler:
+        return "", False
+    
+    # Prepare payload (same as non-streaming)
+    payload = {
+        "text": text,
+        "source": "tg",
+        "source_id": str(chat_id)
+    }
+    
+    # Use streaming handler
+    try:
+        response_text, success = await _streaming_handler.stream_response(
+            chat_id=chat_id,
+            url=QUANTUM_CHAT_STREAM_URL,
+            payload=payload,
+            initial_message=initial_message,
+            on_error=lambda err: log.error(f"Streaming error: {err}")
+        )
+        return response_text, success
+    except Exception as e:
+        log.error(f"Streaming failed: {e}")
+        return "", False
 
 
 async def call_chat(text: str, http: aiohttp.ClientSession, chat_id: int) -> dict:
@@ -527,10 +614,20 @@ async def call_web_read(url: str, http: aiohttp.ClientSession, chat_id: int) -> 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     autoweb_status = "🤖 Autoweb INTELLIGENTE ATTIVO (3 livelli)" if _smart_intent else "⚠️ Autoweb NON DISPONIBILE"
+    
+    streaming_info = ""
+    if TELEGRAM_STREAMING_ENABLED:
+        chat_id = update.effective_chat.id
+        user_streaming = is_streaming_enabled_for_user(chat_id)
+        streaming_emoji = "⚡" if user_streaming else "📝"
+        streaming_status = "ATTIVO" if user_streaming else "DISATTIVO"
+        streaming_info = f"\n• {streaming_emoji} Streaming: {streaming_status} (usa /streaming per cambiare)"
+    
     await update.message.reply_text(
         "🧠 Jarvis – AI personale di Matteo (QuantumDev)\n"
         "\n"
         f"{autoweb_status}\n"
+        f"{streaming_info}\n"
         "\n"
         "• 💬 Chatta normalmente per usare Jarvis su qualsiasi tema (business, crypto, coding, vita reale…)\n"
         "• 🌐 Autoweb intelligente con 3 livelli:\n"
@@ -552,6 +649,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    streaming_line = ""
+    if TELEGRAM_STREAMING_ENABLED:
+        streaming_line = "• /streaming [on|off] – attiva/disattiva risposte progressive\n"
+    
     await update.message.reply_text(
         "Comandi disponibili:\n"
         "• /start – riepilogo funzioni di Jarvis (AI personale)\n"
@@ -566,6 +667,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /persona – mostra la persona attuale del bot per questa chat\n"
         "• /persona_set <testo> – imposta una persona custom per questa chat\n"
         "• /persona_reset – resetta la persona per questa chat\n"
+        f"{streaming_line}"
         "• /flushcache – svuota Redis (solo admin)"
     )
 
@@ -721,6 +823,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Fallback to chat below
     
     # ========== LIVELLO 3: Fallback a /chat ==========
+    # Check if streaming is enabled for this user
+    use_streaming = is_streaming_enabled_for_user(chat_id)
+    
+    if use_streaming:
+        # Try streaming first
+        try:
+            reply, success = await call_chat_streaming(text, chat_id, context)
+            if success and reply:
+                # Streaming succeeded - message already updated progressively
+                return
+            else:
+                # Streaming failed, fall back to non-streaming
+                log.warning("Streaming failed, falling back to non-streaming")
+        except Exception as e:
+            log.error(f"Streaming error: {e}, falling back to non-streaming")
+    
+    # Non-streaming fallback (or if streaming is disabled)
     data = await call_chat(text, http, chat_id)
     reply = (data.get("reply") or "").strip()
     
@@ -844,6 +963,66 @@ async def persona_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Persona resettata.")
     except Exception as e:
         await update.message.reply_text(f"❌ Errore persona/reset: {e}")
+
+
+async def streaming_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /streaming command - Toggle streaming mode on/off for this user.
+    
+    Usage:
+        /streaming - Show current status
+        /streaming on - Enable streaming
+        /streaming off - Disable streaming
+    """
+    if not TELEGRAM_STREAMING_ENABLED:
+        await update.message.reply_text(
+            "⚠️ Il supporto streaming non è abilitato su questo bot.\n"
+            "L'amministratore deve impostare TELEGRAM_STREAMING_ENABLED=1 nel .env"
+        )
+        return
+    
+    chat_id = update.effective_chat.id
+    text = update.message.text or ""
+    args = text.split()[1:] if len(text.split()) > 1 else []
+    
+    if not args:
+        # Show current status
+        current = is_streaming_enabled_for_user(chat_id)
+        status_emoji = "✅" if current else "❌"
+        status_text = "ATTIVO" if current else "DISATTIVO"
+        await update.message.reply_text(
+            f"{status_emoji} Streaming: {status_text}\n\n"
+            "Usa:\n"
+            "• /streaming on - per attivare le risposte progressive\n"
+            "• /streaming off - per disattivare\n\n"
+            "Con lo streaming attivo, vedrai le risposte apparire parola per parola "
+            "invece di aspettare la risposta completa."
+        )
+        return
+    
+    action = args[0].lower()
+    
+    if action in ("on", "enable", "1", "true", "yes", "attiva"):
+        set_user_streaming_preference(chat_id, True)
+        await update.message.reply_text(
+            "✅ Streaming ATTIVATO\n\n"
+            "Da ora vedrai le risposte apparire progressivamente, "
+            "parola per parola, mentre vengono generate."
+        )
+    elif action in ("off", "disable", "0", "false", "no", "disattiva"):
+        set_user_streaming_preference(chat_id, False)
+        await update.message.reply_text(
+            "❌ Streaming DISATTIVATO\n\n"
+            "Da ora riceverai le risposte complete in un singolo messaggio."
+        )
+    else:
+        await update.message.reply_text(
+            "⚠️ Comando non valido.\n\n"
+            "Usa:\n"
+            "• /streaming on - per attivare\n"
+            "• /streaming off - per disattivare\n"
+            "• /streaming - per vedere lo stato attuale"
+        )
 
 
 # === NEW TELEGRAM COMMANDS ===
@@ -1159,6 +1338,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("persona", persona_get))
     app.add_handler(CommandHandler("persona_set", persona_set))
     app.add_handler(CommandHandler("persona_reset", persona_reset))
+    
+    # Streaming command (if enabled)
+    if TELEGRAM_STREAMING_ENABLED:
+        app.add_handler(CommandHandler("streaming", streaming_cmd))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
