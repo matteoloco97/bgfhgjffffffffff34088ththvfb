@@ -12,6 +12,7 @@ Author: QuantumDev
 """
 
 import os
+import re
 import logging
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
@@ -311,8 +312,6 @@ def extract_relationships(text: str) -> List[Dict[str, str]]:
     Returns:
         List of relationship dicts with source, target, and relation type
     """
-    import re
-    
     relationships = []
     
     # English patterns
@@ -362,6 +361,19 @@ def download_spacy_model(model_name: str = SPACY_MODEL) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    # Whitelist of allowed spaCy models to prevent command injection
+    ALLOWED_MODELS = {
+        "en_core_web_sm", "en_core_web_md", "en_core_web_lg",
+        "it_core_news_sm", "it_core_news_md", "it_core_news_lg",
+        "de_core_news_sm", "de_core_news_md", "de_core_news_lg",
+        "fr_core_news_sm", "fr_core_news_md", "fr_core_news_lg",
+        "es_core_news_sm", "es_core_news_md", "es_core_news_lg",
+    }
+    
+    if model_name not in ALLOWED_MODELS:
+        log.error(f"Model {model_name} not in whitelist. Allowed models: {ALLOWED_MODELS}")
+        return False
+    
     try:
         import spacy
         

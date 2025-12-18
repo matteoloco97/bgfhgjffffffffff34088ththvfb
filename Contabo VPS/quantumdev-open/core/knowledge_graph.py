@@ -23,6 +23,21 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+# Lazy import numpy for semantic similarity
+_np = None
+
+def _get_numpy():
+    """Lazy import numpy."""
+    global _np
+    if _np is None:
+        try:
+            import numpy as np
+            _np = np
+        except ImportError:
+            log.warning("NumPy not installed, semantic similarity will be limited")
+            _np = False
+    return _np if _np is not False else None
+
 # Environment configuration
 ENABLE_KNOWLEDGE_GRAPH = os.getenv("ENABLE_KNOWLEDGE_GRAPH", "1").strip() in ("1", "true", "yes", "on")
 KG_SIMILARITY_THRESHOLD = float(os.getenv("KG_SIMILARITY_THRESHOLD", "0.6"))
@@ -56,8 +71,8 @@ def _get_embedding_function():
         try:
             from sentence_transformers import SentenceTransformer
             model_name = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-            # Extract just the model name (e.g., "all-MiniLM-L6-v2" from the full path)
-            model_name = model_name.split("/")[-1] if "/" in model_name else model_name
+            # Use the full model name as-is for SentenceTransformer
+            # SentenceTransformer handles both formats: "org/model" and "model"
             _embedding_function = SentenceTransformer(model_name)
             log.info(f"Loaded embedding model: {model_name}")
         except Exception as e:
@@ -269,11 +284,14 @@ class KnowledgeGraph:
             return 0.0
         
         try:
+            np = _get_numpy()
+            if np is None:
+                return 0.0
+            
             # Get embeddings
             embeddings = embed_fn.encode([concept1, concept2])
             
             # Compute cosine similarity
-            import numpy as np
             similarity = float(np.dot(embeddings[0], embeddings[1]) / 
                              (np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])))
             

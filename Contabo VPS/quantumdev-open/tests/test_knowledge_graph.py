@@ -217,7 +217,7 @@ class TestKnowledgeGraph(unittest.TestCase):
     def test_cleanup_old_concepts(self):
         """Test cleaning up old isolated concepts."""
         # Add an isolated concept with old timestamp
-        self.kg.add_concept("OldIsolated", "TECH", {"created_at": 0})
+        self.kg.add_concept("OldIsolated", "TECH", metadata={"created_at": 0})
         
         # Run cleanup
         removed = self.kg.cleanup_old_concepts(days=1)
