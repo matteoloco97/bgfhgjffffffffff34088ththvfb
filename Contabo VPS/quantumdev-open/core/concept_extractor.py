@@ -38,18 +38,22 @@ def _get_nlp():
     if _nlp is None or _nlp_model_name != SPACY_MODEL:
         try:
             import spacy
-            _nlp = spacy.load(SPACY_MODEL)
-            _nlp_model_name = SPACY_MODEL
-            log.info(f"Loaded spaCy model: {SPACY_MODEL}")
-        except OSError:
-            log.warning(f"spaCy model {SPACY_MODEL} not found, using blank model")
-            import spacy
-            # Create blank model if specific model not available
-            lang = SPACY_MODEL.split("_")[0] if "_" in SPACY_MODEL else "en"
-            _nlp = spacy.blank(lang)
-            _nlp_model_name = f"blank_{lang}"
+            try:
+                _nlp = spacy.load(SPACY_MODEL)
+                _nlp_model_name = SPACY_MODEL
+                log.info(f"Loaded spaCy model: {SPACY_MODEL}")
+            except OSError:
+                log.warning(f"spaCy model {SPACY_MODEL} not found, using blank model")
+                # Create blank model if specific model not available
+                lang = SPACY_MODEL.split("_")[0] if "_" in SPACY_MODEL else "en"
+                _nlp = spacy.blank(lang)
+                _nlp_model_name = f"blank_{lang}"
+        except ImportError:
+            log.warning("spaCy not installed, concept extraction will be limited")
+            _nlp = False
+            _nlp_model_name = "none"
     
-    return _nlp
+    return _nlp if _nlp is not False else None
 
 
 # Common stopwords and noise terms (language-agnostic)
@@ -136,9 +140,47 @@ def _normalize_concept(text: str) -> str:
     return text.strip()
 
 
+def _extract_concepts_fallback(text: str, context: str = "") -> List[Concept]:
+    """
+    Fallback concept extraction without spaCy (pattern-based).
+    Extracts tech terms and capitalized words.
+    """
+    concepts: Set[Concept] = set()
+    
+    # Split into words
+    words = text.split()
+    
+    # Extract capitalized words (potential entities/concepts)
+    for word in words:
+        word = word.strip('.,!?;:()[]{}\"\'')
+        if _is_valid_concept(word) and word[0].isupper():
+            normalized = _normalize_concept(word)
+            concepts.add(Concept(
+                text=normalized,
+                type="CONCEPT",
+                context=context,
+                confidence=0.6
+            ))
+    
+    # Extract known tech terms
+    for word in words:
+        word_lower = word.lower().strip('.,!?;:()[]{}\"\'')
+        if word_lower in TECH_TERMS:
+            normalized = _normalize_concept(word)
+            concepts.add(Concept(
+                text=normalized,
+                type="TECH",
+                context=context,
+                confidence=0.8
+            ))
+    
+    return sorted(list(concepts), key=lambda c: c.confidence, reverse=True)
+
+
 def extract_concepts(text: str, context: str = "") -> List[Concept]:
     """
     Extract concepts from text using spaCy NLP.
+    Falls back to pattern-based extraction if spaCy not available.
     
     Args:
         text: Input text to analyze
@@ -152,8 +194,8 @@ def extract_concepts(text: str, context: str = "") -> List[Concept]:
     
     nlp = _get_nlp()
     if nlp is None:
-        log.warning("spaCy NLP not available")
-        return []
+        log.debug("spaCy NLP not available, using fallback extraction")
+        return _extract_concepts_fallback(text, context)
     
     concepts: Set[Concept] = set()
     
