@@ -49,6 +49,23 @@ def _get_vector_memory():
             _vector_memory = False
     return _vector_memory if _vector_memory is not False else None
 
+# Import knowledge graph (lazy to avoid circular dependencies)
+_kg = None
+
+def _get_knowledge_graph():
+    """Lazy import of knowledge graph."""
+    global _kg
+    if _kg is None:
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            _kg = get_knowledge_graph()
+            if _kg:
+                log.info("Knowledge graph integration enabled for conversational memory")
+        except Exception as e:
+            log.debug(f"Knowledge graph not available: {e}")
+            _kg = False
+    return _kg if _kg is not False else None
+
 # === ENV Configuration ===
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name, str(default)) or str(default)
@@ -404,6 +421,45 @@ class ConversationalMemory:
             except Exception as e:
                 log.warning(f"Failed to store in vector memory: {e}")
         
+        # Update knowledge graph with concepts from conversation
+        kg = _get_knowledge_graph()
+        if kg:
+            try:
+                from core.concept_extractor import extract_concepts, extract_relationships
+                
+                # Extract concepts from both user message and assistant response
+                combined_text = f"{user_message} {assistant_response}"
+                concepts = extract_concepts(combined_text, context=f"conversation:{session.session_id}")
+                
+                # Add concepts to graph
+                for concept in concepts[:10]:  # Limit to top 10
+                    kg.add_concept(
+                        concept.text,
+                        concept.type,
+                        {
+                            "session_id": session.session_id,
+                            "source": source,
+                            "turn": session.turn_count
+                        }
+                    )
+                
+                # Extract and add explicit relationships
+                relationships = extract_relationships(combined_text)
+                for rel in relationships:
+                    kg.add_relationship(rel["source"], rel["target"], rel["relation"], weight=0.85)
+                
+                # Infer relationships between extracted concepts
+                if len(concepts) > 1:
+                    for i, concept in enumerate(concepts[:5]):
+                        other_concepts = [c.text for j, c in enumerate(concepts) if j != i][:5]
+                        inferred = kg.infer_relationships(concept.text, other_concepts)
+                        for target, similarity in inferred[:2]:
+                            kg.add_relationship(concept.text, target, "semantic_similarity", similarity)
+                
+                log.debug(f"Updated knowledge graph with {len(concepts)} concepts from conversation")
+            except Exception as e:
+                log.debug(f"Failed to update knowledge graph: {e}")
+        
         # Check if summarization needed
         if session.needs_summarization() and self.llm_func:
             await self._summarize_session(session)
@@ -642,6 +698,42 @@ class ConversationalMemory:
                     "content": summary_msg,
                 })
                 tokens_used += summary_tokens
+        
+        # Add knowledge graph context if available
+        kg = _get_knowledge_graph()
+        if kg and session.messages:
+            try:
+                from core.concept_extractor import extract_concepts
+                
+                # Extract concepts from recent messages
+                recent_text = " ".join([m.content for m in session.get_recent_messages(5)])
+                concepts = extract_concepts(recent_text)
+                
+                # Build knowledge graph context
+                kg_relationships = []
+                for concept in concepts[:3]:  # Top 3 concepts
+                    related = kg.find_related(concept.text, depth=1, max_results=3)
+                    for rel in related:
+                        kg_relationships.append(
+                            f"{concept.text} → {rel.concept} ({rel.relation_type})"
+                        )
+                
+                if kg_relationships:
+                    kg_msg = (
+                        "KNOWLEDGE GRAPH CONTEXT:\n" +
+                        "\n".join(kg_relationships[:5]) +  # Limit to 5
+                        "\n\nUse this relational knowledge when relevant."
+                    )
+                    kg_tokens = approx_tokens(kg_msg)
+                    if tokens_used + kg_tokens < max_tokens:
+                        messages.append({
+                            "role": "system",
+                            "content": kg_msg,
+                        })
+                        tokens_used += kg_tokens
+                        log.debug("Added knowledge graph context to conversation")
+            except Exception as e:
+                log.debug(f"Failed to add knowledge graph context: {e}")
         
         # Add recent messages (from sliding window)
         for msg in session.get_recent_messages(SLIDING_WINDOW_SIZE):
