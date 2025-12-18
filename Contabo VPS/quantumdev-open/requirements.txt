@@ -40,6 +40,7 @@ typing-extensions>=4.8.0
 # System monitoring
 psutil>=5.9.0
 nvidia-ml-py>=12.535.0  # pynvml - optional for GPU monitoring
+paramiko>=3.0.0  # SSH for remote GPU monitoring
 
 # HTTP and async support
 httpx>=0.25.0  # For streaming support

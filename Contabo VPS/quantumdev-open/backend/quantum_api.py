@@ -1771,6 +1771,80 @@ def system_status() -> Dict[str, Any]:
         }
 
 
+# --------- GPU Monitoring ---------
+@app.get("/system/gpu")
+def gpu_status(force_refresh: bool = False, history_minutes: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Get GPU metrics from remote monitoring system.
+    
+    Query Parameters:
+        force_refresh: If true, bypass cache and fetch fresh metrics (default: false)
+        history_minutes: If provided, include historical metrics for N minutes
+    
+    Returns:
+        {
+            "current": {
+                "gpus": [...],
+                "status": "ok" | "cached" | "error" | "unknown",
+                "error": str | None,
+                "timestamp": str (ISO 8601),
+                "cache_age_seconds": float | None
+            },
+            "history": [...] (optional, if history_minutes provided),
+            "health": {
+                "is_healthy": bool,
+                "alerts": [str, ...]
+            }
+        }
+    
+    HTTP 200 always.
+    """
+    try:
+        from core.gpu_monitor import get_gpu_monitor
+        
+        monitor = get_gpu_monitor()
+        
+        # Get current metrics
+        current = monitor.get_metrics(force_refresh=force_refresh)
+        
+        # Get history if requested
+        history = None
+        if history_minutes is not None and history_minutes > 0:
+            history = monitor.get_metrics_history(minutes=history_minutes)
+        
+        # Get health status
+        is_healthy = monitor.is_healthy()
+        should_alert, alerts = monitor.should_alert()
+        
+        return {
+            "current": current,
+            "history": history,
+            "health": {
+                "is_healthy": is_healthy,
+                "should_alert": should_alert,
+                "alerts": alerts,
+            },
+        }
+        
+    except Exception as e:
+        log.error(f"GPU status endpoint failed: {e}")
+        return {
+            "current": {
+                "gpus": [],
+                "status": "error",
+                "error": f"endpoint_exception: {str(e)}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cache_age_seconds": None,
+            },
+            "history": None,
+            "health": {
+                "is_healthy": False,
+                "should_alert": True,
+                "alerts": [f"GPU monitoring error: {str(e)}"],
+            },
+        }
+
+
 # --------- AutoBug Health Checks ---------
 @app.post("/autobug/run")
 def autobug_run() -> Dict[str, Any]:
