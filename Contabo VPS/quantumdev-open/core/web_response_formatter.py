@@ -468,16 +468,27 @@ async def format_web_response(
     ... )
     >>> len(response.split()) <= 50  # True
     """
+    import time
+    t0 = time.time()
+    
     if not extracts:
         log.warning("No extracts provided for web response formatting")
         return "Nessuna informazione trovata."
     
-    # Build concise prompt
+    # [PERF] Extract phase
+    t_extract = time.time()
+    # Build concise prompt (uses smart_trim internally)
     prompt = _build_concise_prompt(query, extracts)
+    extract_time = time.time() - t_extract
+    log.info(f"[PERF] Extract phase: {extract_time:.3f}s")
     
     try:
+        # [PERF] Synthesize phase
+        t_synth = time.time()
         # Call LLM
         response = await llm_func(prompt, persona)
+        synth_time = time.time() - t_synth
+        log.info(f"[PERF] Synthesize phase: {synth_time:.3f}s")
         
         if not response:
             log.warning("LLM returned empty response")
@@ -497,9 +508,11 @@ async def format_web_response(
                 f"target was {MAX_RESPONSE_WORDS}"
             )
         
+        total_time = time.time() - t0
         log.info(
-            f"Formatted web response: {word_count} words, "
-            f"~{len(response) // 4} tokens"
+            f"[PERF] format_web_response total: {total_time:.3f}s "
+            f"(extract={extract_time:.3f}s, synth={synth_time:.3f}s) | "
+            f"{word_count} words, ~{len(response) // 4} tokens"
         )
         
         return response
