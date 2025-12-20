@@ -132,12 +132,27 @@ class KnowledgeGraph:
             return False
         
         try:
+            import json
             loaded_graph = nx.read_graphml(KG_PERSIST_PATH)
+            
             # Convert to DiGraph if needed
             if not isinstance(loaded_graph, nx.DiGraph):
                 self.graph = nx.DiGraph(loaded_graph)
             else:
                 self.graph = loaded_graph
+            
+            # Deserialize JSON strings back to lists/dicts
+            for node, data in self.graph.nodes(data=True):
+                for key, value in list(data.items()):
+                    if isinstance(value, str):
+                        try:
+                            # Try to parse as JSON
+                            parsed = json.loads(value)
+                            if isinstance(parsed, (list, dict)):
+                                data[key] = parsed
+                        except (json.JSONDecodeError, ValueError):
+                            # Not JSON, keep as string
+                            pass
             
             log.info(f"Loaded knowledge graph from {KG_PERSIST_PATH}")
             return True
@@ -156,8 +171,17 @@ class KnowledgeGraph:
             # Create directory if needed
             os.makedirs(os.path.dirname(KG_PERSIST_PATH), exist_ok=True)
             
+            # Create a copy for serialization (convert lists to JSON strings)
+            import json
+            graph_copy = self.graph.copy()
+            for node, data in graph_copy.nodes(data=True):
+                for key, value in list(data.items()):
+                    if isinstance(value, (list, dict)):
+                        # Convert complex types to JSON strings for GraphML compatibility
+                        data[key] = json.dumps(value)
+            
             # Save as GraphML
-            nx.write_graphml(self.graph, KG_PERSIST_PATH)
+            nx.write_graphml(graph_copy, KG_PERSIST_PATH)
             log.info(f"Saved knowledge graph to {KG_PERSIST_PATH}")
             return True
         except Exception as e:
