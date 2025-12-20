@@ -20,6 +20,23 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+# Lazy import knowledge graph
+_kg = None
+
+def _get_knowledge_graph():
+    """Lazy import of knowledge graph."""
+    global _kg
+    if _kg is None:
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            _kg = get_knowledge_graph()
+            if _kg:
+                log.info("Knowledge graph integration enabled for user profile memory")
+        except Exception as e:
+            log.debug(f"Knowledge graph not available: {e}")
+            _kg = False
+    return _kg if _kg is not False else None
+
 # Environment configuration - OTTIMIZZATO
 USER_PROFILE_COLLECTION = os.getenv("USER_PROFILE_COLLECTION", "user_profile")
 USER_PROFILE_ENABLED = os.getenv("USER_PROFILE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
@@ -182,6 +199,34 @@ def save_user_profile_fact(
             metadatas=[doc_metadata]
         )
         
+        # Extract concepts and add to knowledge graph
+        kg = _get_knowledge_graph()
+        if kg:
+            try:
+                from core.concept_extractor import extract_concepts, extract_relationships
+                
+                # Extract concepts from fact
+                concepts = extract_concepts(fact_text, context=f"user_profile:{category}")
+                for concept in concepts[:5]:  # Limit to top 5 concepts
+                    kg.add_concept(concept.text, concept.type, {"category": category, "user_id": user_id})
+                
+                # Extract explicit relationships
+                relationships = extract_relationships(fact_text)
+                for rel in relationships:
+                    kg.add_relationship(rel["source"], rel["target"], rel["relation"], weight=0.9)
+                
+                # Infer semantic relationships between extracted concepts
+                if len(concepts) > 1:
+                    for i, concept in enumerate(concepts[:3]):
+                        other_concepts = [c.text for j, c in enumerate(concepts) if j != i][:5]
+                        inferred = kg.infer_relationships(concept.text, other_concepts)
+                        for target, similarity in inferred[:2]:  # Top 2 inferred relationships
+                            kg.add_relationship(concept.text, target, "semantic_similarity", similarity)
+                
+                log.debug(f"Added {len(concepts)} concepts to knowledge graph from fact")
+            except Exception as e:
+                log.warning(f"Failed to update knowledge graph: {e}")
+        
         log.info(f"Saved user profile fact: {doc_id} (category={category})")
         return doc_id
         
@@ -256,7 +301,36 @@ def query_user_profile(
         
         # Sort by similarity (descending) and limit to top_k
         facts.sort(key=lambda x: x["similarity"], reverse=True)
-        return facts[:top_k]
+        facts = facts[:top_k]
+        
+        # Enrich with knowledge graph context
+        kg = _get_knowledge_graph()
+        if kg:
+            try:
+                from core.concept_extractor import extract_concepts
+                
+                # Extract concepts from query
+                query_concepts = extract_concepts(query_text)
+                
+                # For each concept, find related concepts in graph
+                graph_context = []
+                for concept in query_concepts[:3]:  # Top 3 concepts
+                    related = kg.find_related(concept.text, depth=2, max_results=5)
+                    if related:
+                        graph_context.extend([
+                            f"{concept.text} -> {rel.concept} ({rel.relation_type})"
+                            for rel in related[:3]
+                        ])
+                
+                # Add graph context to metadata if available
+                if graph_context:
+                    for fact in facts:
+                        fact["kg_context"] = graph_context[:5]  # Limit to 5 relationships
+                        
+            except Exception as e:
+                log.debug(f"Failed to enrich with knowledge graph: {e}")
+        
+        return facts
         
     except Exception as e:
         log.error(f"Failed to query user profile: {e}")
