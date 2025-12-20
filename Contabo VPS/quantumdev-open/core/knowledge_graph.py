@@ -45,6 +45,9 @@ KG_PERSIST_PATH = os.getenv("KG_PERSIST_PATH", "./data/knowledge_graph.graphml")
 KG_MAX_NODES = int(os.getenv("KG_MAX_NODES", "10000"))
 KG_MAX_EDGES_PER_NODE = int(os.getenv("KG_MAX_EDGES_PER_NODE", "50"))
 
+# Clustering configuration
+LOUVAIN_RANDOM_SEED = int(os.getenv("LOUVAIN_RANDOM_SEED", "42"))  # Random seed for reproducible clustering
+
 # Lazy imports
 _nx = None
 _embedding_function = None
@@ -132,12 +135,27 @@ class KnowledgeGraph:
             return False
         
         try:
+            import json
             loaded_graph = nx.read_graphml(KG_PERSIST_PATH)
+            
             # Convert to DiGraph if needed
             if not isinstance(loaded_graph, nx.DiGraph):
                 self.graph = nx.DiGraph(loaded_graph)
             else:
                 self.graph = loaded_graph
+            
+            # Deserialize JSON strings back to lists/dicts
+            for node, data in self.graph.nodes(data=True):
+                for key, value in list(data.items()):
+                    if isinstance(value, str):
+                        try:
+                            # Try to parse as JSON
+                            parsed = json.loads(value)
+                            if isinstance(parsed, (list, dict)):
+                                data[key] = parsed
+                        except (json.JSONDecodeError, ValueError):
+                            # Not JSON, keep as string
+                            pass
             
             log.info(f"Loaded knowledge graph from {KG_PERSIST_PATH}")
             return True
@@ -156,8 +174,17 @@ class KnowledgeGraph:
             # Create directory if needed
             os.makedirs(os.path.dirname(KG_PERSIST_PATH), exist_ok=True)
             
+            # Create a copy for serialization (convert lists to JSON strings)
+            import json
+            graph_copy = self.graph.copy()
+            for node, data in graph_copy.nodes(data=True):
+                for key, value in list(data.items()):
+                    if isinstance(value, (list, dict)):
+                        # Convert complex types to JSON strings for GraphML compatibility
+                        data[key] = json.dumps(value)
+            
             # Save as GraphML
-            nx.write_graphml(self.graph, KG_PERSIST_PATH)
+            nx.write_graphml(graph_copy, KG_PERSIST_PATH)
             log.info(f"Saved knowledge graph to {KG_PERSIST_PATH}")
             return True
         except Exception as e:
@@ -540,6 +567,303 @@ class KnowledgeGraph:
             log.info(f"Cleaned up {len(to_remove)} old isolated concepts")
         
         return len(to_remove)
+    
+    def find_related_multi_hop(
+        self,
+        concept: str,
+        max_depth: int = 3,
+        max_results: int = 20
+    ) -> Dict[int, List[RelatedConcept]]:
+        """
+        Find related concepts at multiple depths (1-hop, 2-hop, 3-hop).
+        Results are grouped by distance for ranking.
+        
+        Args:
+            concept: Source concept
+            max_depth: Maximum graph distance (1-3 recommended)
+            max_results: Maximum total results across all hops
+            
+        Returns:
+            Dict mapping distance (1, 2, 3) to list of RelatedConcept objects
+        """
+        nx = _get_networkx()
+        if not self.graph.has_node(concept):
+            log.debug(f"Concept not in graph: {concept}")
+            return {}
+        
+        results_by_hop: Dict[int, List[RelatedConcept]] = {}
+        visited = {concept}
+        current_level = {concept}
+        
+        try:
+            for depth in range(1, min(max_depth + 1, 4)):  # Cap at 3 hops
+                next_level = set()
+                hop_results = []
+                
+                for node in current_level:
+                    # Out edges
+                    for neighbor in self.graph.neighbors(node):
+                        if neighbor not in visited:
+                            edge_data = self.graph.edges[node, neighbor]
+                            hop_results.append(RelatedConcept(
+                                concept=neighbor,
+                                relation_type=edge_data.get("relation", "related_to"),
+                                weight=edge_data.get("weight", 1.0),
+                                distance=depth
+                            ))
+                            visited.add(neighbor)
+                            next_level.add(neighbor)
+                    
+                    # In edges
+                    for predecessor in self.graph.predecessors(node):
+                        if predecessor not in visited:
+                            edge_data = self.graph.edges[predecessor, node]
+                            hop_results.append(RelatedConcept(
+                                concept=predecessor,
+                                relation_type=edge_data.get("relation", "related_to"),
+                                weight=edge_data.get("weight", 1.0),
+                                distance=depth
+                            ))
+                            visited.add(predecessor)
+                            next_level.add(predecessor)
+                
+                # Sort by weight (descending)
+                hop_results.sort(key=lambda x: x.weight, reverse=True)
+                results_by_hop[depth] = hop_results
+                
+                current_level = next_level
+                
+                # Early termination if we have enough results
+                total_results = sum(len(v) for v in results_by_hop.values())
+                if total_results >= max_results:
+                    break
+        
+        except Exception as e:
+            log.error(f"Error in multi-hop traversal: {e}")
+        
+        return results_by_hop
+    
+    def detect_communities(self, min_cluster_size: int = 3) -> Dict[str, int]:
+        """
+        Detect concept clusters using Louvain community detection.
+        
+        Args:
+            min_cluster_size: Minimum number of nodes in a valid cluster
+            
+        Returns:
+            Dict mapping concept name to cluster ID
+        """
+        nx = _get_networkx()
+        
+        # Check if we have enough nodes
+        if self.graph.number_of_nodes() < min_cluster_size:
+            log.debug(f"Not enough nodes ({self.graph.number_of_nodes()}) for clustering")
+            return {}
+        
+        try:
+            # Try to import community detection
+            try:
+                import networkx.algorithms.community as nx_comm
+            except ImportError:
+                log.warning("NetworkX community module not available")
+                return {}
+            
+            # Convert directed graph to undirected for community detection
+            undirected = self.graph.to_undirected()
+            
+            # Run Louvain algorithm
+            communities = nx_comm.louvain_communities(undirected, seed=LOUVAIN_RANDOM_SEED)
+            
+            # Build concept -> cluster mapping
+            concept_to_cluster = {}
+            valid_cluster_id = 0
+            
+            for cluster_id, community in enumerate(communities):
+                # Only keep clusters above minimum size
+                if len(community) >= min_cluster_size:
+                    for concept in community:
+                        concept_to_cluster[concept] = valid_cluster_id
+                    valid_cluster_id += 1
+            
+            log.info(f"Detected {valid_cluster_id} clusters from {len(communities)} communities")
+            return concept_to_cluster
+            
+        except Exception as e:
+            log.error(f"Community detection failed: {e}")
+            return {}
+    
+    def get_cluster_info(self, cluster_id: int, concept_clusters: Dict[str, int]) -> Dict[str, Any]:
+        """
+        Get information about a specific cluster.
+        
+        Args:
+            cluster_id: The cluster ID
+            concept_clusters: Mapping from concept to cluster ID
+            
+        Returns:
+            Dict with cluster metadata
+        """
+        # Get all concepts in this cluster
+        cluster_concepts = [
+            concept for concept, cid in concept_clusters.items() 
+            if cid == cluster_id
+        ]
+        
+        if not cluster_concepts:
+            return {"cluster_id": cluster_id, "size": 0, "concepts": []}
+        
+        # Count concept types in cluster
+        type_counts = {}
+        for concept in cluster_concepts:
+            if self.graph.has_node(concept):
+                node_data = self.graph.nodes[concept]
+                concept_type = node_data.get("type", "UNKNOWN")
+                type_counts[concept_type] = type_counts.get(concept_type, 0) + 1
+        
+        # Determine dominant type (cluster label)
+        dominant_type = max(type_counts.items(), key=lambda x: x[1])[0] if type_counts else "UNKNOWN"
+        
+        # Sample key concepts (sorted by degree centrality)
+        degrees = {concept: self.graph.degree(concept) for concept in cluster_concepts}
+        key_concepts = sorted(cluster_concepts, key=lambda c: degrees[c], reverse=True)[:5]
+        
+        return {
+            "cluster_id": cluster_id,
+            "size": len(cluster_concepts),
+            "dominant_type": dominant_type,
+            "type_distribution": type_counts,
+            "key_concepts": key_concepts,
+            "concepts": cluster_concepts,
+        }
+    
+    def update_concept_version(
+        self,
+        concept: str,
+        new_data: Dict[str, Any],
+        version_limit: int = 5
+    ) -> bool:
+        """
+        Update concept with versioned changes. Stores change history.
+        
+        Args:
+            concept: Concept name
+            new_data: New/updated attributes
+            version_limit: Maximum number of versions to keep
+            
+        Returns:
+            True if updated successfully
+        """
+        if not self.graph.has_node(concept):
+            log.warning(f"Cannot version non-existent concept: {concept}")
+            return False
+        
+        node_data = self.graph.nodes[concept]
+        
+        # Get or initialize version history
+        if "version_history" not in node_data:
+            node_data["version_history"] = []
+        
+        # Create version snapshot
+        version = {
+            "timestamp": int(time.time()),
+            "changes": new_data.copy(),
+        }
+        
+        # Add to history
+        node_data["version_history"].append(version)
+        
+        # Limit history size
+        if len(node_data["version_history"]) > version_limit:
+            node_data["version_history"] = node_data["version_history"][-version_limit:]
+        
+        # Apply changes to current node
+        node_data.update(new_data)
+        node_data["updated_at"] = int(time.time())
+        
+        self._last_modified = time.time()
+        log.debug(f"Updated concept version: {concept} (total versions: {len(node_data['version_history'])})")
+        
+        return True
+    
+    def get_concept_evolution(self, concept: str) -> List[Dict[str, Any]]:
+        """
+        Get evolution history of a concept.
+        
+        Args:
+            concept: Concept name
+            
+        Returns:
+            List of version snapshots (oldest to newest)
+        """
+        if not self.graph.has_node(concept):
+            return []
+        
+        node_data = self.graph.nodes[concept]
+        return node_data.get("version_history", [])
+    
+    def suggest_related_topics(
+        self,
+        current_topic: str,
+        top_k: int = 5,
+        use_centrality: bool = True
+    ) -> List[str]:
+        """
+        Suggest related topics based on graph structure.
+        Uses degree centrality or PageRank to find important related concepts.
+        
+        Args:
+            current_topic: Starting concept
+            top_k: Number of suggestions to return
+            use_centrality: Use degree centrality (faster) vs PageRank
+            
+        Returns:
+            List of suggested concept names
+        """
+        nx = _get_networkx()
+        
+        if not self.graph.has_node(current_topic):
+            log.debug(f"Topic not in graph: {current_topic}")
+            return []
+        
+        try:
+            # Get directly related concepts first
+            related = self.find_related(current_topic, depth=2, max_results=top_k * 3)
+            related_concepts = {r.concept for r in related}
+            
+            # Calculate importance scores
+            if use_centrality:
+                # Degree centrality (faster, good enough for most cases)
+                scores = {
+                    node: self.graph.degree(node)
+                    for node in related_concepts
+                }
+            else:
+                # PageRank (slower but more accurate for complex graphs)
+                try:
+                    pagerank = nx.pagerank(self.graph, max_iter=50)
+                    scores = {
+                        node: pagerank.get(node, 0.0)
+                        for node in related_concepts
+                    }
+                except Exception as e:
+                    log.warning(f"PageRank failed, falling back to centrality: {e}")
+                    scores = {
+                        node: self.graph.degree(node)
+                        for node in related_concepts
+                    }
+            
+            # Sort by importance
+            sorted_suggestions = sorted(
+                scores.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+            
+            return [concept for concept, _ in sorted_suggestions[:top_k]]
+            
+        except Exception as e:
+            log.error(f"Error generating suggestions: {e}")
+            return []
 
 
 # === Singleton Instance ===

@@ -501,12 +501,12 @@ class MasterOrchestrator:
                     self._complete_step(trace, f"Loaded {len(context.memory_context)} context messages")
             
             # === STEP 3B: Personal Memory Context (NUOVO) ===
-            # Load user profile + episodic memory
+            # Load user profile + episodic memory with graph enhancement
             personal_memory_context = ""
             try:
                 from core.memory_context_builder import build_memory_context
                 
-                # Build memory context
+                # Build memory context with graph traversal enabled
                 memory_result = build_memory_context(
                     user_id=source_id,
                     query=clean_query,
@@ -515,13 +515,16 @@ class MasterOrchestrator:
                     profile_top_k=_env_int("MEMORY_PROFILE_TOP_K", 5),
                     episodic_top_k=_env_int("MEMORY_EPISODIC_TOP_K", 3),
                     max_tokens=_env_int("MEMORY_MAX_CONTEXT_TOKENS", 800),
+                    use_graph_traversal=True,  # Enable graph traversal
+                    max_graph_hops=2,  # 2-hop graph traversal for balance
                 )
                 
                 personal_memory_context = memory_result.get("context_text", "")
                 
                 if personal_memory_context:
                     log.info(f"Personal memory: {memory_result.get('total_tokens', 0)} tokens, "
-                            f"self_q={memory_result.get('is_self_question', False)}")
+                            f"self_q={memory_result.get('is_self_question', False)}, "
+                            f"graph_enriched={memory_result.get('graph_enriched', False)}")
                 
             except Exception as e:
                 log.warning(f"Failed to build personal memory context: {e}")

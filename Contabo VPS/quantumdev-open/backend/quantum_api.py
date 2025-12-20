@@ -506,6 +506,14 @@ MEMORY_PROFILE_TOP_K = env_int("MEMORY_PROFILE_TOP_K", 5)
 MEMORY_EPISODIC_TOP_K = env_int("MEMORY_EPISODIC_TOP_K", 3)
 MEMORY_MAX_CONTEXT_TOKENS = env_int("MEMORY_MAX_CONTEXT_TOKENS", 800)
 
+# 🔗 Knowledge Graph API Configuration
+KG_API_MAX_DEPTH_MIN = 1
+KG_API_MAX_DEPTH_MAX = 3
+KG_API_MAX_RESULTS_MIN = 1
+KG_API_MAX_RESULTS_MAX = 100
+KG_API_TOP_K_MIN = 1
+KG_API_TOP_K_MAX = 10
+
 # Admin
 QUANTUM_SHARED_SECRET = os.getenv("QUANTUM_SHARED_SECRET", "")
 
@@ -5076,6 +5084,252 @@ def memory_episodic_buffer_status(conversation_id: str) -> Dict[str, Any]:
             "status": status
         }
     except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= NEW: Knowledge Graph API =======================
+@app.get("/memory/graph/explore")
+def memory_graph_explore(
+    concept: str,
+    max_depth: int = 2,
+    max_results: int = 20
+) -> Dict[str, Any]:
+    """
+    Explore knowledge graph from a concept.
+    Returns related concepts at multiple hop distances.
+    
+    Args:
+        concept: Starting concept name
+        max_depth: Maximum traversal depth (1-3)
+        max_results: Maximum total results
+        
+    Returns:
+        JSON with multi-hop related concepts
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Validate inputs
+        max_depth = min(max(max_depth, KG_API_MAX_DEPTH_MIN), KG_API_MAX_DEPTH_MAX)
+        max_results = min(max(max_results, KG_API_MAX_RESULTS_MIN), KG_API_MAX_RESULTS_MAX)
+        
+        # Multi-hop traversal
+        results_by_hop = kg.find_related_multi_hop(
+            concept=concept,
+            max_depth=max_depth,
+            max_results=max_results
+        )
+        
+        # Format results
+        formatted = {}
+        total_results = 0
+        
+        for hop_distance, concepts in results_by_hop.items():
+            formatted[f"{hop_distance}-hop"] = [
+                {
+                    "concept": c.concept,
+                    "relation": c.relation_type,
+                    "weight": c.weight,
+                    "distance": c.distance,
+                }
+                for c in concepts
+            ]
+            total_results += len(concepts)
+        
+        return {
+            "ok": True,
+            "concept": concept,
+            "max_depth": max_depth,
+            "total_results": total_results,
+            "results_by_hop": formatted,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/explore error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/clusters")
+def memory_graph_clusters(min_cluster_size: int = 3) -> Dict[str, Any]:
+    """
+    Get concept clusters detected in the knowledge graph.
+    Uses Louvain community detection algorithm.
+    
+    Args:
+        min_cluster_size: Minimum cluster size to include
+        
+    Returns:
+        JSON with cluster information
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Detect communities
+        concept_clusters = kg.detect_communities(min_cluster_size=min_cluster_size)
+        
+        if not concept_clusters:
+            return {
+                "ok": True,
+                "num_clusters": 0,
+                "clusters": [],
+                "note": "no_clusters_found"
+            }
+        
+        # Get unique cluster IDs
+        cluster_ids = set(concept_clusters.values())
+        
+        # Build cluster information
+        clusters = []
+        for cluster_id in sorted(cluster_ids):
+            cluster_info = kg.get_cluster_info(cluster_id, concept_clusters)
+            clusters.append(cluster_info)
+        
+        return {
+            "ok": True,
+            "num_clusters": len(clusters),
+            "total_concepts": len(concept_clusters),
+            "clusters": clusters,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/clusters error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/evolution")
+def memory_graph_evolution(concept: str) -> Dict[str, Any]:
+    """
+    Get evolution history of a concept.
+    Shows how the concept has changed over time.
+    
+    Args:
+        concept: Concept name
+        
+    Returns:
+        JSON with version history
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Get evolution history
+        history = kg.get_concept_evolution(concept)
+        
+        if not history:
+            # Check if concept exists
+            if kg.graph.has_node(concept):
+                return {
+                    "ok": True,
+                    "concept": concept,
+                    "versions": 0,
+                    "history": [],
+                    "note": "no_version_history"
+                }
+            else:
+                return {
+                    "ok": False,
+                    "error": "concept_not_found",
+                    "concept": concept
+                }
+        
+        return {
+            "ok": True,
+            "concept": concept,
+            "versions": len(history),
+            "history": history,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/evolution error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/suggest")
+def memory_graph_suggest(
+    current_topic: str,
+    top_k: int = 5,
+    use_centrality: bool = True
+) -> Dict[str, Any]:
+    """
+    Get topic suggestions based on knowledge graph.
+    Uses graph centrality or PageRank to find important related concepts.
+    
+    Args:
+        current_topic: Current concept/topic
+        top_k: Number of suggestions (1-10)
+        use_centrality: Use degree centrality (fast) vs PageRank (slow but accurate)
+        
+    Returns:
+        JSON with suggested topics
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Validate inputs
+        top_k = min(max(top_k, KG_API_TOP_K_MIN), KG_API_TOP_K_MAX)
+        
+        # Get suggestions
+        suggestions = kg.suggest_related_topics(
+            current_topic=current_topic,
+            top_k=top_k,
+            use_centrality=use_centrality
+        )
+        
+        if not suggestions:
+            return {
+                "ok": True,
+                "current_topic": current_topic,
+                "suggestions": [],
+                "note": "no_suggestions_found"
+            }
+        
+        return {
+            "ok": True,
+            "current_topic": current_topic,
+            "suggestions": suggestions,
+            "algorithm": "centrality" if use_centrality else "pagerank",
+            "proactive_message": f"You might also want to know about: {', '.join(suggestions[:3])}"
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/suggest error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/stats")
+def memory_graph_stats() -> Dict[str, Any]:
+    """Get knowledge graph statistics."""
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        stats = kg.get_stats()
+        
+        return {
+            "ok": True,
+            "stats": stats,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/stats error: {e}")
         return {"ok": False, "error": str(e)}
 
 
