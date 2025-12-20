@@ -240,10 +240,22 @@ def query_user_profile(
     query_text: str,
     top_k: int = 5,
     category: Optional[str] = None,
-    min_relevance: Optional[float] = None
+    min_relevance: Optional[float] = None,
+    use_graph_traversal: bool = True,
+    max_graph_hops: int = 2
 ) -> List[Dict[str, Any]]:
     """
-    Query user profile facts with relevance filtering.
+    Query user profile facts with graph-enhanced retrieval.
+    
+    Workflow:
+    1. Extract concepts from query
+    2. Perform direct ChromaDB semantic search
+    3. If graph traversal enabled:
+       - Find related concepts via graph (1-hop, 2-hop, 3-hop)
+       - Retrieve docs for related concepts
+       - Rank by: direct match > 1-hop > 2-hop > 3-hop
+       - Merge and deduplicate results
+    4. Add cluster context if available
     
     Args:
         user_id: User identifier
@@ -251,9 +263,11 @@ def query_user_profile(
         top_k: Number of results to return
         category: Optional category filter
         min_relevance: Minimum relevance threshold (0-1). Defaults to MEMORY_MIN_RELEVANCE env var.
+        use_graph_traversal: Enable graph-based expansion
+        max_graph_hops: Maximum graph traversal depth (1-3 recommended)
         
     Returns:
-        List of matching facts with metadata, filtered by relevance
+        List of matching facts with metadata, ranked by relevance
     """
     if not USER_PROFILE_ENABLED:
         return []
@@ -271,7 +285,7 @@ def query_user_profile(
         if category:
             where_filter["category"] = category
         
-        # Query collection - Over-fetch to allow filtering
+        # === STEP 1: Direct ChromaDB Query ===
         fetch_count = top_k * 2 if relevance_threshold > 0 else top_k
         results = col.query(
             query_texts=[query_text],
@@ -282,6 +296,8 @@ def query_user_profile(
         
         # Format and filter results by relevance
         facts = []
+        seen_ids = set()
+        
         if results and results.get("ids") and results["ids"][0]:
             for i in range(len(results["ids"][0])):
                 distance = results["distances"][0][i] if results.get("distances") else 1.0
@@ -290,45 +306,152 @@ def query_user_profile(
                 
                 # Filter by relevance threshold
                 if similarity >= relevance_threshold:
+                    fact_id = results["ids"][0][i]
                     fact = {
-                        "id": results["ids"][0][i],
+                        "id": fact_id,
                         "text": results["documents"][0][i] if results.get("documents") else "",
                         "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
                         "distance": distance,
                         "similarity": similarity,
+                        "match_type": "direct",  # Direct semantic match
+                        "hop_distance": 0,  # Direct match has 0 hop distance
                     }
                     facts.append(fact)
+                    seen_ids.add(fact_id)
         
-        # Sort by similarity (descending) and limit to top_k
-        facts.sort(key=lambda x: x["similarity"], reverse=True)
-        facts = facts[:top_k]
-        
-        # Enrich with knowledge graph context
+        # === STEP 2: Graph Traversal Enhancement ===
         kg = _get_knowledge_graph()
-        if kg:
+        graph_enriched = False
+        concept_clusters = {}
+        
+        if kg and use_graph_traversal:
             try:
                 from core.concept_extractor import extract_concepts
                 
                 # Extract concepts from query
                 query_concepts = extract_concepts(query_text)
                 
-                # For each concept, find related concepts in graph
-                graph_context = []
-                for concept in query_concepts[:3]:  # Top 3 concepts
-                    related = kg.find_related(concept.text, depth=2, max_results=5)
-                    if related:
-                        graph_context.extend([
-                            f"{concept.text} -> {rel.concept} ({rel.relation_type})"
-                            for rel in related[:3]
-                        ])
+                # Get concept clusters for labeling
+                try:
+                    concept_clusters = kg.detect_communities(min_cluster_size=3)
+                except Exception as e:
+                    log.debug(f"Clustering not available: {e}")
                 
-                # Add graph context to metadata if available
-                if graph_context:
-                    for fact in facts:
-                        fact["kg_context"] = graph_context[:5]  # Limit to 5 relationships
+                # For each query concept, do multi-hop traversal
+                all_related_concepts = {}  # concept -> hop_distance
+                
+                for concept in query_concepts[:3]:  # Top 3 query concepts
+                    if kg.graph.has_node(concept.text):
+                        # Multi-hop traversal
+                        related_by_hop = kg.find_related_multi_hop(
+                            concept.text,
+                            max_depth=min(max_graph_hops, 3),  # Cap at 3 hops
+                            max_results=15
+                        )
                         
+                        # Collect all related concepts with their hop distance
+                        for hop_dist, related_list in related_by_hop.items():
+                            for rel_concept in related_list:
+                                # Keep minimum hop distance if concept appears at multiple levels
+                                if rel_concept.concept not in all_related_concepts:
+                                    all_related_concepts[rel_concept.concept] = hop_dist
+                                else:
+                                    all_related_concepts[rel_concept.concept] = min(
+                                        all_related_concepts[rel_concept.concept],
+                                        hop_dist
+                                    )
+                
+                # Query ChromaDB for each related concept
+                for related_concept, hop_distance in all_related_concepts.items():
+                    try:
+                        # Query with related concept as text
+                        related_results = col.query(
+                            query_texts=[related_concept],
+                            n_results=3,  # Limit docs per related concept
+                            where=where_filter,
+                            include=["documents", "metadatas", "distances"]
+                        )
+                        
+                        if related_results and related_results.get("ids") and related_results["ids"][0]:
+                            for i in range(len(related_results["ids"][0])):
+                                fact_id = related_results["ids"][0][i]
+                                
+                                # Skip if already seen
+                                if fact_id in seen_ids:
+                                    continue
+                                
+                                distance = related_results["distances"][0][i] if related_results.get("distances") else 1.0
+                                similarity = 1.0 - distance
+                                
+                                # Lower threshold for graph-expanded results
+                                if similarity >= (relevance_threshold * 0.8):
+                                    fact = {
+                                        "id": fact_id,
+                                        "text": related_results["documents"][0][i] if related_results.get("documents") else "",
+                                        "metadata": related_results["metadatas"][0][i] if related_results.get("metadatas") else {},
+                                        "distance": distance,
+                                        "similarity": similarity,
+                                        "match_type": f"{hop_distance}-hop",  # e.g., "1-hop", "2-hop"
+                                        "hop_distance": hop_distance,
+                                        "via_concept": related_concept,
+                                    }
+                                    facts.append(fact)
+                                    seen_ids.add(fact_id)
+                    
+                    except Exception as e:
+                        log.debug(f"Failed to query for related concept {related_concept}: {e}")
+                
+                graph_enriched = True
+                log.debug(f"Graph traversal found {len(all_related_concepts)} related concepts")
+                
             except Exception as e:
-                log.debug(f"Failed to enrich with knowledge graph: {e}")
+                log.warning(f"Graph traversal failed: {e}")
+        
+        # === STEP 3: Rank and Sort ===
+        # Ranking priority: direct match > 1-hop > 2-hop > 3-hop
+        # Within each tier, sort by similarity
+        def rank_key(fact):
+            hop_distance = fact.get("hop_distance", 0)
+            similarity = fact.get("similarity", 0.0)
+            # Lower hop distance = higher priority (negative for descending sort)
+            # Higher similarity = higher priority
+            return (-hop_distance * 100, similarity)
+        
+        facts.sort(key=rank_key, reverse=True)
+        facts = facts[:top_k]
+        
+        # === STEP 4: Add Cluster Context ===
+        if concept_clusters and facts:
+            # Get cluster info for enrichment
+            cluster_info_cache = {}
+            
+            for fact in facts:
+                # Try to find cluster for concepts mentioned in fact
+                fact_text = fact.get("text", "").lower()
+                
+                # Find which cluster this fact might belong to
+                fact_cluster_id = None
+                for concept, cluster_id in concept_clusters.items():
+                    if concept.lower() in fact_text:
+                        fact_cluster_id = cluster_id
+                        break
+                
+                if fact_cluster_id is not None:
+                    # Get cluster info (cached)
+                    if fact_cluster_id not in cluster_info_cache:
+                        cluster_info_cache[fact_cluster_id] = kg.get_cluster_info(
+                            fact_cluster_id, concept_clusters
+                        )
+                    
+                    cluster_info = cluster_info_cache[fact_cluster_id]
+                    fact["cluster_context"] = f"This relates to {cluster_info['dominant_type']} cluster (size: {cluster_info['size']})"
+                    fact["cluster_id"] = fact_cluster_id
+        
+        # Add metadata about graph enrichment
+        if graph_enriched:
+            for fact in facts:
+                if not fact.get("graph_enriched"):
+                    fact["graph_enriched"] = True
         
         return facts
         
