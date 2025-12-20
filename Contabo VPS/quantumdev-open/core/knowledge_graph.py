@@ -45,6 +45,9 @@ KG_PERSIST_PATH = os.getenv("KG_PERSIST_PATH", "./data/knowledge_graph.graphml")
 KG_MAX_NODES = int(os.getenv("KG_MAX_NODES", "10000"))
 KG_MAX_EDGES_PER_NODE = int(os.getenv("KG_MAX_EDGES_PER_NODE", "50"))
 
+# Clustering configuration
+LOUVAIN_RANDOM_SEED = int(os.getenv("LOUVAIN_RANDOM_SEED", "42"))  # Random seed for reproducible clustering
+
 # Lazy imports
 _nx = None
 _embedding_function = None
@@ -669,7 +672,7 @@ class KnowledgeGraph:
             undirected = self.graph.to_undirected()
             
             # Run Louvain algorithm
-            communities = nx_comm.louvain_communities(undirected, seed=42)
+            communities = nx_comm.louvain_communities(undirected, seed=LOUVAIN_RANDOM_SEED)
             
             # Build concept -> cluster mapping
             concept_to_cluster = {}

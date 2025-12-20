@@ -43,6 +43,9 @@ USER_PROFILE_ENABLED = os.getenv("USER_PROFILE_ENABLED", "1").strip() in ("1", "
 USER_PROFILE_MAX_AGE_DAYS = int(os.getenv("USER_PROFILE_MAX_AGE_DAYS", "3650"))  # 10 anni di ritenzione (i fatti personali non scadono facilmente)
 MEMORY_MIN_RELEVANCE = float(os.getenv("MEMORY_MIN_RELEVANCE", "0.65"))  # Minimum relevance threshold for memory retrieval
 
+# Graph traversal configuration
+HOP_DISTANCE_WEIGHT_MULTIPLIER = 100  # Weight multiplier for hop distance ranking (direct > 1-hop > 2-hop)
+
 # Default user ID for Matteo (can be extended for multi-user)
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "matteo")
 
@@ -415,7 +418,7 @@ def query_user_profile(
             similarity = fact.get("similarity", 0.0)
             # Lower hop distance = higher priority (negative for descending sort)
             # Higher similarity = higher priority
-            return (-hop_distance * 100, similarity)
+            return (-hop_distance * HOP_DISTANCE_WEIGHT_MULTIPLIER, similarity)
         
         facts.sort(key=rank_key, reverse=True)
         facts = facts[:top_k]

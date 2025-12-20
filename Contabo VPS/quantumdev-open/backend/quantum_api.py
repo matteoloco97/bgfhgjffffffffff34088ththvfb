@@ -506,6 +506,14 @@ MEMORY_PROFILE_TOP_K = env_int("MEMORY_PROFILE_TOP_K", 5)
 MEMORY_EPISODIC_TOP_K = env_int("MEMORY_EPISODIC_TOP_K", 3)
 MEMORY_MAX_CONTEXT_TOKENS = env_int("MEMORY_MAX_CONTEXT_TOKENS", 800)
 
+# 🔗 Knowledge Graph API Configuration
+KG_API_MAX_DEPTH_MIN = 1
+KG_API_MAX_DEPTH_MAX = 3
+KG_API_MAX_RESULTS_MIN = 1
+KG_API_MAX_RESULTS_MAX = 100
+KG_API_TOP_K_MIN = 1
+KG_API_TOP_K_MAX = 10
+
 # Admin
 QUANTUM_SHARED_SECRET = os.getenv("QUANTUM_SHARED_SECRET", "")
 
@@ -5106,8 +5114,8 @@ def memory_graph_explore(
             return {"ok": False, "error": "knowledge_graph_not_enabled"}
         
         # Validate inputs
-        max_depth = min(max(max_depth, 1), 3)  # Clamp to 1-3
-        max_results = min(max(max_results, 1), 100)  # Clamp to 1-100
+        max_depth = min(max(max_depth, KG_API_MAX_DEPTH_MIN), KG_API_MAX_DEPTH_MAX)
+        max_results = min(max(max_results, KG_API_MAX_RESULTS_MIN), KG_API_MAX_RESULTS_MAX)
         
         # Multi-hop traversal
         results_by_hop = kg.find_related_multi_hop(
@@ -5273,7 +5281,7 @@ def memory_graph_suggest(
             return {"ok": False, "error": "knowledge_graph_not_enabled"}
         
         # Validate inputs
-        top_k = min(max(top_k, 1), 10)  # Clamp to 1-10
+        top_k = min(max(top_k, KG_API_TOP_K_MIN), KG_API_TOP_K_MAX)
         
         # Get suggestions
         suggestions = kg.suggest_related_topics(
