@@ -504,11 +504,12 @@ JSON:"""
                 return None
             
             # Check if any step requires confirmation
-            requires_confirmation = any(
-                self.tool_registry.get(s.tool).requires_confirmation
-                for s in steps
-                if self.tool_registry.get(s.tool)
-            )
+            requires_confirmation = False
+            for s in steps:
+                tool = self.tool_registry.get(s.tool)
+                if tool and tool.requires_confirmation:
+                    requires_confirmation = True
+                    break
             
             return ExecutionPlan(
                 goal=goal,
@@ -538,6 +539,9 @@ JSON:"""
         
         # Build execution graph
         graph = ExecutionGraph()
+        
+        # Create step lookup dictionary for O(1) access
+        step_lookup: Dict[str, PlanStep] = {step.id: step for step in plan.steps}
         
         for step in plan.steps:
             graph.add_tool_step(
@@ -574,15 +578,16 @@ JSON:"""
                     f"Step {exec_step.id} failed, reflecting on error..."
                 )
                 
+                plan_step = step_lookup.get(exec_step.id)
                 decision = await self.reflect_on_result(
-                    step=next((s for s in plan.steps if s.id == exec_step.id), None),
+                    step=plan_step,
                     result=step_result,
                 )
                 
                 if decision == StepDecision.RETRY:
                     self._add_trace("retry", f"Retrying step {exec_step.id}...")
                     retry_result = await self._retry_step(
-                        step=next((s for s in plan.steps if s.id == exec_step.id), None),
+                        step=plan_step,
                         previous_error=exec_step.error,
                     )
                     if retry_result:
@@ -597,6 +602,8 @@ JSON:"""
                 f"({step_result.duration_ms}ms)",
                 {"result_preview": str(step_result.result)[:200] if step_result.result else None}
             )
+        
+        return step_results
         
         return step_results
     
@@ -736,10 +743,13 @@ JSON:"""
             ])
             return f"Completed {len(successful)}/{len(step_results)} steps:\n{results_summary}"
         
+        # Create step lookup dictionary for O(1) access
+        step_lookup: Dict[str, PlanStep] = {step.id: step for step in plan.steps}
+        
         # Build context from results
         results_context = []
         for sr in step_results:
-            step = next((s for s in plan.steps if s.id == sr.step_id), None)
+            step = step_lookup.get(sr.step_id)
             if step:
                 results_context.append({
                     "step": step.description,

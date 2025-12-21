@@ -4170,8 +4170,10 @@ async def autonomous_execute(req: AutonomousReq) -> Dict[str, Any]:
         # Execute the goal
         result = await agent.run(goal=req.goal)
         
+        # Only 'completed' is considered successful
+        # 'aborted' means user cancelled or agent stopped, which is not a success
         response: Dict[str, Any] = {
-            "ok": result.status.value in ("completed", "aborted"),
+            "ok": result.status.value == "completed",
             "status": result.status.value,
             "goal": req.goal,
             "response": result.final_response,

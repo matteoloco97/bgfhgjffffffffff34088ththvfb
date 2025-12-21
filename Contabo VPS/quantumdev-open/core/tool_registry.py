@@ -499,10 +499,12 @@ def _register_default_tools(registry: AutonomousToolRegistry) -> None:
         """Get current weather for a location."""
         try:
             from agents.weather_open_meteo import get_weather_for_query
-            if get_weather_for_query:
+            if callable(get_weather_for_query):
                 result = await get_weather_for_query(f"weather in {location}", None, None)
                 return {"success": True, "location": location, "weather": result}
             return {"success": False, "error": "Weather agent not available"}
+        except ImportError:
+            return {"success": False, "error": "Weather agent module not available"}
         except Exception as e:
             return {"success": False, "location": location, "error": str(e)}
     
@@ -523,10 +525,12 @@ def _register_default_tools(registry: AutonomousToolRegistry) -> None:
         """Get current price for crypto, stocks, or forex."""
         try:
             from agents.price_agent import get_price_for_query
-            if get_price_for_query:
+            if callable(get_price_for_query):
                 result = await get_price_for_query(f"price of {asset}", None, None)
                 return {"success": True, "asset": asset, "price_info": result}
             return {"success": False, "error": "Price agent not available"}
+        except ImportError:
+            return {"success": False, "error": "Price agent module not available"}
         except Exception as e:
             return {"success": False, "asset": asset, "error": str(e)}
     

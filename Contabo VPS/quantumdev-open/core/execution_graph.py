@@ -287,11 +287,17 @@ class ExecutionGraph:
             if step.status != StepStatus.PENDING:
                 continue
             
-            deps_completed = all(
-                self.steps.get(dep, ExecutionStep(id=dep, step_type=StepType.TOOL_CALL)).status
-                == StepStatus.COMPLETED
-                for dep in step.dependencies
-            )
+            # Check if all dependencies are completed
+            deps_completed = True
+            for dep in step.dependencies:
+                dep_step = self.steps.get(dep)
+                if dep_step is None:
+                    # Missing dependency - cannot proceed
+                    deps_completed = False
+                    break
+                if dep_step.status != StepStatus.COMPLETED:
+                    deps_completed = False
+                    break
             
             if deps_completed:
                 ready.append(step_id)
