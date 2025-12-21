@@ -40,6 +40,7 @@ _ConversationalMemory = None
 _FunctionCaller = None
 _ReasoningTracer = None
 _ArtifactsManager = None
+_AutonomousAgent = None
 
 
 def _get_memory():
@@ -74,6 +75,14 @@ def _get_artifacts():
     return _ArtifactsManager
 
 
+def _get_autonomous_agent():
+    global _AutonomousAgent
+    if _AutonomousAgent is None:
+        from core.autonomous_agent import get_autonomous_agent
+        _AutonomousAgent = get_autonomous_agent
+    return _AutonomousAgent
+
+
 # === ENV Configuration ===
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = (os.getenv(name, "1" if default else "0") or "").strip().lower()
@@ -95,8 +104,11 @@ ENABLE_FUNCTION_CALLING = _env_bool("ENABLE_FUNCTION_CALLING", True)
 ENABLE_REASONING_TRACES = _env_bool("ENABLE_REASONING_TRACES", True)
 ENABLE_ARTIFACTS = _env_bool("ENABLE_ARTIFACTS", True)
 ENABLE_PROACTIVE_SUGGESTIONS = _env_bool("ENABLE_PROACTIVE_SUGGESTIONS", True)  # Suggerimenti proattivi
+ENABLE_AUTONOMOUS_MODE = _env_bool("ENABLE_AUTONOMOUS_MODE", True)  # Autonomous agent mode
 
 MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 65536)  # 64K context window (A6000 48GB)
+AUTONOMOUS_MAX_STEPS = _env_int("AUTONOMOUS_MAX_STEPS", 10)
+AUTONOMOUS_REQUIRE_APPROVAL = _env_bool("AUTONOMOUS_REQUIRE_APPROVAL", False)
 
 # Prompt templates
 HYBRID_SYNTHESIS_PROMPT_TEMPLATE = (
@@ -116,6 +128,7 @@ class ResponseStrategy(str, Enum):
     TOOL_ASSISTED = "tool_assisted"  # Use tools then respond
     MEMORY_RECALL = "memory_recall"  # Recall from memory
     HYBRID = "hybrid"               # Combination
+    AUTONOMOUS = "autonomous"       # Multi-step autonomous execution
 
 
 class QueryType(str, Enum):
@@ -370,13 +383,15 @@ class MasterOrchestrator:
         self._caller = None
         self._tracer = None
         self._artifacts = None
+        self._autonomous_agent = None
         
         log.info(
             "MasterOrchestrator initialized: "
             f"memory={ENABLE_CONVERSATIONAL_MEMORY}, "
             f"tools={ENABLE_FUNCTION_CALLING}, "
             f"traces={ENABLE_REASONING_TRACES}, "
-            f"artifacts={ENABLE_ARTIFACTS}"
+            f"artifacts={ENABLE_ARTIFACTS}, "
+            f"autonomous={ENABLE_AUTONOMOUS_MODE}"
         )
     
     @property
@@ -410,6 +425,111 @@ class MasterOrchestrator:
             get_artifacts = _get_artifacts()
             self._artifacts = get_artifacts()
         return self._artifacts
+    
+    @property
+    def autonomous_agent(self):
+        """Get AutonomousAgent instance."""
+        if self._autonomous_agent is None and ENABLE_AUTONOMOUS_MODE:
+            get_autonomous_agent = _get_autonomous_agent()
+            self._autonomous_agent = get_autonomous_agent(self.llm_func)
+        return self._autonomous_agent
+    
+    async def process_autonomous(
+        self,
+        goal: str,
+        source: str,
+        source_id: str,
+        require_approval: bool = AUTONOMOUS_REQUIRE_APPROVAL,
+        approval_callback: Optional[Callable] = None,
+    ) -> OrchestratorResponse:
+        """
+        Process a goal using the autonomous agent.
+        
+        This uses the ReAct-style loop for multi-step task execution.
+        
+        Args:
+            goal: User's goal/task to accomplish
+            source: Source identifier ("tg", "web", "api")
+            source_id: User/chat identifier
+            require_approval: Whether to require user approval before execution
+            approval_callback: Optional callback for plan approval
+            
+        Returns:
+            OrchestratorResponse with autonomous execution result
+        """
+        start_time = time.perf_counter()
+        
+        context = OrchestratorContext(
+            source=source,
+            source_id=source_id,
+            query=goal,
+            strategy=ResponseStrategy.AUTONOMOUS,
+        )
+        
+        if not ENABLE_AUTONOMOUS_MODE:
+            return OrchestratorResponse(
+                response="Autonomous mode is disabled.",
+                context=context,
+                success=False,
+                error="autonomous_mode_disabled",
+                duration_ms=int((time.perf_counter() - start_time) * 1000),
+            )
+        
+        if not self.autonomous_agent:
+            return OrchestratorResponse(
+                response="Autonomous agent not available.",
+                context=context,
+                success=False,
+                error="autonomous_agent_unavailable",
+                duration_ms=int((time.perf_counter() - start_time) * 1000),
+            )
+        
+        try:
+            # Configure agent approval requirement
+            self.autonomous_agent.require_approval = require_approval
+            
+            # Run autonomous agent
+            result = await self.autonomous_agent.run(
+                goal=goal,
+                approval_callback=approval_callback,
+            )
+            
+            # Build response
+            response_text = result.final_response
+            
+            # Add plan info to metadata
+            context.metadata["autonomous_result"] = {
+                "status": result.status.value,
+                "steps_executed": len(result.step_results),
+                "plan_steps": len(result.plan.steps) if result.plan else 0,
+            }
+            
+            # Include reasoning trace if available
+            reasoning_dict = None
+            if result.reasoning_trace:
+                reasoning_dict = {
+                    "autonomous_trace": result.reasoning_trace,
+                    "plan": result.plan.to_dict() if result.plan else None,
+                }
+            
+            return OrchestratorResponse(
+                response=response_text,
+                context=context,
+                reasoning_trace=reasoning_dict,
+                duration_ms=int((time.perf_counter() - start_time) * 1000),
+                success=result.status.value in ("completed", "aborted"),
+                error=result.error,
+            )
+            
+        except Exception as e:
+            log.error(f"Autonomous processing error: {e}", exc_info=True)
+            return OrchestratorResponse(
+                response="",
+                context=context,
+                duration_ms=int((time.perf_counter() - start_time) * 1000),
+                success=False,
+                error=str(e),
+            )
     
     async def process(
         self,
