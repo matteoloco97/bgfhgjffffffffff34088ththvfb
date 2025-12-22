@@ -1,10 +1,13 @@
 import os
-import requests
+import asyncio
 import redis
 import logging
 import yaml
 from chromadb import PersistentClient
 from dotenv import load_dotenv
+
+# Import async HTTP client
+from core.async_http_client import get_http_client
 
 load_dotenv()
 
@@ -49,20 +52,28 @@ def test_chroma():
         return False
 
 # === Test API GPT ===
-def test_gpt():
+async def test_gpt():
     try:
         url = cfg.get("llm", {}).get("endpoint", "").rstrip("/")
-        r = requests.post(f"{url}/chat", json={"message": "ping"})
-        return r.ok
+        client = await get_http_client()
+        if not client:
+            logging.error("GPT API FAIL: HTTP client not available")
+            return False
+        async with client.post(f"{url}/chat", json={"message": "ping"}) as r:
+            return r.ok
     except Exception as e:
         logging.error(f"GPT API FAIL: {e}")
         return False
 
 # === Test Telegram Bot ===
-def test_telegram():
+async def test_telegram():
     try:
-        r = requests.get(f"https://api.telegram.org/bot{cfg['telegram']['bot_token']}/getMe")
-        return r.ok
+        client = await get_http_client()
+        if not client:
+            logging.error("Telegram FAIL: HTTP client not available")
+            return False
+        async with client.get(f"https://api.telegram.org/bot{cfg['telegram']['bot_token']}/getMe") as r:
+            return r.ok
     except Exception as e:
         logging.error(f"Telegram FAIL: {e}")
         return False
@@ -78,18 +89,23 @@ def test_wasabi():
         return False
 
 # === Avvio test ===
-results = {
-    "🧠 Redis": test_redis(),
-    "🧠 ChromaDB": test_chroma(),
-    "🤖 Telegram Bot": test_telegram(),
-    "🛰️  GPT API": test_gpt(),
-    "☁️ Wasabi": test_wasabi(),
-}
+async def run_tests():
+    results = {
+        "🧠 Redis": test_redis(),
+        "🧠 ChromaDB": test_chroma(),
+        "🤖 Telegram Bot": await test_telegram(),
+        "🛰️  GPT API": await test_gpt(),
+        "☁️ Wasabi": test_wasabi(),
+    }
+    return results
 
 # === Report finale ===
-logging.info("\n📋 STATO SISTEMA – QuantumDev Bootstrapper\n")
-for k, v in results.items():
-    stato = "✅ OK" if v else "❌ FAIL"
-    logging.info(f"{k.ljust(20)} → {stato}")
+if __name__ == "__main__":
+    results = asyncio.run(run_tests())
+    
+    logging.info("\n📋 STATO SISTEMA – QuantumDev Bootstrapper\n")
+    for k, v in results.items():
+        stato = "✅ OK" if v else "❌ FAIL"
+        logging.info(f"{k.ljust(20)} → {stato}")
 
-logging.info("🔚 Bootstrap completato.\n")
+    logging.info("🔚 Bootstrap completato.\n")

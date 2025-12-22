@@ -2,11 +2,13 @@
 
 import os
 import logging
-import requests
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 import redis
 import hashlib
+
+# Import async HTTP client
+from core.async_http_client import get_http_client
 
 # === Load env ===
 load_dotenv()
@@ -68,10 +70,15 @@ async def ask_gpt(request: Request):
 
     try:
         logging.info("🔁 Invio prompt alla LLM...")
-        r = requests.post(f"{LLM_ENDPOINT}/chat/completions", json=payload, timeout=15)
-        r.raise_for_status()
-        res = r.json()
-        text = res["choices"][0]["message"]["content"]
+        client = await get_http_client()
+        if not client:
+            logging.error("❌ HTTP client not available")
+            return {"error": "HTTP client not available"}
+        
+        async with client.post(f"{LLM_ENDPOINT}/chat/completions", json=payload, timeout=15) as r:
+            r.raise_for_status()
+            res = await r.json()
+            text = res["choices"][0]["message"]["content"]
 
         redis_client.setex(cache_key, 86400, text)  # Cache 24h
         logging.info("✅ Risposta ricevuta.")

@@ -11,7 +11,7 @@ Features:
 - Query expansion for better recall
 
 Author: Matteo (QuantumDev)
-Version: 3.0.0 - Enhanced with smart synthesis
+Version: 3.1.0 - Enhanced with async HTTP support
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
-import requests
+# Import async HTTP client
+from core.async_http_client import get_http_client
+
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -71,9 +73,9 @@ def _extract_text_from_html(html_content: str) -> str:
         return ""
 
 
-def _fetch_url_content(url: str, timeout: int = 10) -> Optional[str]:
+async def _fetch_url_content(url: str, timeout: int = 10) -> Optional[str]:
     """
-    Fetch content from URL.
+    Fetch content from URL using async HTTP.
     
     Args:
         url: URL to fetch
@@ -89,13 +91,19 @@ def _fetch_url_content(url: str, timeout: int = 10) -> Optional[str]:
             "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
         }
         
-        response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        response.raise_for_status()
+        client = await get_http_client()
+        if not client:
+            log.error("HTTP client not available")
+            return None
         
-        # Extract text from HTML
-        text = _extract_text_from_html(response.text)
-        
-        return text
+        async with client.get(url, headers=headers, timeout=timeout, allow_redirects=True) as response:
+            response.raise_for_status()
+            text_content = await response.text()
+            
+            # Extract text from HTML
+            text = _extract_text_from_html(text_content)
+            
+            return text
         
     except Exception as e:
         log.warning(f"Failed to fetch {url}: {e}")
@@ -292,9 +300,8 @@ async def enhanced_search(query: str, k: int = 5) -> List[Dict[str, Any]]:
         if not url:
             return None
         
-        # Run sync request in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        text = await loop.run_in_executor(None, _fetch_url_content, url, SEARCH_TIMEOUT)
+        # Call async function directly (no need for executor)
+        text = await _fetch_url_content(url, SEARCH_TIMEOUT)
         
         if text:
             # ENHANCEMENT: Use smart synthesis for better snippets
