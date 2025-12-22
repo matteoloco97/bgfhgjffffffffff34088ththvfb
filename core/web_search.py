@@ -4,7 +4,9 @@ import asyncio
 import logging
 from typing import List, Dict, Tuple, Optional
 from urllib.parse import urlparse, parse_qs, unquote, quote_plus, urlunparse, urlencode
-import requests
+
+# Async HTTP client
+from core.async_http_client import get_http_client, is_http_client_available
 
 # Aiohttp for parallel/async operations
 try:
@@ -146,115 +148,30 @@ def _append_unique(base: List[Dict[str, str]], more: List[Dict[str, str]], limit
 
 # ===================== HTTP =====================
 
-# OPTIMIZED: Connection pooling con HTTPAdapter per performance migliori
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+# Remove old requests-based session - replaced by async HTTP client
+# OPTIMIZED: Using centralized async HTTP client from core.async_http_client
 
-_session = requests.Session()
-_session.trust_env = False  # PATCH: Ignore proxy from environment
-_session.headers.update({"User-Agent": UA, **LANG_HDR})
+# ===================== Async HTTP Helper Functions =====================
 
-# OPTIMIZATION: Configura connection pooling e retry strategy
-_retry_strategy = Retry(
-    total=2,  # Max 2 retry
-    backoff_factor=0.3,  # 0.3s, 0.6s backoff
-    status_forcelist=[429, 500, 502, 503, 504],  # Retry su questi status
-    allowed_methods=["HEAD", "GET", "POST"],
-)
-_adapter = HTTPAdapter(
-    pool_connections=10,  # Pool di connessioni
-    pool_maxsize=20,  # Max connessioni per host
-    max_retries=_retry_strategy,
-)
-_session.mount("http://", _adapter)
-_session.mount("https://", _adapter)
-
-# ===================== AIOHTTP GLOBAL SESSION (Phase 2 - Priority 5) =====================
-
-# Global HTTP session for async operations with connection pooling
-_http_session: Optional[ClientSession] = None
-_session_lock: Optional[asyncio.Lock] = None
-
-# HTTP Connection Pool Configuration
-HTTP_POOL_SIZE = int(os.getenv('HTTP_POOL_SIZE', '50'))
-HTTP_POOL_PER_HOST = int(os.getenv('HTTP_POOL_PER_HOST', '10'))
-WEB_FETCH_TIMEOUT_S = float(os.getenv('WEB_FETCH_TIMEOUT_S', '10.0'))
-FETCH_TIMEOUT_CONNECT = float(os.getenv('FETCH_TIMEOUT_CONNECT', '2.0'))
-FETCH_TIMEOUT_READ = float(os.getenv('FETCH_TIMEOUT_READ', '6.0'))
-
-
-async def get_http_session() -> Optional[ClientSession]:
-    """
-    Get or create global HTTP session with connection pooling.
+async def _http_get(url: str, timeout: float) -> str:
+    """Async HTTP GET using shared aiohttp client."""
+    client = await get_http_client()
+    if not client:
+        raise RuntimeError("HTTP client not available")
     
-    Returns:
-        ClientSession with connection pooling configured, or None if aiohttp not available
-    """
-    global _http_session, _session_lock
-    
-    if not AIOHTTP_AVAILABLE:
-        log.warning("aiohttp not available, cannot create async HTTP session")
-        return None
-    
-    # Initialize lock on first call
-    if _session_lock is None:
-        _session_lock = asyncio.Lock()
-    
-    async with _session_lock:
-        if _http_session is None or _http_session.closed:
-            try:
-                connector = TCPConnector(
-                    limit=HTTP_POOL_SIZE,
-                    limit_per_host=HTTP_POOL_PER_HOST,
-                    ttl_dns_cache=300,
-                    enable_cleanup_closed=True,
-                    force_close=False,
-                    keepalive_timeout=30
-                )
-                
-                timeout = ClientTimeout(
-                    total=WEB_FETCH_TIMEOUT_S,
-                    connect=FETCH_TIMEOUT_CONNECT,
-                    sock_read=FETCH_TIMEOUT_READ
-                )
-                
-                _http_session = ClientSession(
-                    connector=connector,
-                    timeout=timeout,
-                    headers={
-                        'User-Agent': UA,
-                        'Accept-Language': SEARCH_LANG,
-                    }
-                )
-                
-                log.info(
-                    f"HTTP session pool initialized: {HTTP_POOL_SIZE} total, "
-                    f"{HTTP_POOL_PER_HOST} per host, timeout={WEB_FETCH_TIMEOUT_S}s"
-                )
-            except Exception as e:
-                log.error(f"Failed to create HTTP session: {e}")
-                return None
-    
-    return _http_session
+    async with client.get(url, timeout=timeout, allow_redirects=True) as r:
+        r.raise_for_status()
+        return await r.text()
 
-
-async def close_http_session():
-    """Cleanup HTTP session on shutdown."""
-    global _http_session
-    if _http_session and not _http_session.closed:
-        await _http_session.close()
-        _http_session = None
-        log.info("HTTP session closed")
-
-def _http_get(url: str, timeout: float) -> str:
-    r = _session.get(url, timeout=timeout, allow_redirects=True)
-    r.raise_for_status()
-    return r.text
-
-def _http_post(url: str, data: Dict[str, str], timeout: float) -> str:
-    r = _session.post(url, data=data, timeout=timeout, allow_redirects=True)
-    r.raise_for_status()
-    return r.text
+async def _http_post(url: str, data: Dict[str, str], timeout: float) -> str:
+    """Async HTTP POST using shared aiohttp client."""
+    client = await get_http_client()
+    if not client:
+        raise RuntimeError("HTTP client not available")
+    
+    async with client.post(url, data=data, timeout=timeout, allow_redirects=True) as r:
+        r.raise_for_status()
+        return await r.text()
 
 # ===================== Parsers =====================
 
@@ -369,12 +286,12 @@ def _parse_bing_html(html_text: str) -> List[Dict[str, str]]:
 
 # ===================== Providers =====================
 
-def _search_ddg_html_post(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_ddg_html_post(query: str, num: int) -> List[Dict[str, str]]:
     if not EN_DDG_HTML or num <= 0:
         return []
     try:
         _log("DDG HTML POST primary")
-        html_text = _http_post(
+        html_text = await _http_post(
             DDG_HTML_PRIMARY + "/",
             data={"q": query, "kl": "it-it", "kp": "-2"},
             timeout=PROVIDER_TIMEOUT_S,
@@ -386,7 +303,7 @@ def _search_ddg_html_post(query: str, num: int) -> List[Dict[str, str]]:
         _log(f"POST fail {DDG_HTML_PRIMARY}: {e}")
         return []
 
-def _search_ddg_html_get_all(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_ddg_html_get_all(query: str, num: int) -> List[Dict[str, str]]:
     if not EN_DDG_HTML or num <= 0:
         return []
     total: List[Dict[str, str]] = []
@@ -395,7 +312,7 @@ def _search_ddg_html_get_all(query: str, num: int) -> List[Dict[str, str]]:
         try:
             _log("DDG HTML GET " + base)
             url = f"{base}?q={quote_plus(query)}&kl=it-it&kp=-2"
-            html_text = _http_get(url, timeout=PROVIDER_TIMEOUT_S)
+            html_text = await _http_get(url, timeout=PROVIDER_TIMEOUT_S)
             rows = _parse_ddg_html(html_text)
             _append_unique(total, rows, num)
             if len(total) >= num:
@@ -405,13 +322,13 @@ def _search_ddg_html_get_all(query: str, num: int) -> List[Dict[str, str]]:
     _log(f"DDG GET total hits: {len(total)}")
     return total[:num]
 
-def _search_ddg_lite(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_ddg_lite(query: str, num: int) -> List[Dict[str, str]]:
     if not EN_DDG_LITE or num <= 0:
         return []
     try:
         _log("DDG LITE GET")
         url = f"{DDG_LITE_URL}?q={quote_plus(query)}&kl=it-it&kp=-2"
-        html_text = _http_get(url, timeout=PROVIDER_TIMEOUT_S)
+        html_text = await _http_get(url, timeout=PROVIDER_TIMEOUT_S)
         rows = _parse_ddg_html(html_text)
         _log(f"DDG LITE hits: {len(rows)}")
         return rows[:num]
@@ -419,30 +336,35 @@ def _search_ddg_lite(query: str, num: int) -> List[Dict[str, str]]:
         _log(f"DDG LITE GET fail: {e}")
         return []
 
-def _search_bing_html(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_bing_html(query: str, num: int) -> List[Dict[str, str]]:
     if not EN_BING_HTML or num <= 0:
         return []
     try:
         _log("BING HTML GET")
         url = f"https://www.bing.com/search?q={quote_plus(query)}&setlang=it-IT"
-        # PATCH: Direct requests (no global session)
-        import requests
-        r = requests.get(
+        
+        # Use async HTTP client
+        client = await get_http_client()
+        if not client:
+            _log("HTTP client not available, skipping Bing search")
+            return []
+        
+        async with client.get(
             url,
             headers={"User-Agent": UA, "Accept-Language": SEARCH_LANG},
             timeout=PROVIDER_TIMEOUT_S,
             allow_redirects=True,
-        )
-        r.raise_for_status()
-        text = r.text
-        rows = _parse_bing_html(text)
-        _log(f"BING hits: {len(rows)}")
-        return rows[:num]
+        ) as r:
+            r.raise_for_status()
+            text = await r.text()
+            rows = _parse_bing_html(text)
+            _log(f"BING hits: {len(rows)}")
+            return rows[:num]
     except Exception as e:
         _log(f"BING GET fail: {e}")
         return []
 
-def _search_ddg_lite_via_browserless(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_ddg_lite_via_browserless(query: str, num: int) -> List[Dict[str, str]]:
     if not (EN_BROWSERLESS and BLS_URL and BLS_TOKEN) or num <= 0:
         return []
     try:
@@ -450,18 +372,26 @@ def _search_ddg_lite_via_browserless(query: str, num: int) -> List[Dict[str, str
         _log(f"BLS /content {url}")
         bls_endpoint = f"{BLS_URL}/content?token={BLS_TOKEN}"
         payload = {"url": url, "waitFor": "body"}
-        r = requests.post(bls_endpoint, json=payload, timeout=PROVIDER_TIMEOUT_S + 2.0)
-        r.raise_for_status()
-        rows = _parse_ddg_html(r.text)
-        _log(f"BLS parsed: {len(rows)} hits")
-        return rows[:num]
+        
+        # Use async HTTP client
+        client = await get_http_client()
+        if not client:
+            _log("HTTP client not available, skipping browserless search")
+            return []
+        
+        async with client.post(bls_endpoint, json=payload, timeout=PROVIDER_TIMEOUT_S + 2.0) as r:
+            r.raise_for_status()
+            text = await r.text()
+            rows = _parse_ddg_html(text)
+            _log(f"BLS parsed: {len(rows)} hits")
+            return rows[:num]
     except Exception as e:
         _log(f"BLS error: {e}")
         return []
 
 # --- SerpAPI / Google Custom Search (placeholder) ---
 
-def _search_serpapi(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_serpapi(query: str, num: int) -> List[Dict[str, str]]:
     """
     Fetch results from SerpAPI. This is a placeholder implementation that
     requires the SERPAPI_KEY environment variable to be set. If the key is
@@ -480,27 +410,34 @@ def _search_serpapi(query: str, num: int) -> List[Dict[str, str]]:
             "hl": os.getenv("SEARCH_HL", "it"),
             "gl": os.getenv("SEARCH_GL", "it"),
         }
-        r = requests.get("https://serpapi.com/search", params=params, timeout=PROVIDER_TIMEOUT_S)
-        r.raise_for_status()
-        data = r.json()
-        items: List[Dict[str, str]] = []
-        for ans in data.get("organic_results", [])[:num]:
-            url = ans.get("link") or ans.get("url")
-            title = ans.get("title") or ""
-            snippet = ans.get("snippet") or ans.get("snippet_highlighted_words") or ""
-            row = {"url": url or "", "title": title}
-            if snippet:
-                if isinstance(snippet, list):
-                    snippet = " ".join(snippet)
-                row["snippet"] = snippet
-            items.append(row)
-        return items
+        
+        # Use async HTTP client
+        client = await get_http_client()
+        if not client:
+            _log("HTTP client not available, skipping SerpAPI search")
+            return []
+        
+        async with client.get("https://serpapi.com/search", params=params, timeout=PROVIDER_TIMEOUT_S) as r:
+            r.raise_for_status()
+            data = await r.json()
+            items: List[Dict[str, str]] = []
+            for ans in data.get("organic_results", [])[:num]:
+                url = ans.get("link") or ans.get("url")
+                title = ans.get("title") or ""
+                snippet = ans.get("snippet") or ans.get("snippet_highlighted_words") or ""
+                row = {"url": url or "", "title": title}
+                if snippet:
+                    if isinstance(snippet, list):
+                        snippet = " ".join(snippet)
+                    row["snippet"] = snippet
+                items.append(row)
+            return items
     except Exception as e:
         _log(f"SerpAPI error: {e}")
         return []
 
 
-def _search_google_cse(query: str, num: int) -> List[Dict[str, str]]:
+async def _search_google_cse(query: str, num: int) -> List[Dict[str, str]]:
     """
     Fetch results from Google Custom Search. Requires GOOGLE_API_KEY and GOOGLE_CX
     environment variables. Returns empty list on error. This function is a
@@ -519,15 +456,22 @@ def _search_google_cse(query: str, num: int) -> List[Dict[str, str]]:
             "hl": os.getenv("SEARCH_HL", "it"),
             "gl": os.getenv("SEARCH_GL", "it"),
         }
-        r = requests.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=PROVIDER_TIMEOUT_S)
-        r.raise_for_status()
-        data = r.json()
-        items: List[Dict[str, str]] = []
-        for res in data.get("items", [])[:num]:
-            url = res.get("link") or res.get("url")
-            title = res.get("title") or ""
-            snippet = res.get("snippet") or ""
-            row = {"url": url or "", "title": title}
+        
+        # Use async HTTP client
+        client = await get_http_client()
+        if not client:
+            _log("HTTP client not available, skipping Google CSE search")
+            return []
+        
+        async with client.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=PROVIDER_TIMEOUT_S) as r:
+            r.raise_for_status()
+            data = await r.json()
+            items: List[Dict[str, str]] = []
+            for res in data.get("items", [])[:num]:
+                url = res.get("link") or res.get("url")
+                title = res.get("title") or ""
+                snippet = res.get("snippet") or ""
+                row = {"url": url or "", "title": title}
             if snippet:
                 row["snippet"] = snippet
             items.append(row)
@@ -743,48 +687,50 @@ def _rank_by_domain_policy(results: List[Dict[str, str]], query: str) -> List[Di
     return [r for _, _, r in scored]
 
 # === Multi-backend aggregator ===
-def _aggregate_multi(query: str, num: int) -> List[Dict[str, str]]:
+async def _aggregate_multi(query: str, num: int) -> List[Dict[str, str]]:
     """
     Query all supported providers (DDG HTML POST/GET/LITE, Bing, SerpAPI or Google)
     and merge results. Duplicate URLs are removed preserving the first appearance.
     Results are normalised and ranked by domain policy. Heuristic fallback is used
     only if no provider returns any result.
+    
+    ASYNC MIGRATION: Now fully async for parallel provider queries.
     """
     out: List[Dict[str, str]] = []
     # DuckDuckGo
     try:
-        out.extend(_search_ddg_html_post(query, num))
+        out.extend(await _search_ddg_html_post(query, num))
     except Exception:
         pass
     if len(out) < num:
         try:
-            more = _search_ddg_html_get_all(query, num - len(out))
+            more = await _search_ddg_html_get_all(query, num - len(out))
             _append_unique(out, more, num)
         except Exception:
             pass
     if len(out) < num:
         try:
-            more = _search_ddg_lite(query, num - len(out))
+            more = await _search_ddg_lite(query, num - len(out))
             _append_unique(out, more, num)
         except Exception:
             pass
     # Bing
     if len(out) < num:
         try:
-            more = _search_bing_html(query, num - len(out))
+            more = await _search_bing_html(query, num - len(out))
             _append_unique(out, more, num)
         except Exception:
             pass
     # SerpAPI/Google CSE (if configured)
     if len(out) < num:
         try:
-            api_res = _search_serpapi(query, num - len(out))
+            api_res = await _search_serpapi(query, num - len(out))
             _append_unique(out, api_res, num)
         except Exception:
             pass
     if len(out) < num:
         try:
-            api_res = _search_google_cse(query, num - len(out))
+            api_res = await _search_google_cse(query, num - len(out))
             _append_unique(out, api_res, num)
         except Exception:
             pass
@@ -798,7 +744,7 @@ def _aggregate_multi(query: str, num: int) -> List[Dict[str, str]]:
 
 # ================= Public API =================
 
-def search(query: str, num: int = 8) -> List[Dict[str, str]]:
+async def search(query: str, num: int = 8) -> List[Dict[str, str]]:
     """
     Perform a web search and return up to `num` results in a normalised
     format: each dict contains at least `url` and `title`, with optional
@@ -814,6 +760,7 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
     Results are cached for a short TTL to avoid repeated network calls.
     
     ENHANCEMENT: Now uses intelligent query expansion for better results.
+    ASYNC MIGRATION: Now fully async using aiohttp for all HTTP operations.
     """
     q = (query or "").strip()
     if not q or num <= 0:
@@ -851,12 +798,12 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
         if backend in ("serpapi", "google"):
             if backend == "serpapi":
                 try:
-                    results = _search_serpapi(query_variant, num)
+                    results = await _search_serpapi(query_variant, num)
                 except Exception:
                     results = []
             else:
                 try:
-                    results = _search_google_cse(query_variant, num)
+                    results = await _search_google_cse(query_variant, num)
                 except Exception:
                     results = []
             # Merge results avoiding duplicates
@@ -869,7 +816,7 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
 
         # multi-backend aggregator mode
         if backend == "multi":
-            results = _aggregate_multi(query_variant, num)
+            results = await _aggregate_multi(query_variant, num)
             for r in results:
                 url = r.get("url", "")
                 if url and url not in seen_urls:
@@ -881,14 +828,14 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
         results: List[Dict[str, str]] = []
         # 1) DDG POST
         try:
-            results.extend(_search_ddg_html_post(query_variant, num - len(results)))
+            results.extend(await _search_ddg_html_post(query_variant, num - len(results)))
         except Exception:
             pass
         if len(results) >= num:
             break
         # 2) DDG GET (mirrors)
         try:
-            more = _search_ddg_html_get_all(query_variant, num - len(results))
+            more = await _search_ddg_html_get_all(query_variant, num - len(results))
             _append_unique(results, more, num)
         except Exception:
             pass
@@ -896,7 +843,7 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
             break
         # 3) DDG LITE
         try:
-            more = _search_ddg_lite(query_variant, num - len(results))
+            more = await _search_ddg_lite(query_variant, num - len(results))
             _append_unique(results, more, num)
         except Exception:
             pass
@@ -904,7 +851,7 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
             break
         # 4) Bing HTML
         try:
-            more = _search_bing_html(query_variant, num - len(results))
+            more = await _search_bing_html(query_variant, num - len(results))
             _append_unique(results, more, num)
         except Exception:
             pass
@@ -923,7 +870,7 @@ def search(query: str, num: int = 8) -> List[Dict[str, str]]:
     # If still no results, try browserless and heuristics
     if not all_results:
         try:
-            more = _search_ddg_lite_via_browserless(q, num)
+            more = await _search_ddg_lite_via_browserless(q, num)
             _append_unique(all_results, more, num)
         except Exception:
             pass
