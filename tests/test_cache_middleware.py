@@ -23,7 +23,7 @@ def test_middleware_import():
             cached_response,
             get_cache_stats,
             reset_cache_stats,
-            _generate_cache_key,
+            generate_cache_key,
         )
         print("  ✅ Successfully imported cache middleware")
         return True
@@ -37,12 +37,12 @@ def test_cache_key_generation():
     """Test cache key generation."""
     print("\nTest 2: Testing cache key generation...")
     try:
-        from core.cache_middleware import _generate_cache_key
+        from core.cache_middleware import generate_cache_key
         
         # Test with different parameters
-        key1 = _generate_cache_key("chat", text="hello", source="api")
-        key2 = _generate_cache_key("chat", text="hello", source="api")
-        key3 = _generate_cache_key("chat", text="world", source="api")
+        key1 = generate_cache_key("chat", text="hello", source="api")
+        key2 = generate_cache_key("chat", text="hello", source="api")
+        key3 = generate_cache_key("chat", text="world", source="api")
         
         # Same params should produce same key
         if key1 == key2:
@@ -272,4 +272,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

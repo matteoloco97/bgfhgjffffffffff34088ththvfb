@@ -39,6 +39,26 @@ _cache_stats = {
 }
 
 
+def generate_cache_key(endpoint: str, **kwargs: Any) -> str:
+    """
+    Generate cache key from endpoint name and parameters.
+    
+    Public API for cache key generation. Useful for testing and manual cache operations.
+    
+    Args:
+        endpoint: Endpoint name (e.g., "chat", "web_search")
+        **kwargs: Request parameters to include in cache key
+        
+    Returns:
+        Cache key string in format: {endpoint}:{hash(params)}
+    
+    Example:
+        >>> generate_cache_key("chat", text="hello", source="api")
+        'chat:92e5f85c3a026faf'
+    """
+    return _generate_cache_key(endpoint, **kwargs)
+
+
 def _generate_cache_key(endpoint: str, **kwargs: Any) -> str:
     """
     Generate cache key from endpoint name and parameters.
@@ -107,9 +127,10 @@ def get_cache_stats() -> Dict[str, Any]:
     ml_cache = get_multi_level_cache()
     ml_stats = ml_cache.get_stats()
     
-    # Calculate overall hit rate
-    total_requests = _cache_stats["total_hits"] + _cache_stats["total_misses"]
-    hit_rate = _cache_stats["total_hits"] / total_requests if total_requests > 0 else 0.0
+    # Calculate overall hit rate (includes bypasses in total requests for complete picture)
+    total_requests = _cache_stats["total_hits"] + _cache_stats["total_misses"] + _cache_stats["total_bypasses"]
+    cacheable_requests = _cache_stats["total_hits"] + _cache_stats["total_misses"]
+    hit_rate = _cache_stats["total_hits"] / cacheable_requests if cacheable_requests > 0 else 0.0
     
     # Per-endpoint stats
     endpoint_stats = []
@@ -171,6 +192,10 @@ def cached_response(
 ) -> Callable:
     """
     Decorator for caching FastAPI async endpoint responses.
+    
+    Note: The ttl parameter is for documentation purposes. The actual TTL is controlled
+    by the multi-level cache system (L1_CACHE_TTL environment variable). Future versions
+    may support per-endpoint TTL configuration.
     
     Usage:
         @app.post("/chat")

@@ -22,7 +22,7 @@ from core.cache_middleware import (
     cached_response,
     get_cache_stats,
     reset_cache_stats,
-    _generate_cache_key,
+    generate_cache_key,
 )
 from core.multi_level_cache import get_multi_level_cache
 
