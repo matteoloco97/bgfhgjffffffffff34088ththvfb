@@ -83,6 +83,11 @@ from core.persona_store import get_persona, set_persona, reset_persona
 from core.web_tools import fetch_and_extract
 from core.multi_level_cache import get_multi_level_cache
 from core.cache_middleware import cached_response, get_cache_stats, reset_cache_stats
+from core.parallel_synthesis import (
+    parallel_synthesize_documents,
+    is_parallel_synthesis_enabled,
+    get_parallel_synthesis_config,
+)
 
 # Mini-cache web (import resiliente)
 try:
@@ -1354,55 +1359,99 @@ async def _web_search_pipeline(
             # Timing: Start LLM call
             t_llm_start = time.perf_counter()
             
-            if WEB_USE_CONCISE_FORMATTER:
-                # ⚡ CONCISE FORMATTER (max 50 words, 120 tokens)
-                # Get optimized preset for web synthesis
-                web_preset = get_preset("web_synthesis")
+            # ⚡ PARALLEL SYNTHESIS (STEP 1.2) - Try parallel first if enabled
+            if is_parallel_synthesis_enabled() and len(synth_docs) > 1:
+                log.info(f"[PARALLEL] Attempting parallel synthesis of {len(synth_docs)} documents")
                 
-                # Create wrapper function that applies optimized parameters
-                async def llm_func_optimized(prompt, persona_arg):
-                    if web_preset:
-                        return await reply_with_llm(
-                            prompt,
-                            persona_arg,
-                            temperature=web_preset.temperature,
-                            max_tokens=web_preset.max_tokens,
-                            stop_sequences=web_preset.stop_sequences,
-                            repetition_penalty=web_preset.repetition_penalty,
+                # Prepare documents for parallel synthesis
+                parallel_docs = [
+                    {
+                        "idx": i + 1,
+                        "title": e.get("title", ""),
+                        "url": e.get("url", ""),
+                        "text": e.get("text", ""),
+                    }
+                    for i, e in enumerate(synth_docs)
+                    if e.get("text")
+                ]
+                
+                try:
+                    # Attempt parallel synthesis
+                    summary, parallel_stats = await parallel_synthesize_documents(
+                        query=q,
+                        documents=parallel_docs,
+                        persona=persona,
+                    )
+                    
+                    # Log performance metrics
+                    if parallel_stats.get("success_rate", 0) > 0:
+                        log.info(
+                            f"[PARALLEL] Success! {parallel_stats['successful']}/{parallel_stats['total_documents']} docs, "
+                            f"{parallel_stats['total_duration_ms']}ms (estimated sequential: {parallel_stats.get('estimated_sequential_ms', 0)}ms, "
+                            f"{parallel_stats.get('speedup', 1):.1f}x speedup)"
                         )
                     else:
-                        # Fallback to direct optimized params
-                        return await reply_with_llm(
-                            prompt,
-                            persona_arg,
-                            temperature=0.2,
-                            max_tokens=120,
-                            stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:"],
-                        )
-                
-                summary = await format_web_response(
-                    query=q,
-                    extracts=synth_docs,
-                    llm_func=llm_func_optimized,
-                    persona=persona,
-                )
-                log.info(f"Used concise formatter: {len(summary.split())} words")
+                        # All parallel attempts failed, fall back to sequential
+                        log.warning("[PARALLEL] All parallel synthesis attempts failed, falling back to sequential")
+                        summary = ""
+                        
+                except Exception as e:
+                    log.warning(f"[PARALLEL] Parallel synthesis failed: {e}, falling back to sequential")
+                    summary = ""
             else:
-                # ⚡ AGGRESSIVE SYNTHESIS (original)
-                prompt = build_aggressive_synthesis_prompt(
-                    q,
-                    [
-                        {
-                            "idx": i + 1,
-                            "title": e.get("title", ""),
-                            "url": e.get("url", ""),
-                            "text": e.get("text", ""),
-                        }
-                        for i, e in enumerate(synth_docs)
-                        if e.get("text")
-                    ],
-                )
-                summary = await reply_with_llm(prompt, persona)
+                summary = ""  # Will trigger fallback to sequential
+            
+            # Fallback to sequential synthesis if parallel failed or disabled
+            if not summary:
+                if WEB_USE_CONCISE_FORMATTER:
+                    # ⚡ CONCISE FORMATTER (max 50 words, 120 tokens)
+                    # Get optimized preset for web synthesis
+                    web_preset = get_preset("web_synthesis")
+                    
+                    # Create wrapper function that applies optimized parameters
+                    async def llm_func_optimized(prompt, persona_arg):
+                        if web_preset:
+                            return await reply_with_llm(
+                                prompt,
+                                persona_arg,
+                                temperature=web_preset.temperature,
+                                max_tokens=web_preset.max_tokens,
+                                stop_sequences=web_preset.stop_sequences,
+                                repetition_penalty=web_preset.repetition_penalty,
+                            )
+                        else:
+                            # Fallback to direct optimized params
+                            return await reply_with_llm(
+                                prompt,
+                                persona_arg,
+                                temperature=0.2,
+                                max_tokens=120,
+                                stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:"],
+                            )
+                    
+                    summary = await format_web_response(
+                        query=q,
+                        extracts=synth_docs,
+                        llm_func=llm_func_optimized,
+                        persona=persona,
+                    )
+                    log.info(f"Used concise formatter: {len(summary.split())} words")
+                else:
+                    # ⚡ AGGRESSIVE SYNTHESIS (original)
+                    prompt = build_aggressive_synthesis_prompt(
+                        q,
+                        [
+                            {
+                                "idx": i + 1,
+                                "title": e.get("title", ""),
+                                "url": e.get("url", ""),
+                                "text": e.get("text", ""),
+                            }
+                            for i, e in enumerate(synth_docs)
+                            if e.get("text")
+                        ],
+                    )
+                    summary = await reply_with_llm(prompt, persona)
             
             llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
             
@@ -2993,12 +3042,12 @@ async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     cache_key = f"{src}:{sid}:{text}"
     start_time = time.perf_counter()
     
-    cached_response = ml_cache.get(cache_key)
-    if cached_response:
+    ml_cached_result = ml_cache.get(cache_key)
+    if ml_cached_result:
         cache_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
         log.info(f"[CACHE HIT] {text[:50]}... (source: {src}, latency: {cache_latency_ms}ms)")
         return {
-            "reply": cached_response,
+            "reply": ml_cached_result,
             "cached": True,
             "cache_level": "multi_level",
             "latency_ms": cache_latency_ms,
