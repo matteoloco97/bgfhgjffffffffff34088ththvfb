@@ -1384,7 +1384,7 @@ async def _web_search_pipeline(
                     )
                     
                     # Log performance metrics
-                    if parallel_stats.get("success_rate", 0) > 0:
+                    if parallel_stats.get("success_rate", 0) >= 0.5:  # At least 50% success rate
                         log.info(
                             f"[PARALLEL] Success! {parallel_stats['successful']}/{parallel_stats['total_documents']} docs, "
                             f"{parallel_stats['total_duration_ms']}ms (estimated sequential: {parallel_stats.get('estimated_sequential_ms', 0)}ms, "

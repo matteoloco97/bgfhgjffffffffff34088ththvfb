@@ -51,6 +51,8 @@ load_dotenv()
 log = logging.getLogger(__name__)
 
 # === Configuration (from environment) ===
+# Minimum synthesis length to consider valid (in characters)
+MIN_SYNTHESIS_LENGTH = 10
 def _env_int(name: str, default: int) -> int:
     """Parse integer from environment variable."""
     raw = os.getenv(name, str(default)) or str(default)
@@ -122,8 +124,8 @@ async def _synthesize_single_document(
     
     start_time = time.perf_counter()
     
-    for attempt in range(1, retry_attempts + 2):  # 1 initial + retry_attempts retries
-        stats["attempts"] = attempt
+    for attempt in range(retry_attempts + 1):  # 0 is initial attempt, 1..retry_attempts are retries
+        stats["attempts"] = attempt + 1
         
         try:
             # Build synthesis prompt for single document
@@ -140,20 +142,20 @@ async def _synthesize_single_document(
                 timeout=timeout
             )
             
-            if synthesis and len(synthesis.strip()) > 10:  # Valid synthesis
+            if synthesis and len(synthesis.strip()) > MIN_SYNTHESIS_LENGTH:  # Valid synthesis
                 stats["success"] = True
                 stats["duration_ms"] = int((time.perf_counter() - start_time) * 1000)
-                log.info(f"[PARALLEL] Doc {doc_idx} synthesized successfully (attempt {attempt}, {stats['duration_ms']}ms)")
+                log.info(f"[PARALLEL] Doc {doc_idx} synthesized successfully (attempt {attempt + 1}, {stats['duration_ms']}ms)")
                 return synthesis.strip(), stats
             else:
-                log.warning(f"[PARALLEL] Doc {doc_idx} returned empty synthesis (attempt {attempt})")
+                log.warning(f"[PARALLEL] Doc {doc_idx} returned empty synthesis (attempt {attempt + 1})")
                 
         except asyncio.TimeoutError:
-            log.warning(f"[PARALLEL] Doc {doc_idx} timeout on attempt {attempt}/{retry_attempts + 1}")
+            log.warning(f"[PARALLEL] Doc {doc_idx} timeout on attempt {attempt + 1}/{retry_attempts + 1}")
             stats["error"] = "timeout"
             
         except Exception as e:
-            log.warning(f"[PARALLEL] Doc {doc_idx} failed on attempt {attempt}/{retry_attempts + 1}: {e}")
+            log.warning(f"[PARALLEL] Doc {doc_idx} failed on attempt {attempt + 1}/{retry_attempts + 1}: {e}")
             stats["error"] = str(e)
         
         # Exponential backoff between retries
@@ -280,8 +282,14 @@ async def parallel_synthesize_documents(
     # Calculate stats
     success_rate = successful / len(docs_to_process) if docs_to_process else 0.0
     
-    # Estimate speedup (assuming sequential would take timeout * num_docs)
-    estimated_sequential_ms = int(timeout * 1000 * len(docs_to_process))
+    # Calculate average actual completion time for successful syntheses
+    successful_durations = [
+        s["duration_ms"] for s in all_stats if s.get("success", False) and s.get("duration_ms", 0) > 0
+    ]
+    avg_duration_ms = sum(successful_durations) / len(successful_durations) if successful_durations else timeout * 1000
+    
+    # Estimate speedup using average actual completion time
+    estimated_sequential_ms = int(avg_duration_ms * len(docs_to_process))
     speedup = estimated_sequential_ms / total_duration_ms if total_duration_ms > 0 else 1.0
     
     stats = {
