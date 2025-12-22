@@ -4092,6 +4092,151 @@ async def code_generate(req: CodeReq) -> Dict[str, Any]:
         }
 
 
+# ========================= AUTONOMOUS AGENT ENDPOINT =========================
+
+# Autonomous mode configuration
+ENABLE_AUTONOMOUS_MODE = env_bool("ENABLE_AUTONOMOUS_MODE", True)
+AUTONOMOUS_MAX_STEPS = env_int("AUTONOMOUS_MAX_STEPS", 10)
+AUTONOMOUS_REQUIRE_APPROVAL = env_bool("AUTONOMOUS_REQUIRE_APPROVAL", False)
+
+
+class AutonomousReq(BaseModel):
+    goal: str = Field(..., description="The goal/task to accomplish autonomously")
+    source: str = "api"
+    source_id: str = "default"
+    require_approval: bool = False
+    show_plan: bool = True
+
+
+@app.post("/autonomous")
+async def autonomous_execute(req: AutonomousReq) -> Dict[str, Any]:
+    """
+    Execute a goal using the autonomous ReAct-style agent.
+    
+    This endpoint uses a multi-step planning and execution loop:
+    1. PLAN: LLM generates a step-by-step plan
+    2. EXECUTE: Each step is executed using available tools
+    3. REFLECT: Results are evaluated, with retry on failure
+    4. SYNTHESIZE: Final response is generated from all results
+    
+    Args:
+        goal: The user's goal/task to accomplish
+        source: Source identifier
+        source_id: User identifier
+        require_approval: If true, returns plan for approval before execution
+        show_plan: If true, includes plan details in response
+        
+    Returns:
+        JSON with execution results, plan, and reasoning trace
+    """
+    if not ENABLE_AUTONOMOUS_MODE:
+        return {
+            "ok": False,
+            "error": "Autonomous mode is disabled. Set ENABLE_AUTONOMOUS_MODE=1 in .env",
+            "goal": req.goal,
+        }
+    
+    try:
+        # Import autonomous agent
+        from core.autonomous_agent import get_autonomous_agent
+        from core.tool_registry import get_autonomous_tool_registry
+        
+        # Get tool registry and agent
+        tool_registry = get_autonomous_tool_registry()
+        agent = get_autonomous_agent(
+            llm_func=reply_with_llm,
+            tool_registry=tool_registry,
+        )
+        
+        # If require_approval, just generate and return the plan
+        if req.require_approval:
+            plan = await agent.generate_plan(req.goal)
+            if not plan:
+                return {
+                    "ok": False,
+                    "error": "Failed to generate execution plan",
+                    "goal": req.goal,
+                }
+            
+            return {
+                "ok": True,
+                "status": "awaiting_approval",
+                "goal": req.goal,
+                "plan": plan.to_dict(),
+                "plan_display": plan.format_for_approval(),
+                "message": "Plan generated. Send POST /autonomous/approve to execute.",
+            }
+        
+        # Execute the goal
+        result = await agent.run(goal=req.goal)
+        
+        # Only 'completed' is considered successful
+        # 'aborted' means user cancelled or agent stopped, which is not a success
+        response: Dict[str, Any] = {
+            "ok": result.status.value == "completed",
+            "status": result.status.value,
+            "goal": req.goal,
+            "response": result.final_response,
+            "total_duration_ms": result.total_duration_ms,
+        }
+        
+        if result.error:
+            response["error"] = result.error
+        
+        if req.show_plan and result.plan:
+            response["plan"] = result.plan.to_dict()
+            response["step_results"] = [sr.to_dict() for sr in result.step_results]
+        
+        # Include reasoning trace for transparency
+        if result.reasoning_trace:
+            response["reasoning_trace"] = result.reasoning_trace
+        
+        return response
+        
+    except Exception as e:
+        log.error(f"/autonomous error: {e}", exc_info=True)
+        return {
+            "ok": False,
+            "error": str(e),
+            "goal": req.goal,
+        }
+
+
+@app.get("/autonomous/status")
+async def autonomous_status() -> Dict[str, Any]:
+    """Get autonomous agent status and available tools."""
+    try:
+        from core.tool_registry import get_autonomous_tool_registry
+        
+        registry = get_autonomous_tool_registry()
+        tools = registry.list_tools()
+        
+        return {
+            "ok": True,
+            "enabled": ENABLE_AUTONOMOUS_MODE,
+            "max_steps": AUTONOMOUS_MAX_STEPS,
+            "require_approval_default": AUTONOMOUS_REQUIRE_APPROVAL,
+            "available_tools": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "category": t.category.value,
+                    "enabled": t.enabled,
+                }
+                for t in tools
+            ],
+            "tool_count": len(tools),
+        }
+        
+    except Exception as e:
+        log.error(f"/autonomous/status error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "enabled": ENABLE_AUTONOMOUS_MODE,
+        }
+
+
 # ========================= TOOLS ENDPOINTS (BLOCK 4) =========================
 
 # -------------------------- /tools/math ------------------------------
