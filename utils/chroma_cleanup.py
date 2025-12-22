@@ -10,7 +10,7 @@ Uso CLI:
   python -m utils.chroma_cleanup prefs --days 365 --prefer local
 """
 
-import os, sys, json, argparse
+import os, sys, json, argparse, asyncio
 from pathlib import Path
 
 # --- Bootstrap PYTHONPATH alla root progetto ---
@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import requests  # type: ignore
+# Import async HTTP client
+from core.async_http_client import get_http_client
 
 # Fallback locale se l'API non risponde
 from utils.chroma_handler import cleanup_old
@@ -27,16 +28,19 @@ def _to_bool(x) -> bool:
     if isinstance(x, bool): return x
     return str(x).strip().lower() in ("1","true","yes","y")
 
-def call_api(api_url: str, collection: str, days: int, dry_run: bool) -> dict:
+async def call_api(api_url: str, collection: str, days: int, dry_run: bool) -> dict:
     payload = {"collection": collection, "days": int(days), "dry_run": bool(dry_run)}
-    r = requests.post(api_url, json=payload, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    client = await get_http_client()
+    if not client:
+        raise RuntimeError("HTTP client not available")
+    async with client.post(api_url, json=payload, timeout=30) as r:
+        r.raise_for_status()
+        return await r.json()
 
 def run_local(collection: str, days: int, dry_run: bool) -> dict:
     return cleanup_old(collection, int(days), dry_run=bool(dry_run))
 
-def main() -> int:
+async def async_main() -> int:
     p = argparse.ArgumentParser(description="ChromaDB cleanup runner (API + local fallback)")
     p.add_argument("instance", help="Formato: collection[:days]  es. betting_history:365")
     p.add_argument("--api-url", default=os.getenv("API_URL","http://127.0.0.1:8081/memory/cleanup"))
@@ -64,7 +68,7 @@ def main() -> int:
 
     if args.prefer == "api":
         try:
-            out = call_api(args.api_url, col, days, dry)
+            out = await call_api(args.api_url, col, days, dry)
         except Exception as e:
             err = f"api_error: {e}"
 
@@ -88,6 +92,10 @@ def main() -> int:
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if out is not None else 1
+
+def main() -> int:
+    """Synchronous wrapper for async_main."""
+    return asyncio.run(async_main())
 
 if __name__ == "__main__":
     raise SystemExit(main())
