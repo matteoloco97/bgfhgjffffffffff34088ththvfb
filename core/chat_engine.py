@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os, json, asyncio, time, math
 from typing import Dict, Any, Optional
-import requests
+
+# Import async HTTP client instead of requests
+from core.async_http_client import get_http_client
+
 from dotenv import load_dotenv
 
 # Import logging at module level
@@ -78,11 +81,19 @@ REQ_TIMEOUT_S = _env_float("LLM_HTTP_TIMEOUT_S", 180.0)  # 3 minuti per risposte
 RETRY_ATTEMPTS = _env_int("LLM_RETRY_ATTEMPTS", 3)
 RETRY_BACKOFF_S = _env_float("LLM_RETRY_BACKOFF_S", 1.0)
 
-# === HTTP helper (async wrapper su requests) ===
-async def _post(url: str, payload: dict, timeout: float) -> requests.Response:
-    def _do():
-        return requests.post(url, json=payload, timeout=timeout)
-    return await asyncio.to_thread(_do)
+# === HTTP helper (async using aiohttp) ===
+async def _post(url: str, payload: dict, timeout: float) -> Dict[str, Any]:
+    """
+    Async HTTP POST using aiohttp.
+    Returns the JSON response as a dict.
+    """
+    client = await get_http_client()
+    if not client:
+        raise RuntimeError("HTTP client not available")
+    
+    async with client.post(url, json=payload, timeout=timeout) as r:
+        r.raise_for_status()
+        return await r.json()
 
 # === Payload builder + budget enforcement ===
 def _build_payload(user_text: str, system_prompt: str) -> Dict[str, Any]:
@@ -199,16 +210,7 @@ async def reply_with_llm(
     last_exc: Optional[Exception] = None
     for attempt in range(1, RETRY_ATTEMPTS + 2):  # es. 1 tentativo + 2 retry = 3 tot
         try:
-            r = await _post(LLM_ENDPOINT, payload, timeout=REQ_TIMEOUT_S)
-            if r.status_code != 200:
-                # prova a leggere un minimo di dettaglio per logging a monte
-                try:
-                    err_snip = (r.text or "")[:300]
-                except Exception:
-                    err_snip = f"HTTP {r.status_code}"
-                raise RuntimeError(f"LLM HTTP {r.status_code}: {err_snip}")
-
-            data = r.json()
+            data = await _post(LLM_ENDPOINT, payload, timeout=REQ_TIMEOUT_S)
             response_text = _extract_text(data)
             
             # Log timing
@@ -217,9 +219,7 @@ async def reply_with_llm(
             
             return response_text
 
-        except (requests.exceptions.Timeout, asyncio.TimeoutError) as e:
-            last_exc = e
-        except requests.exceptions.ConnectionError as e:
+        except asyncio.TimeoutError as e:
             last_exc = e
         except Exception as e:
             last_exc = e
@@ -231,35 +231,23 @@ async def reply_with_llm(
     # Se siamo qui, tutti i tentativi sono falliti → alza l’ultima eccezione
     raise RuntimeError(f"LLM failure after retries: {type(last_exc).__name__}: {last_exc}")
 
-# === Synchronous fallback (stessa policy: raise su errori) ===
+# === Synchronous fallback (DEPRECATED - use async version) ===
+# NOTE: This function is deprecated and should not be used in new code.
+# Use reply_with_llm() instead which is fully async.
 def reply_with_llm_sync(user_text: str, persona: str) -> str:
-    payload = _build_payload(user_text, persona)
-
-    attempts = RETRY_ATTEMPTS + 1
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, attempts + 1):
-        try:
-            r = requests.post(LLM_ENDPOINT, json=payload, timeout=REQ_TIMEOUT_S)
-            if r.status_code != 200:
-                err_snip = (r.text or "")[:300]
-                raise RuntimeError(f"LLM HTTP {r.status_code}: {err_snip}")
-            data = r.json()
-            response_text = _extract_text(data)
-            
-            # Log timing
-            elapsed_ms = int((time.perf_counter() - t_start) * 1000)
-            log.info(f"LLM response time: {elapsed_ms}ms")
-            
-            return response_text
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            last_exc = e
-        except Exception as e:
-            last_exc = e
-
-        if attempt < attempts:
-            time.sleep(RETRY_BACKOFF_S * attempt)
-
-    raise RuntimeError(f"LLM failure after retries: {type(last_exc).__name__}: {last_exc}")
+    """
+    DEPRECATED: Synchronous version of reply_with_llm.
+    Use reply_with_llm() instead for better performance with async HTTP.
+    
+    This function wraps the async version in asyncio.run() for backward compatibility.
+    """
+    import warnings
+    warnings.warn(
+        "reply_with_llm_sync is deprecated, use async reply_with_llm instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return asyncio.run(reply_with_llm(user_text, persona))
 
 
 # === Streaming API ===

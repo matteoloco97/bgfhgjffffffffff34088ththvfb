@@ -1,10 +1,12 @@
 import os
 import logging
 import subprocess
-import requests
 import asyncio
 from telegram import Bot
 from dotenv import load_dotenv
+
+# Import async HTTP client
+from core.async_http_client import get_http_client
 
 # === LOAD ENV ===
 load_dotenv()
@@ -28,10 +30,13 @@ def is_process_running(name):
     except Exception:
         return False
 
-def is_port_open(port):
+async def is_port_open(port):
     try:
-        response = requests.post(f"http://127.0.0.1:{port}/chat", json={"message": "ping"}, timeout=2)
-        return response.status_code == 200
+        client = await get_http_client()
+        if not client:
+            return False
+        async with client.post(f"http://127.0.0.1:{port}/chat", json={"message": "ping"}, timeout=2) as response:
+            return response.status == 200
     except Exception:
         return False
 
@@ -49,7 +54,7 @@ async def main():
     if not is_process_running("ollama"):
         problemi.append("❌ Ollama non attivo")
 
-    if not is_port_open(8081):
+    if not await is_port_open(8081):
         problemi.append("❌ API GPT (quantum-api) non raggiungibile")
 
     if not is_process_running("redis-server"):
