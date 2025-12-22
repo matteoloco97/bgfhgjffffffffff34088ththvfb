@@ -48,13 +48,39 @@ QuantumDev is designed to run in a distributed setup:
 
 ### Installation
 
+#### Quick Setup (Recommended)
+
+Use the automated setup script:
+
+```bash
+git clone <repository-url>
+cd quantumdev
+./setup.sh
+```
+
+The script will:
+- Check Python version (3.10+ required)
+- Create virtual environment
+- Install dependencies
+- Setup configuration files
+- Create necessary directories
+- Verify Redis installation
+
+#### Manual Setup
+
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
    cd quantumdev
    ```
 
-2. **Install dependencies**
+2. **Create virtual environment**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
    ```bash
    # Core dependencies
    pip install -r requirements.txt
@@ -63,18 +89,23 @@ QuantumDev is designed to run in a distributed setup:
    pip install -r requirements-dev.txt
    ```
 
-3. **Configure environment**
+4. **Configure environment**
    ```bash
-   cp config/env-examples/ENV_OPTIMIZED_V4.env .env
+   cp .env.example .env
    # Edit .env with your API keys and configuration
    ```
 
-4. **Start Redis**
+5. **Create data directories**
+   ```bash
+   mkdir -p data/archive data/chroma logs
+   ```
+
+6. **Start Redis**
    ```bash
    redis-server
    ```
 
-5. **Run the application**
+7. **Run the application**
    ```bash
    # Start the API server
    python backend/quantum_api.py
