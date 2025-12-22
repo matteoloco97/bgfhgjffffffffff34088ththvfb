@@ -11,6 +11,8 @@ Obiettivo:
 Funzioni esposte:
 - LLM_INTENT_ENABLED  (bool da .env)
 - get_llm_intent_classifier() → singleton
+
+ASYNC MIGRATION: Migrated to aiohttp for LLM API calls
 """
 
 import os
@@ -18,9 +20,11 @@ import re
 import json
 import time
 import logging
+import asyncio
 from typing import Any, Dict, Optional
 
-import requests
+# Import async HTTP client
+from core.async_http_client import get_http_client
 
 try:
     from core.smart_intent_classifier import SmartIntentClassifier
@@ -261,17 +265,22 @@ NON AGGIUNGERE altro testo fuori dal JSON.
             "max_tokens": self.max_tokens,
         }
 
-    def _call_llm(self, query: str) -> Optional[Dict[str, Any]]:
+    async def _call_llm(self, query: str) -> Optional[Dict[str, Any]]:
         if not self.chat_url:
             return None
 
         payload = self._build_prompt(query)
         try:
-            r = requests.post(
+            client = await get_http_client()
+            if not client:
+                log.warning("[LLMIntent] HTTP client not available")
+                return None
+            
+            async with client.post(
                 self.chat_url, json=payload, timeout=self.timeout_s
-            )
-            r.raise_for_status()
-            data = r.json()
+            ) as r:
+                r.raise_for_status()
+                data = await r.json()
         except Exception as e:
             log.warning(f"[LLMIntent] HTTP error: {e}")
             return None
@@ -368,7 +377,7 @@ NON AGGIUNGERE altro testo fuori dal JSON.
             return res
 
         # Chiamata LLM vera e propria
-        parsed = self._call_llm(query)
+        parsed = await self._call_llm(query)
 
         if not parsed or "intent" not in parsed:
             # Fallback completo
