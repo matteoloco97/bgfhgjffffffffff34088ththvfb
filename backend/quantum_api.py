@@ -82,6 +82,7 @@ if ROOT not in sys.path:
 from core.persona_store import get_persona, set_persona, reset_persona
 from core.web_tools import fetch_and_extract
 from core.multi_level_cache import get_multi_level_cache
+from core.cache_middleware import cached_response, get_cache_stats, reset_cache_stats
 
 # Mini-cache web (import resiliente)
 try:
@@ -2939,6 +2940,7 @@ async def generate(
 
 # ================= Persona & Web utils ===================
 @app.post("/chat")
+@cached_response("chat", ttl=300, cache_key_params=["text", "source", "source_id"])
 async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
     """
     Chat avanzata (v2) with Personal Memory System.
@@ -3551,6 +3553,7 @@ async def chat_stream(payload: dict = Body(...)):
 
 # ========================= /unified endpoint (Master Orchestrator) =========================
 @app.post("/unified")
+@cached_response("unified", ttl=300, cache_key_params=["q", "source", "source_id"])
 async def unified_endpoint(payload: dict = Body(...)) -> Dict[str, Any]:
     """
     Unified endpoint using Master Orchestrator.
@@ -3671,6 +3674,7 @@ class WebSummarizeQueryReq(BaseModel):
 
 
 @app.post("/web/summarize")
+@cached_response("web_summarize", ttl=1800, cache_key_params=["q", "source", "source_id"])
 async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
     if payload.q:
         if _is_smalltalk_query(payload.q):
@@ -3828,6 +3832,7 @@ class WebSearchReq(BaseModel):
 
 
 @app.post("/web/search")
+@cached_response("web_search", ttl=600, cache_key_params=["q", "source", "source_id"])
 async def web_search(req: WebSearchReq) -> Dict[str, Any]:
     """
     Web search endpoint with conversational context and concise responses.
@@ -4773,6 +4778,23 @@ def web_cache_flush(req: WebCacheFlushReq) -> Dict[str, Any]:
         res = _webcache_flush(req.url)
         return {"ok": True, **res}
     except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# -------------------------- /cache/stats --------------------------------
+@app.get("/cache/stats")
+def cache_stats_endpoint() -> Dict[str, Any]:
+    """
+    Get comprehensive cache statistics for all cached endpoints.
+    
+    Returns both middleware-level stats (per-endpoint hit/miss rates) and
+    multi-level cache stats (L1/L2 performance metrics).
+    """
+    try:
+        stats = get_cache_stats()
+        return {"ok": True, **stats}
+    except Exception as e:
+        log.error(f"/cache/stats error: {e}")
         return {"ok": False, "error": str(e)}
 
 
