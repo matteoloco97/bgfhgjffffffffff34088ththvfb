@@ -3269,7 +3269,7 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     global _SEMCACHE
     
     # Track request start time for latency
-    request_start_time = time.time()
+    request_start_time = time.perf_counter()
 
     # ======== Input Validation ========
     # Extract basic fields for validation
@@ -3377,7 +3377,7 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
         if METRICS_AVAILABLE:
             track_cache_hit("multi_level")
             track_chat_request("/chat", "success")
-            observe_chat_latency("/chat", time.time() - request_start_time)
+            observe_chat_latency("/chat", time.perf_counter() - request_start_time)
             observe_response_size("/chat", len(str(ml_cached_result)))
         
         return {
@@ -3726,7 +3726,7 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     # Track metrics
     if METRICS_AVAILABLE:
         track_chat_request("/chat", "success")
-        observe_chat_latency("/chat", time.time() - request_start_time)
+        observe_chat_latency("/chat", time.perf_counter() - request_start_time)
         observe_response_size("/chat", len(reply_text) if reply_text else 0)
 
     return {
@@ -4224,7 +4224,7 @@ async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str
     PROBLEMA 3 FIX: Uses conversational context to resolve follow-up queries
     """
     # Track request start time
-    request_start_time = time.time()
+    request_start_time = time.perf_counter()
     
     # PROBLEMA 3: Get conversational context manager
     context_manager = get_web_context_manager()
@@ -4307,7 +4307,7 @@ async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str
     if METRICS_AVAILABLE:
         search_type = "deep" if WEB_SEARCH_DEEP_MODE or is_complex else "standard"
         track_web_search(search_type, "success")
-        observe_chat_latency("/web/search", time.time() - request_start_time)
+        observe_chat_latency("/web/search", time.perf_counter() - request_start_time)
         observe_response_size("/web/search", len(str(out)))
     
     return out

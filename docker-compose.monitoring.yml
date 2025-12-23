@@ -60,6 +60,9 @@ services:
     
     environment:
       # Security settings
+      # ⚠️ WARNING: Change this password in production! 
+      # For production, use Docker secrets or environment variables instead:
+      # - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=quantumdev2024  # CHANGE THIS IN PRODUCTION!
       

@@ -14,6 +14,7 @@ This module defines custom Prometheus metrics for tracking:
 
 from prometheus_client import Counter, Histogram, Gauge, Summary
 import time
+import asyncio
 from typing import Callable, Any
 from functools import wraps
 
@@ -292,7 +293,6 @@ def track_latency(metric_name: str, **labels):
                 raise e
         
         # Return appropriate wrapper based on function type
-        import asyncio
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:
@@ -348,7 +348,6 @@ def track_request(endpoint: str, request_type: str = "chat"):
                 raise e
         
         # Return appropriate wrapper based on function type
-        import asyncio
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:

@@ -10,7 +10,12 @@ This script verifies that:
 """
 
 import sys
-sys.path.insert(0, '/home/runner/work/bgfhgjffffffffff34088ththvfb/bgfhgjffffffffff34088ththvfb')
+import os
+
+# Add the repository root to the path
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 
 from core.metrics import (
     # Counter metrics
