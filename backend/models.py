@@ -24,7 +24,6 @@ from pydantic import (
     Field,
     field_validator,
     model_validator,
-    HttpUrl,
     field_serializer,
 )
 
@@ -98,6 +97,8 @@ def sanitize_html(text: str) -> str:
     """
     Remove HTML tags and escape special characters.
     
+    Uses a more robust approach to detect HTML tags including malformed ones.
+    
     Args:
         text: Input text potentially containing HTML
         
@@ -107,8 +108,16 @@ def sanitize_html(text: str) -> str:
     if not text:
         return text
     
-    # Remove HTML tags
+    # Remove HTML tags - handles malformed tags better
+    # First pass: remove well-formed tags
     text = re.sub(r"<[^>]+>", "", text)
+    
+    # Second pass: remove malformed tags (e.g., <script src=evil.js without closing >)
+    # Look for < followed by tag-like content
+    text = re.sub(r"<\s*[a-zA-Z][^>]*", "", text)
+    
+    # Remove any remaining > that might be from malformed tags
+    text = text.replace(">", "")
     
     # Escape HTML special characters
     text = html.escape(text, quote=False)
@@ -661,23 +670,42 @@ class ToolRequest(BaseModel):
     @field_validator("parameters")
     @classmethod
     def validate_parameters(cls, v: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate parameters dict."""
+        """Validate parameters dict with tool-specific allowances."""
         if not isinstance(v, dict):
             raise ValueError("parameters must be a dict")
         
         # Check nesting depth
         check_nested_depth(v, max_depth=MAX_NESTED_DEPTH)
         
+        # Tool-specific safe patterns (for math expressions, code, etc.)
+        SAFE_TOOL_PATTERNS = {
+            # Math expressions can contain operators that might look like SQL
+            "expr": [r"\+", r"\-", r"\*", r"/", r"\^", r"\(", r"\)"],
+            # Code can contain keywords that might look dangerous
+            "code": [],  # Code is inherently risky but validated by sandboxing
+        }
+        
         # Validate string values for injection patterns
         for key, value in v.items():
             if isinstance(value, str) and len(value) > 0:
-                # Check for injection patterns in string parameters
-                try:
-                    check_injection_patterns(value, f"parameters.{key}")
-                except ValueError:
-                    # Allow some tool-specific patterns (e.g., math expressions)
-                    # but still normalize unicode
-                    v[key] = normalize_unicode(value.strip())
+                # Normalize unicode for all strings
+                normalized = normalize_unicode(value.strip())
+                
+                # Check for injection patterns, with exceptions for known safe keys
+                if key not in SAFE_TOOL_PATTERNS:
+                    # Strict validation for unknown parameters
+                    check_injection_patterns(normalized, f"parameters.{key}")
+                # For known safe keys (like math expr), only check for obvious XSS
+                elif key != "code":  # Code is sandboxed, so XSS checks not needed
+                    # Only check for XSS patterns, not SQL
+                    for pattern in _XSS_REGEX:
+                        if pattern.search(normalized):
+                            raise ValueError(
+                                f"parameters.{key} contains potentially dangerous HTML/JavaScript. "
+                                f"Please remove script tags and event handlers."
+                            )
+                
+                v[key] = normalized
         
         return v
     

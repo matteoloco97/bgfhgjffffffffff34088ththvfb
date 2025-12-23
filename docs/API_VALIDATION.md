@@ -313,7 +313,7 @@ source_id: source_id must contain only alphanumeric characters, underscores, hyp
 Use the provided test suite to verify validation:
 
 ```bash
-cd /home/runner/work/bgfhgjffffffffff34088ththvfb/bgfhgjffffffffff34088ththvfb
+# From project root directory
 PYTHONPATH=. pytest tests/test_input_validation.py -v
 ```
 
