@@ -58,12 +58,15 @@ import math
 from typing import Optional, List, Dict, Tuple, Any
 
 import redis
-from fastapi import FastAPI, Request, Body, UploadFile, File
-from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
+from fastapi import FastAPI, Request, Body, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # (per /memory/debug leggero)
 try:
@@ -396,6 +399,108 @@ load_dotenv()
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# ============================= RATE LIMITING ===================================
+
+# Admin token for bypassing rate limits
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+def get_remote_address_with_whitelist(request: Request) -> str:
+    """
+    Get remote address with automatic localhost bypass.
+    
+    Checks for:
+    1. Localhost/loopback addresses (127.0.0.1, ::1, localhost) - ALWAYS bypassed
+    2. Admin token in X-Admin-Token header
+    3. Proxy headers (X-Forwarded-For, X-Real-IP) for real IP
+    
+    Returns a special identifier for whitelisted requests to bypass rate limits.
+    """
+    # Check for admin token bypass
+    if ADMIN_TOKEN and request.headers.get("X-Admin-Token") == ADMIN_TOKEN:
+        log.info("[RATELIMIT] Admin token bypass used")
+        return "admin-bypass"
+    
+    # Get real IP (considering proxy headers)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For can contain multiple IPs, take the first (client IP)
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.headers.get("X-Real-IP") or request.client.host if request.client else "unknown"
+    
+    # Check for localhost/loopback addresses (CRITICAL for Telegram Bot)
+    localhost_addresses = ["127.0.0.1", "::1", "localhost", "0.0.0.0"]
+    if client_ip in localhost_addresses:
+        log.info(f"[RATELIMIT] Localhost bypass: {client_ip}")
+        return "localhost-bypass"
+    
+    log.debug(f"[RATELIMIT] Client IP: {client_ip}")
+    return client_ip
+
+# Initialize rate limiter with Redis storage
+limiter = Limiter(
+    key_func=get_remote_address_with_whitelist,
+    storage_uri=f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/{os.getenv('REDIS_DB', '0')}",
+    default_limits=[]  # No default limits, we'll specify per-endpoint
+)
+
+# Add rate limiter to app state
+app.state.limiter = limiter
+
+# Custom 429 error handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """
+    Custom error handler for rate limit exceeded (429).
+    Returns helpful information about when the limit resets.
+    """
+    log.warning(f"[RATELIMIT] Rate limit exceeded for {request.url.path} from {request.client.host if request.client else 'unknown'}")
+    
+    # Extract retry-after from exception if available
+    retry_after = getattr(exc, "retry_after", 60)
+    
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "message": "Too many requests. Please slow down and try again later.",
+            "detail": f"Rate limit exceeded for this endpoint. Please wait {retry_after} seconds before retrying.",
+            "retry_after_seconds": retry_after,
+            "endpoint": str(request.url.path),
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(getattr(exc, "limit", "unknown")),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(int(time.time()) + retry_after),
+        }
+    )
+
+# Add rate limit middleware for headers on all responses
+@app.middleware("http")
+async def add_rate_limit_headers(request: Request, call_next):
+    """
+    Middleware to add rate limit headers to all responses.
+    This helps clients track their usage.
+    """
+    response = await call_next(request)
+    
+    # Add rate limit headers if available from limiter
+    # Note: slowapi manages these internally, this is just for consistency
+    if not response.headers.get("X-RateLimit-Limit"):
+        # These will be overridden by slowapi for rate-limited endpoints
+        response.headers["X-RateLimit-Limit"] = "unlimited"
+        response.headers["X-RateLimit-Remaining"] = "unlimited"
+    
+    return response
+
+log.info("[RATELIMIT] Rate limiting initialized with Redis storage")
+log.info(f"[RATELIMIT] Localhost (127.0.0.1) and ::1 are AUTOMATICALLY whitelisted")
+if ADMIN_TOKEN:
+    log.info("[RATELIMIT] Admin token bypass is configured")
+
+# ===============================================================================
 
 # Initialize templates for HTML dashboard
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
@@ -2989,8 +3094,9 @@ async def generate(
 
 # ================= Persona & Web utils ===================
 @app.post("/chat")
+@limiter.limit("10/minute")
 @cached_response("chat", ttl=300, cache_key_params=["text", "source", "source_id"])
-async def chat(payload: dict = Body(...)) -> Dict[str, Any]:
+async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, Any]:
     """
     Chat avanzata (v2) with Personal Memory System.
     """
@@ -3602,8 +3708,9 @@ async def chat_stream(payload: dict = Body(...)):
 
 # ========================= /unified endpoint (Master Orchestrator) =========================
 @app.post("/unified")
+@limiter.limit("10/minute")
 @cached_response("unified", ttl=300, cache_key_params=["q", "source", "source_id"])
-async def unified_endpoint(payload: dict = Body(...)) -> Dict[str, Any]:
+async def unified_endpoint(payload: dict = Body(...), request: Request = None) -> Dict[str, Any]:
     """
     Unified endpoint using Master Orchestrator.
     Automatically decides whether to use tools/web or direct LLM.
@@ -3723,8 +3830,9 @@ class WebSummarizeQueryReq(BaseModel):
 
 
 @app.post("/web/summarize")
+@limiter.limit("15/minute")
 @cached_response("web_summarize", ttl=1800, cache_key_params=["q", "source", "source_id"])
-async def web_summarize(payload: WebSummarizeQueryReq) -> Dict[str, Any]:
+async def web_summarize(payload: WebSummarizeQueryReq, request: Request = None) -> Dict[str, Any]:
     if payload.q:
         if _is_smalltalk_query(payload.q):
             return {
@@ -3881,8 +3989,9 @@ class WebSearchReq(BaseModel):
 
 
 @app.post("/web/search")
+@limiter.limit("20/minute")
 @cached_response("web_search", ttl=600, cache_key_params=["q", "source", "source_id"])
-async def web_search(req: WebSearchReq) -> Dict[str, Any]:
+async def web_search(req: WebSearchReq, request: Request = None) -> Dict[str, Any]:
     """
     Web search endpoint with conversational context and concise responses.
     
@@ -4163,7 +4272,8 @@ class AutonomousReq(BaseModel):
 
 
 @app.post("/autonomous")
-async def autonomous_execute(req: AutonomousReq) -> Dict[str, Any]:
+@limiter.limit("5/minute")
+async def autonomous_execute(req: AutonomousReq, request: Request = None) -> Dict[str, Any]:
     """
     Execute a goal using the autonomous ReAct-style agent.
     
