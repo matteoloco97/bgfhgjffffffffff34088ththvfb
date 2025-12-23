@@ -63,7 +63,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse, JSO
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 from urllib.parse import urlparse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -80,6 +80,15 @@ except Exception:  # pragma: no cover
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# === VALIDATION MODELS ===
+from backend.models import (
+    ChatRequest,
+    WebSearchRequest,
+    WebSummarizeRequest,
+    AutonomousRequest,
+    ToolRequest,
+)
 
 # === CORE ===
 from core.persona_store import get_persona, set_persona, reset_persona
@@ -3099,11 +3108,64 @@ async def generate(
 async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, Any]:
     """
     Chat avanzata (v2) with Personal Memory System.
+    
+    Now includes comprehensive input validation via Pydantic models.
     """
     global _SEMCACHE
 
-    # ======== Normalizzazione input: messages vs legacy ========
+    # ======== Input Validation ========
+    # Extract basic fields for validation
     messages = payload.get("messages")
+    text_raw = payload.get("text", "")
+    source_raw = payload.get("source", "tg" if not messages else "gui")
+    source_id_raw = payload.get("source_id", "")
+    system_prompt_raw = payload.get("system_prompt")
+    
+    # If no text but messages array exists, extract text from last user message
+    if not text_raw and isinstance(messages, list) and messages:
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                text_raw = (m.get("content") or "").strip()
+                break
+    
+    # Ensure we have text from either direct field or messages
+    if not text_raw:
+        return {
+            "error": "validation_error",
+            "detail": "text or messages with user content is required",
+            "status_code": 422
+        }
+    
+    # Validate using ChatRequest model
+    try:
+        validated = ChatRequest(
+            text=text_raw,
+            source=source_raw,
+            source_id=source_id_raw if source_id_raw else "default",
+            system_prompt=system_prompt_raw,
+            messages=messages
+        )
+    except ValidationError as e:
+        # Return 422 with clear error messages
+        error_details = []
+        for error in e.errors():
+            field = " -> ".join(str(x) for x in error["loc"])
+            msg = error["msg"]
+            error_details.append(f"{field}: {msg}")
+        
+        return {
+            "error": "validation_error",
+            "detail": "; ".join(error_details),
+            "status_code": 422
+        }
+    except Exception as e:
+        return {
+            "error": "validation_error",
+            "detail": str(e),
+            "status_code": 422
+        }
+
+    # ======== Normalizzazione input: messages vs legacy ========
     text: str = ""
     explicit_sys_from_messages: str = ""
 
@@ -3819,20 +3881,15 @@ async def persona_reset(payload: dict = Body(...)) -> Dict[str, Any]:
 
 
 # ---------- /web/summarize : URL o Query -----------------
-class WebSummarizeQueryReq(BaseModel):
-    q: Optional[str] = None
-    url: Optional[str] = None
-    source: str = "tg"
-    source_id: str
-    k: int = 6
-    summarize_top: int = WEB_SUMMARIZE_TOP_DEFAULT
-    return_sources: bool = True
-
-
 @app.post("/web/summarize")
 @limiter.limit("15/minute")
 @cached_response("web_summarize", ttl=1800, cache_key_params=["q", "source", "source_id"])
-async def web_summarize(payload: WebSummarizeQueryReq, request: Request = None) -> Dict[str, Any]:
+async def web_summarize(payload: WebSummarizeRequest, request: Request = None) -> Dict[str, Any]:
+    """
+    Web summarize endpoint with comprehensive input validation.
+    
+    Supports both URL summarization and query-based search+summarize.
+    """
     if payload.q:
         if _is_smalltalk_query(payload.q):
             return {
@@ -3979,22 +4036,14 @@ async def web_summarize(payload: WebSummarizeQueryReq, request: Request = None) 
     }
 
 
-# -------------------------- /web/search -------------------------------
-class WebSearchReq(BaseModel):
-    q: str
-    k: int = 6
-    summarize_top: int = WEB_SUMMARIZE_TOP_DEFAULT
-    source: str = "tg"
-    source_id: str = "default"
-
-
 @app.post("/web/search")
 @limiter.limit("20/minute")
 @cached_response("web_search", ttl=600, cache_key_params=["q", "source", "source_id"])
-async def web_search(req: WebSearchReq, request: Request = None) -> Dict[str, Any]:
+async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str, Any]:
     """
     Web search endpoint with conversational context and concise responses.
     
+    Now includes comprehensive input validation via Pydantic models.
     PROBLEMA 2 FIX: Uses format_web_response for ultra-concise answers (max 50 words, 120 tokens)
     PROBLEMA 3 FIX: Uses conversational context to resolve follow-up queries
     """
@@ -4263,19 +4312,13 @@ AUTONOMOUS_MAX_STEPS = env_int("AUTONOMOUS_MAX_STEPS", 10)
 AUTONOMOUS_REQUIRE_APPROVAL = env_bool("AUTONOMOUS_REQUIRE_APPROVAL", False)
 
 
-class AutonomousReq(BaseModel):
-    goal: str = Field(..., description="The goal/task to accomplish autonomously")
-    source: str = "api"
-    source_id: str = "default"
-    require_approval: bool = False
-    show_plan: bool = True
-
-
 @app.post("/autonomous")
 @limiter.limit("5/minute")
-async def autonomous_execute(req: AutonomousReq, request: Request = None) -> Dict[str, Any]:
+async def autonomous_execute(req: AutonomousRequest, request: Request = None) -> Dict[str, Any]:
     """
     Execute a goal using the autonomous ReAct-style agent.
+    
+    Now includes comprehensive input validation via Pydantic models.
     
     This endpoint uses a multi-step planning and execution loop:
     1. PLAN: LLM generates a step-by-step plan
