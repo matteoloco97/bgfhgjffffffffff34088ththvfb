@@ -47,12 +47,16 @@ SQL_INJECTION_PATTERNS = [
 ]
 
 XSS_PATTERNS = [
-    r"<script[^>]*>.*?</script>",
+    r"<script[^>]*>.*?</script>",  # Complete script tags
+    r"<script[^>]*",  # Malformed script tags (no closing >)
     r"javascript:",
     r"on\w+\s*=",  # Event handlers like onclick=
-    r"<iframe[^>]*>",
-    r"<object[^>]*>",
-    r"<embed[^>]*>",
+    r"<iframe[^>]*>",  # Complete iframes
+    r"<iframe[^>]*",  # Malformed iframes
+    r"<object[^>]*>",  # Complete objects
+    r"<object[^>]*",  # Malformed objects
+    r"<embed[^>]*>",  # Complete embeds
+    r"<embed[^>]*",  # Malformed embeds
 ]
 
 PATH_TRAVERSAL_PATTERNS = [
@@ -97,7 +101,8 @@ def sanitize_html(text: str) -> str:
     """
     Remove HTML tags and escape special characters.
     
-    Uses a more robust approach to detect HTML tags including malformed ones.
+    Uses a more robust approach to detect HTML tags including malformed ones,
+    while preserving legitimate > characters in text (e.g., "2 > 1").
     
     Args:
         text: Input text potentially containing HTML
@@ -108,16 +113,14 @@ def sanitize_html(text: str) -> str:
     if not text:
         return text
     
-    # Remove HTML tags - handles malformed tags better
-    # First pass: remove well-formed tags
+    # Remove HTML tags in multiple passes
+    # First pass: remove well-formed tags with closing >
     text = re.sub(r"<[^>]+>", "", text)
     
     # Second pass: remove malformed tags (e.g., <script src=evil.js without closing >)
-    # Look for < followed by tag-like content
-    text = re.sub(r"<\s*[a-zA-Z][^>]*", "", text)
-    
-    # Remove any remaining > that might be from malformed tags
-    text = text.replace(">", "")
+    # Look for < followed by tag-like content (tag name + attributes)
+    # Only remove if it looks like an HTML tag (starts with letter)
+    text = re.sub(r"<\s*[a-zA-Z][^\s>]*[^>]*(?=>|$)", "", text)
     
     # Escape HTML special characters
     text = html.escape(text, quote=False)

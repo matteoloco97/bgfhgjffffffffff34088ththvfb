@@ -3128,18 +3128,23 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
                 text_raw = (m.get("content") or "").strip()
                 break
     
+    # Ensure we have text from either direct field or messages
+    if not text_raw:
+        return {
+            "error": "validation_error",
+            "detail": "text or messages with user content is required",
+            "status_code": 422
+        }
+    
     # Validate using ChatRequest model
     try:
         validated = ChatRequest(
-            text=text_raw if text_raw else "temp",  # Temporary value to pass validation
+            text=text_raw,
             source=source_raw,
             source_id=source_id_raw if source_id_raw else "default",
             system_prompt=system_prompt_raw,
             messages=messages
         )
-        # If we used temporary text and no real text was provided, that's an error
-        if not text_raw:
-            raise ValueError("text or messages with user content is required")
     except ValidationError as e:
         # Return 422 with clear error messages
         error_details = []
