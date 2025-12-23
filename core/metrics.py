@@ -238,10 +238,10 @@ def track_latency(metric_name: str, **labels):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            start_time = time.time()
+            start_time = time.perf_counter()
             try:
                 result = await func(*args, **kwargs)
-                duration = time.time() - start_time
+                duration = time.perf_counter() - start_time
                 
                 if metric_name == 'chat':
                     observe_chat_latency(labels.get('endpoint', 'unknown'), duration)
@@ -258,7 +258,7 @@ def track_latency(metric_name: str, **labels):
                 
                 return result
             except Exception as e:
-                duration = time.time() - start_time
+                duration = time.perf_counter() - start_time
                 # Still track the latency even on error
                 if metric_name == 'chat':
                     observe_chat_latency(labels.get('endpoint', 'unknown'), duration)
@@ -266,10 +266,10 @@ def track_latency(metric_name: str, **labels):
         
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            start_time = time.time()
+            start_time = time.perf_counter()
             try:
                 result = func(*args, **kwargs)
-                duration = time.time() - start_time
+                duration = time.perf_counter() - start_time
                 
                 if metric_name == 'chat':
                     observe_chat_latency(labels.get('endpoint', 'unknown'), duration)
@@ -286,7 +286,7 @@ def track_latency(metric_name: str, **labels):
                 
                 return result
             except Exception as e:
-                duration = time.time() - start_time
+                duration = time.perf_counter() - start_time
                 # Still track the latency even on error
                 if metric_name == 'chat':
                     observe_chat_latency(labels.get('endpoint', 'unknown'), duration)
