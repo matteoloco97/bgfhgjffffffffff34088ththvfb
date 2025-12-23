@@ -605,6 +605,65 @@ log.info(f"[RATELIMIT] Localhost (127.0.0.1) and ::1 are AUTOMATICALLY whitelist
 if ADMIN_TOKEN:
     log.info("[RATELIMIT] Admin token bypass is configured")
 
+# ============================= PROMETHEUS METRICS =====================================
+
+# Initialize Prometheus metrics instrumentation
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from core.metrics import (
+        track_chat_request,
+        track_web_search,
+        track_cache_hit,
+        track_cache_miss,
+        observe_chat_latency,
+        observe_llm_synthesis,
+        observe_web_fetch,
+        observe_response_size,
+        set_active_sessions,
+        set_cache_size,
+        set_llm_queue_size,
+        track_error,
+        track_llm_request,
+    )
+    
+    # Initialize instrumentator with auto-instrumentation
+    instrumentator = Instrumentator(
+        should_group_status_codes=False,
+        should_ignore_untemplated=False,
+        should_respect_env_var=True,
+        should_instrument_requests_inprogress=True,
+        excluded_handlers=["/metrics"],
+        env_var_name="ENABLE_METRICS",
+        inprogress_name="http_requests_inprogress",
+        inprogress_labels=True,
+    )
+    
+    # Instrument the FastAPI app
+    instrumentator.instrument(app)
+    
+    # Expose metrics endpoint at /metrics
+    instrumentator.expose(app, endpoint="/metrics", include_in_schema=True)
+    
+    log.info("[METRICS] Prometheus metrics initialized - /metrics endpoint available")
+    METRICS_AVAILABLE = True
+except Exception as e:
+    log.warning(f"[METRICS] Failed to initialize Prometheus metrics: {e}")
+    METRICS_AVAILABLE = False
+    # Define no-op functions if metrics are not available
+    def track_chat_request(*args, **kwargs): pass
+    def track_web_search(*args, **kwargs): pass
+    def track_cache_hit(*args, **kwargs): pass
+    def track_cache_miss(*args, **kwargs): pass
+    def observe_chat_latency(*args, **kwargs): pass
+    def observe_llm_synthesis(*args, **kwargs): pass
+    def observe_web_fetch(*args, **kwargs): pass
+    def observe_response_size(*args, **kwargs): pass
+    def set_active_sessions(*args, **kwargs): pass
+    def set_cache_size(*args, **kwargs): pass
+    def set_llm_queue_size(*args, **kwargs): pass
+    def track_error(*args, **kwargs): pass
+    def track_llm_request(*args, **kwargs): pass
+
 # ===============================================================================
 
 # Initialize templates for HTML dashboard
@@ -3208,6 +3267,9 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     Now includes comprehensive input validation via Pydantic models.
     """
     global _SEMCACHE
+    
+    # Track request start time for latency
+    request_start_time = time.time()
 
     # ======== Input Validation ========
     # Extract basic fields for validation
@@ -3310,6 +3372,14 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     if ml_cached_result:
         cache_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
         log.info(f"[CACHE HIT] {text[:50]}... (source: {src}, latency: {cache_latency_ms}ms)")
+        
+        # Track metrics
+        if METRICS_AVAILABLE:
+            track_cache_hit("multi_level")
+            track_chat_request("/chat", "success")
+            observe_chat_latency("/chat", time.time() - request_start_time)
+            observe_response_size("/chat", len(str(ml_cached_result)))
+        
         return {
             "reply": ml_cached_result,
             "cached": True,
@@ -3319,6 +3389,10 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     
     # Cache MISS - proceed with normal processing
     log.info(f"[CACHE MISS] {text[:50]}... (source: {src})")
+    
+    # Track cache miss
+    if METRICS_AVAILABLE:
+        track_cache_miss("multi_level")
 
     # =================== NEW: Process "remember" statements ===================
     try:
@@ -3648,6 +3722,12 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
     
     # Calculate total latency
     total_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    
+    # Track metrics
+    if METRICS_AVAILABLE:
+        track_chat_request("/chat", "success")
+        observe_chat_latency("/chat", time.time() - request_start_time)
+        observe_response_size("/chat", len(reply_text) if reply_text else 0)
 
     return {
         "reply": reply_text,
@@ -4143,6 +4223,9 @@ async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str
     PROBLEMA 2 FIX: Uses format_web_response for ultra-concise answers (max 50 words, 120 tokens)
     PROBLEMA 3 FIX: Uses conversational context to resolve follow-up queries
     """
+    # Track request start time
+    request_start_time = time.time()
+    
     # PROBLEMA 3: Get conversational context manager
     context_manager = get_web_context_manager()
     
@@ -4219,6 +4302,14 @@ async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str
     }
     if ws.get("validation") is not None:
         out["validation"] = ws["validation"]
+    
+    # Track metrics
+    if METRICS_AVAILABLE:
+        search_type = "deep" if WEB_SEARCH_DEEP_MODE or is_complex else "standard"
+        track_web_search(search_type, "success")
+        observe_chat_latency("/web/search", time.time() - request_start_time)
+        observe_response_size("/web/search", len(str(out)))
+    
     return out
 
 

@@ -1,0 +1,161 @@
+version: '3.8'
+
+# QuantumDev Monitoring Stack - Docker Compose Configuration
+# This file sets up Prometheus and Grafana for monitoring the FastAPI application
+
+services:
+  # Prometheus - Metrics collection and storage
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quantumdev-prometheus
+    restart: unless-stopped
+    
+    # Command line arguments
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'  # 30 days retention
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      # Mount prometheus config
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Persistent storage for metrics data
+      - prometheus-data:/prometheus
+      # Optional: Mount alert rules directory
+      # - ./prometheus/alerts:/etc/prometheus/alerts:ro
+    
+    networks:
+      - monitoring
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Use host network mode to access localhost:8081
+    # Uncomment this if your FastAPI app runs on localhost
+    # network_mode: "host"
+    
+    # Or add extra hosts to access host machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Grafana - Visualization and dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: quantumdev-grafana
+    restart: unless-stopped
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      # Security settings
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=quantumdev2024  # CHANGE THIS IN PRODUCTION!
+      
+      # Server settings
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      
+      # Anonymous access (disable in production)
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      
+      # Install plugins
+      - GF_INSTALL_PLUGINS=
+      
+      # Default datasource
+      - GF_DATASOURCES_DEFAULT_NAME=Prometheus
+    
+    volumes:
+      # Persistent storage for Grafana data (dashboards, users, etc.)
+      - grafana-data:/var/lib/grafana
+      
+      # Provisioning - Auto-configure datasources and dashboards
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      
+      # Dashboard JSON files
+      - ./grafana:/var/lib/grafana/dashboards:ro
+    
+    networks:
+      - monitoring
+    
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Node Exporter - System metrics
+  # Uncomment to collect host system metrics (CPU, memory, disk, etc.)
+  # node-exporter:
+  #   image: prom/node-exporter:latest
+  #   container_name: quantumdev-node-exporter
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9100:9100"
+  #   command:
+  #     - '--path.rootfs=/host'
+  #   volumes:
+  #     - '/:/host:ro,rslave'
+  #   networks:
+  #     - monitoring
+
+  # Optional: Redis Exporter - Redis metrics
+  # Uncomment if you want to monitor your Redis instance
+  # redis-exporter:
+  #   image: oliver006/redis_exporter:latest
+  #   container_name: quantumdev-redis-exporter
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9121:9121"
+  #   environment:
+  #     - REDIS_ADDR=redis:6379  # Adjust to your Redis host
+  #     # - REDIS_PASSWORD=your_redis_password
+  #   networks:
+  #     - monitoring
+
+  # Optional: Alertmanager - Alert handling
+  # Uncomment to enable alerting
+  # alertmanager:
+  #   image: prom/alertmanager:latest
+  #   container_name: quantumdev-alertmanager
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9093:9093"
+  #   volumes:
+  #     - ./alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+  #     - alertmanager-data:/alertmanager
+  #   command:
+  #     - '--config.file=/etc/alertmanager/config.yml'
+  #     - '--storage.path=/alertmanager'
+  #   networks:
+  #     - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  # Persistent volumes for data retention
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  # alertmanager-data:
+  #   driver: local

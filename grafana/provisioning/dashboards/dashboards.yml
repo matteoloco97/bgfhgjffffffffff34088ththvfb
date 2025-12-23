@@ -1,0 +1,16 @@
+# Grafana Dashboard Provisioning
+# This file automatically loads dashboards from the specified directory
+
+apiVersion: 1
+
+providers:
+  - name: 'QuantumDev Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
