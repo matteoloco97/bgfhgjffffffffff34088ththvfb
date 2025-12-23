@@ -87,17 +87,17 @@ class SecretRotator:
         return secrets.token_urlsafe(length)
 
     @staticmethod
-    def generate_quantum_shared_secret(length: int = 32) -> str:
+    def generate_quantum_shared_secret(length: int = 64) -> str:
         """
         Generate a shared secret for inter-service authentication.
 
         Args:
-            length: Length of the secret (default: 32)
+            length: Length of the secret in characters (default: 64)
 
         Returns:
-            Hexadecimal secret string.
+            Hexadecimal secret string of specified length.
         """
-        return secrets.token_hex(length)
+        return secrets.token_hex(length // 2)
 
     def log_rotation_event(
         self,

@@ -415,6 +415,8 @@ def validate_required_secrets() -> None:
     Fails fast with a clear error message if any required secrets are missing.
     Logs warnings for recommended but optional secrets.
     
+    Note: Uses print() instead of logger because this runs before logging is configured.
+    
     Raises:
         ValueError: If any required secrets are missing.
     """
