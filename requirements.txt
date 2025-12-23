@@ -18,6 +18,9 @@ redis>=5.0.0
 chromadb>=0.4.18
 sentence-transformers>=2.2.2
 
+# Rate limiting
+slowapi>=0.1.9
+
 # Knowledge Graph and NLP
 networkx>=3.0
 spacy>=3.7.0
