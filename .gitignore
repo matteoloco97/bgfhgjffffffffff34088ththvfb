@@ -38,6 +38,12 @@ ENV/
 .env
 .env.local
 *.env.backup
+.env.encrypted
+
+# Encryption keys
+*.key
+encryption.key
+secrets.key
 
 # Data directories
 data/

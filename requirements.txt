@@ -44,6 +44,9 @@ Pillow>=10.0.0
 # Utilities
 typing-extensions>=4.8.0
 
+# Cryptography for secrets management
+cryptography>=41.0.0
+
 # System monitoring
 psutil>=5.9.0
 nvidia-ml-py>=12.535.0  # pynvml - optional for GPU monitoring

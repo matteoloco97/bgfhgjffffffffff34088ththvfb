@@ -405,6 +405,102 @@ BUILD_SIGNATURE = (
 )
 
 load_dotenv()
+
+# ============================= SECRETS VALIDATION ===============================
+
+def validate_required_secrets() -> None:
+    """
+    Validate that all required environment variables are present.
+    
+    Fails fast with a clear error message if any required secrets are missing.
+    Logs warnings for recommended but optional secrets.
+    
+    Note: Uses print() instead of logger because this runs before logging is configured.
+    
+    Raises:
+        ValueError: If any required secrets are missing.
+    """
+    # Required secrets - application cannot start without these
+    required_secrets = [
+        "LLM_ENDPOINT",
+    ]
+    
+    # Recommended secrets - application can run but with reduced security/functionality
+    recommended_secrets = [
+        ("ENCRYPTION_KEY", "for encrypted .env file support"),
+        ("ADMIN_TOKEN", "for admin API access and rate limit bypass"),
+    ]
+    
+    # Optional secrets that enhance functionality
+    optional_secrets = [
+        "OPENAI_API_KEY",
+        "BRAVE_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "REDIS_PASSWORD",
+        "JWT_SECRET",
+        "QUANTUM_SHARED_SECRET",
+    ]
+    
+    # Check required secrets
+    missing_required = []
+    for secret in required_secrets:
+        value = os.getenv(secret)
+        if not value:
+            missing_required.append(secret)
+    
+    # If any required secrets are missing, fail fast
+    if missing_required:
+        error_msg = (
+            f"\n{'=' * 70}\n"
+            f"STARTUP FAILED: Missing required environment variables\n"
+            f"{'=' * 70}\n"
+            f"The following required secrets are missing:\n"
+        )
+        for secret in missing_required:
+            error_msg += f"  ❌ {secret}\n"
+        error_msg += (
+            f"\nPlease ensure these variables are set in your .env file.\n"
+            f"See .env.example for configuration template.\n"
+            f"{'=' * 70}\n"
+        )
+        print(error_msg, file=sys.stderr)
+        raise ValueError(f"Required environment variables missing: {', '.join(missing_required)}")
+    
+    # Check recommended secrets and log warnings
+    missing_recommended = []
+    for secret, reason in recommended_secrets:
+        value = os.getenv(secret)
+        if not value:
+            missing_recommended.append((secret, reason))
+    
+    if missing_recommended:
+        warning_msg = (
+            f"\n{'=' * 70}\n"
+            f"SECURITY WARNING: Missing recommended environment variables\n"
+            f"{'=' * 70}\n"
+        )
+        for secret, reason in missing_recommended:
+            warning_msg += f"  ⚠️  {secret} - {reason}\n"
+        warning_msg += (
+            f"\nThe application will start, but functionality may be limited.\n"
+            f"See .env.example for configuration details.\n"
+            f"{'=' * 70}\n"
+        )
+        print(warning_msg, file=sys.stderr)
+    
+    # Log configured optional secrets (without revealing values)
+    configured_optional = [s for s in optional_secrets if os.getenv(s)]
+    if configured_optional:
+        print(f"✓ Optional secrets configured: {', '.join(configured_optional)}", file=sys.stderr)
+    
+    print("✓ [quantum_api] Secrets validation passed", file=sys.stderr)
+
+
+# Validate secrets before initializing the app
+validate_required_secrets()
+
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
