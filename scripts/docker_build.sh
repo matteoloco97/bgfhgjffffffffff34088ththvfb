@@ -185,7 +185,12 @@ done
 
 # Push if requested
 if [ -n "${PUSH_AFTER}" ]; then
-    log_info "Pushing images to registry..."
+    if [ -z "${REGISTRY}" ]; then
+        log_error "Cannot push: REGISTRY not set. Use -r/--registry to specify a registry."
+        exit 1
+    fi
+    
+    log_info "Pushing images to registry ${REGISTRY}..."
     
     for target in "${TARGETS[@]}"; do
         case $target in
@@ -206,7 +211,7 @@ if [ -n "${PUSH_AFTER}" ]; then
         esac
     done
     
-    log_success "All images pushed"
+    log_success "All images pushed to ${REGISTRY}"
 fi
 
 # Show built images

@@ -154,9 +154,11 @@ status() {
     echo ""
     log_info "Health check:"
     
-    # Check API health
-    if curl -sf http://localhost:8081/healthz > /dev/null 2>&1; then
+    # Check API health (use docker exec for reliability in container environment)
+    if docker exec quantumdev-api wget --quiet --tries=1 --spider http://localhost:8081/healthz 2>/dev/null; then
         log_success "API: Healthy"
+    elif curl -sf http://localhost:8081/healthz > /dev/null 2>&1; then
+        log_success "API: Healthy (via exposed port)"
     else
         log_error "API: Unhealthy or not running"
     fi
@@ -168,9 +170,11 @@ status() {
         log_error "Redis: Unhealthy or not running"
     fi
     
-    # Check ChromaDB
-    if curl -sf http://localhost:8000/api/v1/heartbeat > /dev/null 2>&1; then
+    # Check ChromaDB (use docker exec for reliability)
+    if docker exec quantumdev-chromadb curl -sf http://localhost:8000/api/v1/heartbeat > /dev/null 2>&1; then
         log_success "ChromaDB: Healthy"
+    elif curl -sf http://localhost:8000/api/v1/heartbeat > /dev/null 2>&1; then
+        log_success "ChromaDB: Healthy (via exposed port)"
     else
         log_error "ChromaDB: Unhealthy or not running"
     fi

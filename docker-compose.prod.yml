@@ -169,7 +169,7 @@ networks:
       com.docker.network.driver.mtu: 1500
   backend:
     driver: bridge
-    internal: true  # Not accessible from outside in production
+    internal: true  # Prevents outbound internet access from backend services
 
 # =============================================================================
 # Production volumes with backup labels

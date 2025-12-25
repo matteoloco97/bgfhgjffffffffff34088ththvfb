@@ -42,7 +42,6 @@ show_usage() {
     echo "  -f, --follow      Follow log output"
     echo "  -n, --lines NUM   Number of lines to show (default: 100)"
     echo "  --since TIME      Show logs since timestamp (e.g., 10m, 1h, 2023-01-01)"
-    echo "  --until TIME      Show logs until timestamp"
     echo "  --no-color        Disable colors"
     echo "  -h, --help        Show this help"
     echo ""
@@ -102,7 +101,6 @@ show_logs() {
     [ -n "$FOLLOW" ] && cmd="$cmd -f"
     [ -n "$LINES" ] && cmd="$cmd --tail $LINES"
     [ -n "$SINCE" ] && cmd="$cmd --since $SINCE"
-    [ -n "$UNTIL" ] && cmd="$cmd --until $UNTIL"
     [ -n "$NO_COLOR" ] || cmd="$cmd --timestamps"
     
     $cmd "$container_name"
@@ -150,7 +148,6 @@ export_logs() {
 SERVICE=""
 FOLLOW=""
 SINCE=""
-UNTIL=""
 NO_COLOR=""
 EXPORT=""
 
@@ -166,10 +163,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --since)
             SINCE="$2"
-            shift 2
-            ;;
-        --until)
-            UNTIL="$2"
             shift 2
             ;;
         --no-color)

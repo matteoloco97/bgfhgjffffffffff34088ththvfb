@@ -87,9 +87,9 @@ USER ${APP_USER}
 # Expose port
 EXPOSE 8081
 
-# Health check
+# Health check (using wget for reliability)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8081/healthz || exit 1
+    CMD wget --quiet --tries=1 --spider http://localhost:8081/healthz || exit 1
 
 # Default command - run the FastAPI server
 CMD ["uvicorn", "backend.quantum_api:app", "--host", "0.0.0.0", "--port", "8081"]
