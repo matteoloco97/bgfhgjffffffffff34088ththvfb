@@ -1,0 +1,65 @@
+# QuantumDev Max - Core Dependencies
+# Python 3.10+
+
+# Web framework and API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+
+# LLM and AI
+openai>=1.3.0
+python-dotenv>=1.0.0
+transformers>=4.30.0
+accelerate>=0.20.0
+
+# Database and caching
+redis>=5.0.0
+chromadb>=0.4.18
+sentence-transformers>=2.2.2
+
+# Rate limiting
+slowapi>=0.1.9
+
+# Knowledge Graph and NLP
+networkx>=3.0
+spacy>=3.7.0
+
+# Web scraping and search
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+aiohttp>=3.9.0
+
+# Data processing
+pyyaml>=6.0.0
+python-dateutil>=2.8.0
+PyPDF2>=3.0.0
+
+# OCR (Optical Character Recognition) - BLOCK 5
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Utilities
+typing-extensions>=4.8.0
+
+# Cryptography for secrets management
+cryptography>=41.0.0
+
+# System monitoring
+psutil>=5.9.0
+nvidia-ml-py>=12.535.0  # pynvml - optional for GPU monitoring
+paramiko>=3.0.0  # SSH for remote GPU monitoring
+
+# Prometheus metrics and monitoring
+prometheus-client>=0.19.0
+prometheus-fastapi-instrumentator>=6.1.0
+
+# HTTP and async support
+httpx>=0.25.0  # For streaming support
+
+# Telegram bot (optional)
+python-telegram-bot>=20.0  # For Telegram bot interface
+
+# Optional API integrations (for enhanced search)
+# google-search-results>=2.4.2  # SerpAPI client

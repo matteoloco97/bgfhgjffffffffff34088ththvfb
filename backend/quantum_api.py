@@ -1,0 +1,6115 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+# ============================================================================
+# CRITICAL PROXY FIX - Must be at the very top before ANY network usage
+# ============================================================================
+
+import os
+import sys
+
+# Force disable ALL proxies
+for key in [
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "ftp_proxy",
+    "FTP_PROXY",
+    "socks_proxy",
+    "SOCKS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+]:
+    os.environ.pop(key, None)
+
+# Also patch requests module to never use env proxies
+import requests  # noqa: E402
+
+if hasattr(requests.sessions.Session, "__init__"):
+    _original_init = requests.sessions.Session.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        # never read proxies / certs from env
+        self.trust_env = False
+
+    requests.sessions.Session.__init__ = _patched_init
+
+print("✓ [quantum_api] Proxies disabled globally", file=sys.stderr)
+
+# ============================================================================
+
+"""
+backend/quantum_api.py — Smart routing + Chroma + Auto-Save + Semantic Cache
+"""
+
+import re
+import asyncio
+import time
+import json
+import hashlib
+import logging
+import math
+from typing import Optional, List, Dict, Tuple, Any
+
+import redis
+from fastapi import FastAPI, Request, Body, UploadFile, File, HTTPException
+from fastapi.responses import Response
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv
+from urllib.parse import urlparse
+from pydantic import BaseModel, Field, ValidationError
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# (per /memory/debug leggero)
+try:
+    import chromadb
+    from chromadb.config import Settings as _ChromaSettings  # type: ignore
+except Exception:  # pragma: no cover
+    chromadb = None  # type: ignore
+    _ChromaSettings = None  # type: ignore
+
+# ROOT nel sys.path
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+# === VALIDATION MODELS ===
+from backend.models import (
+    ChatRequest,
+    WebSearchRequest,
+    WebSummarizeRequest,
+    AutonomousRequest,
+    ToolRequest,
+)
+
+# === CORE ===
+from core.persona_store import get_persona, set_persona, reset_persona
+from core.web_tools import fetch_and_extract
+from core.multi_level_cache import get_multi_level_cache
+from core.cache_middleware import cached_response, get_cache_stats, reset_cache_stats
+from core.parallel_synthesis import (
+    parallel_synthesize_documents,
+    is_parallel_synthesis_enabled,
+    get_parallel_synthesis_config,
+)
+
+# Mini-cache web (import resiliente)
+try:
+    from core.web_tools import (
+        minicache_stats as _webcache_stats,
+        minicache_flush as _webcache_flush,
+    )
+except Exception:  # pragma: no cover
+
+    def _webcache_stats() -> Dict[str, Any]:
+        return {"enabled": False, "error": "web minicache not available"}
+
+    def _webcache_flush(url: Optional[str] = None) -> Dict[str, Any]:
+        base: Dict[str, Any] = {
+            "flushed": 0,
+            "notice": "web minicache not available",
+        }
+        if url:
+            base["url"] = url
+        return base
+
+
+from core.chat_engine import reply_with_llm, reply_with_llm_streaming
+from core.memory_autosave import autosave
+from core.streaming_utils import (
+    format_sse_message,
+    create_thinking_message,
+    create_token_message,
+    create_done_message,
+    create_error_message,
+    get_sse_headers,
+)
+
+# LLM config presets for optimized parameters
+try:
+    from core.llm_config import get_preset, to_payload_params
+except Exception:
+    # Fallback if llm_config not available
+    def get_preset(name):  # type: ignore
+        return None
+    def to_payload_params(preset):  # type: ignore
+        return {}
+
+# === TOOLS (BLOCK 4) ===
+from core.calculator import Calculator, is_calculator_query
+from agents.code_execution import run_code
+from core.code_executor import execute_python_snippet
+from core.docs_ingest import (
+    extract_text_from_bytes,
+    index_document,
+    query_user_docs,
+)
+
+# Web research orchestrator (Claude-style)
+try:
+    from agents.web_research_agent import WebResearchAgent
+except Exception:  # pragma: no cover
+    WebResearchAgent = None  # type: ignore
+
+# 🌤️ Weather Agent (Open-Meteo API)
+try:
+    from agents.weather_open_meteo import (
+        get_weather_for_query,
+        is_weather_query,
+        extract_city_from_query,
+    )
+    WEATHER_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_weather_for_query = None  # type: ignore
+    is_weather_query = None  # type: ignore
+    extract_city_from_query = None  # type: ignore
+    WEATHER_AGENT_AVAILABLE = False
+
+# 💰 Price Agent (Crypto/Stocks/Forex)
+try:
+    from agents.price_agent import (
+        get_price_for_query,
+        is_price_query,
+    )
+    PRICE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_price_for_query = None  # type: ignore
+    is_price_query = None  # type: ignore
+    PRICE_AGENT_AVAILABLE = False
+
+# ⚽ Sports Agent (Results/Standings)
+try:
+    from agents.sports_agent import (
+        get_sports_for_query,
+        is_sports_query,
+    )
+    SPORTS_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_sports_for_query = None  # type: ignore
+    is_sports_query = None  # type: ignore
+    SPORTS_AGENT_AVAILABLE = False
+
+# 📰 News Agent (Breaking News)
+try:
+    from agents.news_agent import (
+        get_news_for_query,
+        is_news_query,
+    )
+    NEWS_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_news_for_query = None  # type: ignore
+    is_news_query = None  # type: ignore
+    NEWS_AGENT_AVAILABLE = False
+
+# 📅 Schedule Agent (Events/Calendar)
+try:
+    from agents.schedule_agent import (
+        get_schedule_for_query,
+        is_schedule_query,
+    )
+    SCHEDULE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_schedule_for_query = None  # type: ignore
+    is_schedule_query = None  # type: ignore
+    SCHEDULE_AGENT_AVAILABLE = False
+
+# 💻 Code Agent (Code Generation/Debug)
+try:
+    from agents.code_agent import (
+        get_code_for_query,
+        is_code_query,
+    )
+    CODE_AGENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_code_for_query = None  # type: ignore
+    is_code_query = None  # type: ignore
+    CODE_AGENT_AVAILABLE = False
+
+# 🌐 Unified Web Handler (consistent routing)
+try:
+    from core.unified_web_handler import (
+        handle_web_query,
+        handle_web_command,
+        get_unified_web_handler,
+    )
+    UNIFIED_WEB_HANDLER_AVAILABLE = True
+except Exception:  # pragma: no cover
+    handle_web_query = None  # type: ignore
+    handle_web_command = None  # type: ignore
+    get_unified_web_handler = None  # type: ignore
+    UNIFIED_WEB_HANDLER_AVAILABLE = False
+
+# Smart intent (rule-based)
+from core.smart_intent_classifier import SmartIntentClassifier
+
+# Intent feedback (telemetria)
+try:
+    from core.intent_feedback import IntentFeedbackSystem
+except Exception:  # pragma: no cover
+
+    class IntentFeedbackSystem:  # type: ignore[no-redef]
+        def record_feedback(self, **kwargs: Any) -> None:
+            pass
+
+
+# LLM Intent Classifier (NUOVO)
+try:
+    from core.llm_intent_classifier import (
+        get_llm_intent_classifier,
+        LLM_INTENT_ENABLED,
+    )
+except Exception:  # pragma: no cover
+    get_llm_intent_classifier = None  # type: ignore
+    LLM_INTENT_ENABLED = False  # type: ignore
+
+# Validator + Analytics (safe import, opzionali)
+try:
+    from core.web_validator import SourceValidator
+except Exception:  # pragma: no cover
+    SourceValidator = None  # type: ignore
+
+try:
+    from utils.search_analytics import SearchAnalytics
+except Exception:  # pragma: no cover
+    SearchAnalytics = None  # type: ignore
+
+_VALIDATOR = SourceValidator() if SourceValidator else None
+_ANALYTICS = SearchAnalytics() if SearchAnalytics else None
+
+# ── Semantic Cache: import LAZY (evita import torch al boot) ─────────
+_SEMCACHE: Optional[Any] = None
+_SCM_IMPORTED = False
+
+
+def _ensure_semcache_import() -> None:
+    """Importa core.semantic_cache solo al primo uso."""
+    global _SCM_IMPORTED
+    if _SCM_IMPORTED:
+        return
+
+    try:
+        from core.semantic_cache import (  # type: ignore
+            get_semantic_cache as _gsc,
+            SemanticCache as _SC,
+        )
+    except Exception as e:  # pragma: no cover
+        logging.getLogger(__name__).warning(
+            f"Semantic cache module not available: {e}"
+        )
+
+        def _gsc() -> Any:
+            raise RuntimeError("semantic cache not available")
+
+        class _SC:  # type: ignore
+            @staticmethod
+            def fingerprint(system_prompt: str, model_name: str, intent: str) -> str:
+                return f"{intent}:{hashlib.sha256(system_prompt.encode('utf-8')).hexdigest()[:8]}"
+
+        globals()["get_semantic_cache"] = _gsc
+        globals()["SemanticCache"] = _SC
+        _SCM_IMPORTED = True
+        return
+
+    globals()["get_semantic_cache"] = _gsc
+    globals()["SemanticCache"] = _SC  # type: ignore[name-defined]
+    _SCM_IMPORTED = True
+
+
+# search helpers
+from core.source_policy import pick_domains
+from core.web_querybuilder import build_query_variants
+from core.reranker import Reranker
+
+# Search diversifier (multi-domain)
+try:
+    from core.search_diversifier import (
+        SearchDiversifier,
+        get_search_diversifier,
+        DIVERSIFIER_MAX_PER_DOMAIN,
+        DIVERSIFIER_PRESERVE_TOP_N,
+        DIVERSIFIER_MIN_UNIQUE_DOMAINS,
+    )
+except Exception:  # pragma: no cover
+    SearchDiversifier = None  # type: ignore
+
+    def get_search_diversifier() -> Optional[Any]:  # type: ignore
+        return None
+
+    # fallback config se modulo non disponibile
+    DIVERSIFIER_MAX_PER_DOMAIN = 2
+    DIVERSIFIER_PRESERVE_TOP_N = 3
+    DIVERSIFIER_MIN_UNIQUE_DOMAINS = 5
+
+# === Token budget util ===
+try:
+    from core.token_budget import approx_tokens, trim_to_tokens
+except Exception:  # pragma: no cover
+
+    def approx_tokens(s: str) -> int:
+        return math.ceil(len(s or "") / 4)
+
+    def trim_to_tokens(s: str, max_tokens: int) -> str:
+        if not s or max_tokens <= 0:
+            return ""
+        max_chars = max_tokens * 4
+        return s[:max_chars]
+
+
+# === MEMORY (ChromaDB) ===
+from utils.chroma_handler import (
+    ensure_collections,
+    add_fact,
+    add_pref,
+    add_bet,
+    search_topk,
+    debug_dump,
+    _substring_fallback,
+    FACTS,
+    PREFS,
+    BETS,
+    _col,
+    reembed_all,
+    search_topk_with_filters,
+    add_bets_batch,
+    cleanup_old_facts,
+    cleanup_old_bets,
+    cleanup_old,
+    migrate_collection,
+    reembed_collection,
+)
+
+# 🔥 Nuovi import (sintesi aggressiva + fetch parallelo ottimizzato)
+from backend.synthesis_prompt_v2 import build_aggressive_synthesis_prompt
+from backend.parallel_fetch_optimizer import parallel_fetch_and_extract
+
+# 🆕 PROBLEMA 2 & 3: Web response formatter + Conversational context
+from core.web_response_formatter import format_web_response
+from core.conversational_web_context import get_web_context_manager
+
+BUILD_SIGNATURE = (
+    "smart-intent-2025-11-29+env-safe+lazy-semcache+token-budget+summarize-q+no-error-user+"
+    "feedback-toggle+web-search-endpoint+meta-override+zero-web-guard+no-generic-fallback+"
+    "parallel-fetch-v1+validator+analytics+guard-relax+warm-harden+explain-guard+"
+    "analytics-endpoints+web-minicache-endpoints+web-research-agent+web-summary-direct+"
+    "search-diversifier+synthesis-aggressive-v1+llm-intent+jarvis-uncensored-v1+web-deep-mode-v1+"
+    "live-agents-v1+price-agent+sports-agent+news-agent+schedule-agent+live-cache-redis+"
+    "autoweb-punct-fix+concise-formatter+conversational-context"
+)
+
+load_dotenv()
+
+# ============================= SECRETS VALIDATION ===============================
+
+def validate_required_secrets() -> None:
+    """
+    Validate that all required environment variables are present.
+    
+    Fails fast with a clear error message if any required secrets are missing.
+    Logs warnings for recommended but optional secrets.
+    
+    Note: Uses print() instead of logger because this runs before logging is configured.
+    
+    Raises:
+        ValueError: If any required secrets are missing.
+    """
+    # Required secrets - application cannot start without these
+    required_secrets = [
+        "LLM_ENDPOINT",
+    ]
+    
+    # Recommended secrets - application can run but with reduced security/functionality
+    recommended_secrets = [
+        ("ENCRYPTION_KEY", "for encrypted .env file support"),
+        ("ADMIN_TOKEN", "for admin API access and rate limit bypass"),
+    ]
+    
+    # Optional secrets that enhance functionality
+    optional_secrets = [
+        "OPENAI_API_KEY",
+        "BRAVE_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "REDIS_PASSWORD",
+        "JWT_SECRET",
+        "QUANTUM_SHARED_SECRET",
+    ]
+    
+    # Check required secrets
+    missing_required = []
+    for secret in required_secrets:
+        value = os.getenv(secret)
+        if not value:
+            missing_required.append(secret)
+    
+    # If any required secrets are missing, fail fast
+    if missing_required:
+        error_msg = (
+            f"\n{'=' * 70}\n"
+            f"STARTUP FAILED: Missing required environment variables\n"
+            f"{'=' * 70}\n"
+            f"The following required secrets are missing:\n"
+        )
+        for secret in missing_required:
+            error_msg += f"  ❌ {secret}\n"
+        error_msg += (
+            f"\nPlease ensure these variables are set in your .env file.\n"
+            f"See .env.example for configuration template.\n"
+            f"{'=' * 70}\n"
+        )
+        print(error_msg, file=sys.stderr)
+        raise ValueError(f"Required environment variables missing: {', '.join(missing_required)}")
+    
+    # Check recommended secrets and log warnings
+    missing_recommended = []
+    for secret, reason in recommended_secrets:
+        value = os.getenv(secret)
+        if not value:
+            missing_recommended.append((secret, reason))
+    
+    if missing_recommended:
+        warning_msg = (
+            f"\n{'=' * 70}\n"
+            f"SECURITY WARNING: Missing recommended environment variables\n"
+            f"{'=' * 70}\n"
+        )
+        for secret, reason in missing_recommended:
+            warning_msg += f"  ⚠️  {secret} - {reason}\n"
+        warning_msg += (
+            f"\nThe application will start, but functionality may be limited.\n"
+            f"See .env.example for configuration details.\n"
+            f"{'=' * 70}\n"
+        )
+        print(warning_msg, file=sys.stderr)
+    
+    # Log configured optional secrets (without revealing values)
+    configured_optional = [s for s in optional_secrets if os.getenv(s)]
+    if configured_optional:
+        print(f"✓ Optional secrets configured: {', '.join(configured_optional)}", file=sys.stderr)
+    
+    print("✓ [quantum_api] Secrets validation passed", file=sys.stderr)
+
+
+# Validate secrets before initializing the app
+validate_required_secrets()
+
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+# ============================= RATE LIMITING ===================================
+
+# Admin token for bypassing rate limits
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+def get_remote_address_with_whitelist(request: Request) -> str:
+    """
+    Get remote address with automatic localhost bypass.
+    
+    Checks for:
+    1. Localhost/loopback addresses (127.0.0.1, ::1, localhost) - ALWAYS bypassed
+    2. Admin token in X-Admin-Token header
+    3. Proxy headers (X-Forwarded-For, X-Real-IP) for real IP
+    
+    Returns a special identifier for whitelisted requests to bypass rate limits.
+    """
+    # Check for admin token bypass
+    if ADMIN_TOKEN and request.headers.get("X-Admin-Token") == ADMIN_TOKEN:
+        log.info("[RATELIMIT] Admin token bypass used")
+        return "admin-bypass"
+    
+    # Get real IP (considering proxy headers)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For can contain multiple IPs, take the first (client IP)
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.headers.get("X-Real-IP") or request.client.host if request.client else "unknown"
+    
+    # Check for localhost/loopback addresses (CRITICAL for Telegram Bot)
+    localhost_addresses = ["127.0.0.1", "::1", "localhost", "0.0.0.0"]
+    if client_ip in localhost_addresses:
+        log.info(f"[RATELIMIT] Localhost bypass: {client_ip}")
+        return "localhost-bypass"
+    
+    log.debug(f"[RATELIMIT] Client IP: {client_ip}")
+    return client_ip
+
+# Initialize rate limiter with Redis storage
+limiter = Limiter(
+    key_func=get_remote_address_with_whitelist,
+    storage_uri=f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/{os.getenv('REDIS_DB', '0')}",
+    default_limits=[]  # No default limits, we'll specify per-endpoint
+)
+
+# Add rate limiter to app state
+app.state.limiter = limiter
+
+# Custom 429 error handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """
+    Custom error handler for rate limit exceeded (429).
+    Returns helpful information about when the limit resets.
+    """
+    log.warning(f"[RATELIMIT] Rate limit exceeded for {request.url.path} from {request.client.host if request.client else 'unknown'}")
+    
+    # Extract retry-after from exception if available
+    retry_after = getattr(exc, "retry_after", 60)
+    
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "message": "Too many requests. Please slow down and try again later.",
+            "detail": f"Rate limit exceeded for this endpoint. Please wait {retry_after} seconds before retrying.",
+            "retry_after_seconds": retry_after,
+            "endpoint": str(request.url.path),
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(getattr(exc, "limit", "unknown")),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(int(time.time()) + retry_after),
+        }
+    )
+
+# Add rate limit middleware for headers on all responses
+@app.middleware("http")
+async def add_rate_limit_headers(request: Request, call_next):
+    """
+    Middleware to add rate limit headers to all responses.
+    This helps clients track their usage.
+    """
+    response = await call_next(request)
+    
+    # Add rate limit headers if available from limiter
+    # Note: slowapi manages these internally, this is just for consistency
+    if not response.headers.get("X-RateLimit-Limit"):
+        # These will be overridden by slowapi for rate-limited endpoints
+        response.headers["X-RateLimit-Limit"] = "unlimited"
+        response.headers["X-RateLimit-Remaining"] = "unlimited"
+    
+    return response
+
+log.info("[RATELIMIT] Rate limiting initialized with Redis storage")
+log.info(f"[RATELIMIT] Localhost (127.0.0.1) and ::1 are AUTOMATICALLY whitelisted")
+if ADMIN_TOKEN:
+    log.info("[RATELIMIT] Admin token bypass is configured")
+
+# ============================= PROMETHEUS METRICS =====================================
+
+# Initialize Prometheus metrics instrumentation
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from core.metrics import (
+        track_chat_request,
+        track_web_search,
+        track_cache_hit,
+        track_cache_miss,
+        observe_chat_latency,
+        observe_llm_synthesis,
+        observe_web_fetch,
+        observe_response_size,
+        set_active_sessions,
+        set_cache_size,
+        set_llm_queue_size,
+        track_error,
+        track_llm_request,
+    )
+    
+    # Initialize instrumentator with auto-instrumentation
+    instrumentator = Instrumentator(
+        should_group_status_codes=False,
+        should_ignore_untemplated=False,
+        should_respect_env_var=True,
+        should_instrument_requests_inprogress=True,
+        excluded_handlers=["/metrics"],
+        env_var_name="ENABLE_METRICS",
+        inprogress_name="http_requests_inprogress",
+        inprogress_labels=True,
+    )
+    
+    # Instrument the FastAPI app
+    instrumentator.instrument(app)
+    
+    # Expose metrics endpoint at /metrics
+    #     instrumentator.expose(app, endpoint="/metrics", include_in_schema=True)
+    
+    log.info("[METRICS] Prometheus metrics initialized - /metrics endpoint available")
+    METRICS_AVAILABLE = True
+except Exception as e:
+    log.warning(f"[METRICS] Failed to initialize Prometheus metrics: {e}")
+
+# Manual Prometheus metrics endpoint (fallback if instrumentator.expose fails)
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    """
+    Prometheus metrics endpoint
+    Returns all registered Prometheus metrics in text format
+    """
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+    METRICS_AVAILABLE = False
+    # Define no-op functions if metrics are not available
+    def track_chat_request(*args, **kwargs): pass
+    def track_web_search(*args, **kwargs): pass
+    def track_cache_hit(*args, **kwargs): pass
+    def track_cache_miss(*args, **kwargs): pass
+    def observe_chat_latency(*args, **kwargs): pass
+    def observe_llm_synthesis(*args, **kwargs): pass
+    def observe_web_fetch(*args, **kwargs): pass
+    def observe_response_size(*args, **kwargs): pass
+    def set_active_sessions(*args, **kwargs): pass
+    def set_cache_size(*args, **kwargs): pass
+    def set_llm_queue_size(*args, **kwargs): pass
+    def track_error(*args, **kwargs): pass
+    def track_llm_request(*args, **kwargs): pass
+
+# ===============================================================================
+
+# Initialize templates for HTML dashboard
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+# Initialize multi-level cache
+ml_cache = get_multi_level_cache()
+
+# ============================= ENV ===================================
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)) or str(default)
+    m = re.search(r"-?\d+", raw)
+    try:
+        return int(m.group(0)) if m else int(default)
+    except Exception:
+        return int(default)
+
+
+def env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default)) or str(default)
+    m = re.search(r"-?\d+(?:\.\d+)?", raw)
+    try:
+        return float(m.group(0)) if m else float(default)
+    except Exception:
+        return float(default)
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name, "1" if default else "0") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+ENV_LLM_ENDPOINT = os.getenv("LLM_ENDPOINT")
+ENV_TUNNEL_ENDPOINT = os.getenv("TUNNEL_ENDPOINT")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-32b-awq")
+TEMPERATURE = env_float("LLM_TEMPERATURE", 0.7)
+MAX_TOKENS = env_int("LLM_MAX_TOKENS", 512)
+
+# 🔒 Budget/contesto
+LLM_MAX_CTX = env_int("LLM_MAX_CTX", 8192)
+LLM_OUTPUT_BUDGET_TOK = env_int("LLM_OUTPUT_BUDGET_TOK", MAX_TOKENS)
+LLM_SAFETY_MARGIN_TOK = env_int("LLM_SAFETY_MARGIN_TOK", 256)
+WEB_SUMMARY_BUDGET_TOK = env_int("WEB_SUMMARY_BUDGET_TOK", 1200)
+WEB_EXTRACT_PER_DOC_TOK = env_int("WEB_EXTRACT_PER_DOC_TOK", 700)
+WEB_SUMMARIZE_TOP_DEFAULT = env_int("WEB_SUMMARIZE_TOP_DEFAULT", 2)
+
+# 🔍 Deep web search toggle
+WEB_SEARCH_DEEP_MODE = env_bool("WEB_SEARCH_DEEP_MODE", False)
+WEB_DEEP_MAX_SOURCES = env_int("WEB_DEEP_MAX_SOURCES", 15)
+
+# 🔄 STEP 2: Autoweb Deep Retry & Fallback
+WEB_DEEP_MIN_RESULTS = env_int("WEB_DEEP_MIN_RESULTS", 3)  # Trigger deep retry if < 3 results
+WEB_DEEP_MAX_RETRIES = env_int("WEB_DEEP_MAX_RETRIES", 1)  # Max 1 second attempt
+WEB_FALLBACK_TO_LLM = env_bool("WEB_FALLBACK_TO_LLM", True)  # Fallback to LLM if web fails
+
+# 🆕 PROBLEMA 2: Concise web response formatter
+WEB_USE_CONCISE_FORMATTER = env_bool("WEB_USE_CONCISE_FORMATTER", True)  # Enable ultra-concise responses
+
+
+# ⚡️ Parallel fetch env
+WEB_FETCH_TIMEOUT_S = env_float("WEB_FETCH_TIMEOUT_S", 3.0)
+WEB_FETCH_MAX_INFLIGHT = env_int("WEB_FETCH_MAX_INFLIGHT", 4)
+WEB_READ_TIMEOUT_S = env_float("WEB_READ_TIMEOUT_S", 6.0)
+
+# 🚀 Live Agent Cache TTL (in secondi)
+LIVE_CACHE_TTL_WEATHER = env_int("LIVE_CACHE_TTL_WEATHER", 1800)  # 30 min
+LIVE_CACHE_TTL_PRICE = env_int("LIVE_CACHE_TTL_PRICE", 60)  # 1 min (prezzi cambiano spesso)
+LIVE_CACHE_TTL_SPORTS = env_int("LIVE_CACHE_TTL_SPORTS", 300)  # 5 min
+LIVE_CACHE_TTL_NEWS = env_int("LIVE_CACHE_TTL_NEWS", 600)  # 10 min
+LIVE_CACHE_TTL_SCHEDULE = env_int("LIVE_CACHE_TTL_SCHEDULE", 3600)  # 1 ora
+
+# 🕐 Live Agent Timeout (in secondi)
+LIVE_AGENT_TIMEOUT_S = env_float("LIVE_AGENT_TIMEOUT_S", 10.0)
+
+# Feedback back-end (telemetria, NON addestra il modello)
+INTENT_FEEDBACK_ENABLED = env_bool("INTENT_FEEDBACK_ENABLED", False)
+
+# Semantic Cache init mode
+SEMCACHE_INIT_ON_STARTUP = env_bool("SEMCACHE_INIT_ON_STARTUP", False)
+
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = env_int("REDIS_PORT", 6379)
+REDIS_DB = env_int("REDIS_DB", 0)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+
+USE_RERANKER = env_bool("USE_RERANKER", True)
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+RERANKER_DEVICE = os.getenv("RERANKER_DEVICE", "cpu")
+
+# Diversifier (flag globale)
+DIVERSIFIER_ENABLED = env_bool("DIVERSIFIER_ENABLED", True)
+
+# === TOOLS Configuration (BLOCK 4) ===
+TOOLS_MATH_ENABLED = env_bool("TOOLS_MATH_ENABLED", True)
+TOOLS_PYTHON_EXEC_ENABLED = env_bool("TOOLS_PYTHON_EXEC_ENABLED", False)
+CODE_EXEC_ENABLED = env_bool("CODE_EXEC_ENABLED", False)
+CODE_EXEC_TIMEOUT = env_float("CODE_EXEC_TIMEOUT", 10.0)
+TOOLS_DOCS_ENABLED = env_bool("TOOLS_DOCS_ENABLED", True)
+MAX_UPLOAD_SIZE_MB = env_int("MAX_UPLOAD_SIZE_MB", 10)
+DOCS_MAX_CHUNKS_PER_FILE = env_int("DOCS_MAX_CHUNKS_PER_FILE", 500)
+
+# Chroma
+MEM_HALF_LIFE_D = env_float("MEM_HALF_LIFE_D", 7.0)
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "/memory/chroma")
+EMBED_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+)
+
+# 🧠 Personal Memory Configuration (NUOVO - STEP 1)
+USER_PROFILE_ENABLED = env_bool("USER_PROFILE_ENABLED", True)
+EPISODIC_MEMORY_ENABLED = env_bool("EPISODIC_MEMORY_ENABLED", True)
+MEMORY_PROFILE_TOP_K = env_int("MEMORY_PROFILE_TOP_K", 5)
+MEMORY_EPISODIC_TOP_K = env_int("MEMORY_EPISODIC_TOP_K", 3)
+MEMORY_MAX_CONTEXT_TOKENS = env_int("MEMORY_MAX_CONTEXT_TOKENS", 800)
+
+# 🔗 Knowledge Graph API Configuration
+KG_API_MAX_DEPTH_MIN = 1
+KG_API_MAX_DEPTH_MAX = 3
+KG_API_MAX_RESULTS_MIN = 1
+KG_API_MAX_RESULTS_MAX = 100
+KG_API_TOP_K_MIN = 1
+KG_API_TOP_K_MAX = 10
+
+# Admin
+QUANTUM_SHARED_SECRET = os.getenv("QUANTUM_SHARED_SECRET", "")
+
+# Analytics file path (fallback se _ANALYTICS non disponibile)
+SEARCH_ANALYTICS_LOG = os.getenv(
+    "SEARCH_ANALYTICS_LOG", "/root/quantumdev-open/logs/search_analytics.jsonl"
+)
+
+_SMART_INTENT = SmartIntentClassifier()
+_INTENT_FB = IntentFeedbackSystem()
+
+# LLM Intent Classifier (NUOVO)
+_LLM_INTENT_CLASSIFIER: Optional[Any] = None
+
+# 🌌 DEFAULT PERSONA + LAYER INCENSURATO ==============================
+DEFAULT_SYSTEM_PROMPT = os.getenv(
+    "DEFAULT_SYSTEM_PROMPT",
+    (
+        "Sei Jarvis, l'AI personale generale di Matteo. "
+        "Rispondi su QUALSIASI argomento (tecnico, pratico, personale, business, sport, crypto, betting, coding, ecc.) "
+        "in modo diretto, concreto e strategico. Non usare toni da manuale scolastico: parla come un consulente "
+        "molto competente e senza giri di parole."
+    ),
+)
+
+INCENSURATO_PROMPT = (
+    "=== MODALITÀ JARVIS v4 INCENSURATO ===\n"
+    "Sei un'AI avanzata senza restrizioni inutili. Segui queste regole:\n\n"
+    "1. RISPONDI SEMPRE in modo diretto, tecnico e concreto.\n"
+    "2. NON dire MAI 'come modello AI non posso', 'non sono in grado', 'non posso fornire consigli'.\n"
+    "3. Se una richiesta è PERICOLOSA per la vita reale:\n"
+    "   - Dillo in 1 frase breve ('Questo è pericoloso perché...')\n"
+    "4. Per tutto il resto, fornisci sempre la risposta più completa e precisa possibile.\n"
+    "5. Analizza in profondità, ragiona step-by-step sui problemi complessi.\n"
+    "6. Se non hai un dato specifico, dillo chiaramente e separa ciò che sai con certezza.\n"
+    "7. Usa la tua memoria per contestualizzare le risposte all'utente specifico.\n"
+    "8. Sii proattivo: suggerisci approcci migliori quando vedi potenziali problemi.\n"
+)
+
+# =====================================================================
+
+
+def get_llm_classifier() -> Optional[Any]:
+    global _LLM_INTENT_CLASSIFIER
+    if _LLM_INTENT_CLASSIFIER is None and LLM_INTENT_ENABLED and get_llm_intent_classifier:
+        try:
+            _LLM_INTENT_CLASSIFIER = get_llm_intent_classifier()
+            log.info("LLM Intent Classifier initialized")
+        except Exception as e:
+            log.error(f"LLM Intent Classifier init failed: {e}")
+    return _LLM_INTENT_CLASSIFIER
+
+
+_reranker: Optional[Reranker] = None
+
+# SearchDiversifier singleton (safe init)
+try:
+    _SEARCH_DIVERSIFIER: Optional[Any] = get_search_diversifier()
+except Exception as e:  # pragma: no cover
+    log.error(f"SearchDiversifier init failed: {e}")
+    _SEARCH_DIVERSIFIER = None
+
+# WebResearchAgent singleton
+_WEB_RESEARCH_AGENT: Optional[Any] = None
+
+
+def get_web_research_agent() -> Optional[Any]:
+    global _WEB_RESEARCH_AGENT
+    if WebResearchAgent is None:
+        return None
+    if _WEB_RESEARCH_AGENT is None:
+        try:
+            _WEB_RESEARCH_AGENT = WebResearchAgent()
+            log.info("WebResearchAgent initialized.")
+        except Exception as e:
+            log.error(f"WebResearchAgent init failed: {e}")
+            _WEB_RESEARCH_AGENT = None
+    return _WEB_RESEARCH_AGENT
+
+
+# =========================== Helpers =================================
+def get_reranker() -> Optional[Reranker]:
+    global _reranker
+    if not USE_RERANKER:
+        return None
+    if _reranker is None:
+        try:
+            log.info(f"Init Reranker: {RERANKER_MODEL} on {RERANKER_DEVICE}")
+            _reranker = Reranker(model=RERANKER_MODEL, device=RERANKER_DEVICE)
+        except Exception as e:
+            log.error(f"Reranker init failed: {e}")
+            return None
+    return _reranker
+
+
+def _normalize_base(u: str) -> str:
+    return u.rstrip("/")
+
+
+def _is_chat_url(u: str) -> bool:
+    return "/v1/chat/completions" in u
+
+
+def _build_chat_url(base_or_chat: str) -> str:
+    u = _normalize_base(base_or_chat)
+    if _is_chat_url(u):
+        return u
+    if u.endswith("/v1"):
+        return f"{u}/chat/completions"
+    return f"{u}/v1/chat/completions"
+
+
+def _get_redis_str(k: str) -> Optional[str]:
+    v = redis_client.get(k)
+    return v.decode() if v else None
+
+
+def get_endpoints() -> List[str]:
+    tunnel = _get_redis_str("gpu_tunnel_endpoint") or ENV_TUNNEL_ENDPOINT
+    direct = _get_redis_str("gpu_active_endpoint") or ENV_LLM_ENDPOINT
+    out: List[str] = []
+    if tunnel:
+        out.append(_build_chat_url(tunnel))
+    if direct:
+        u = _build_chat_url(direct)
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def hash_prompt(
+    prompt: str,
+    system: str,
+    temperature: float,
+    max_tokens: int,
+    model: str,
+) -> str:
+    h = hashlib.sha256()
+    for piece in (
+        prompt.strip().lower(),
+        system.strip().lower(),
+        str(temperature),
+        str(max_tokens),
+        model,
+    ):
+        h.update(piece.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _wrap(text: str, model: str) -> Dict[str, Any]:
+    now = int(time.time())
+    return {
+        "id": f"chatcmpl-router-{now}",
+        "object": "chat.completion",
+        "created": now,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
+
+
+def _run_direct(
+    payload: Dict[str, Any],
+    force: Optional[str],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    endpoints = get_endpoints()
+    if force == "tunnel":
+        endpoints = [e for e in endpoints if "trycloudflare.com" in e] + [
+            e for e in endpoints if "trycloudflare.com" not in e
+        ]
+    elif force == "direct":
+        endpoints = [e for e in endpoints if "trycloudflare.com" not in e] + [
+            e for e in endpoints if "trycloudflare.com" in e
+        ]
+    last: Optional[str] = None
+    for url in endpoints:
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            r.raise_for_status()
+            return r.json(), url, None
+        except Exception as e:
+            last = str(e)
+            continue
+    return None, None, last
+
+
+def _domain(u: str) -> str:
+    try:
+        h = urlparse(u).hostname or ""
+        parts = h.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else h
+    except Exception:
+        return ""
+
+
+def _boost(results: List[Dict[str, Any]], prefer: List[str]) -> List[Dict[str, Any]]:
+    pref = set(prefer or [])
+    scored: List[Dict[str, Any]] = []
+    for i, r in enumerate(results):
+        base = 1.0 / (i + 1.0)
+        boost = 2.0 if _domain(r.get("url", "")) in pref else 1.0
+        rr = dict(r)
+        rr["_score"] = base * boost
+        scored.append(rr)
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    return scored
+
+
+def _postboost_ranked(
+    ranked: List[Dict[str, Any]],
+    prefer: List[str],
+) -> List[Dict[str, Any]]:
+    pref = set(prefer or [])
+    for r in ranked:
+        dom = _domain(r.get("url", ""))
+        if dom in pref:
+            r["rerank_score"] = (r.get("rerank_score") or 0.0) + 0.20
+    return sorted(
+        ranked,
+        key=lambda x: (
+            (x.get("rerank_score") or 0.0),
+            (x.get("_score") or 0.0),
+        ),
+        reverse=True,
+    )
+
+
+# 🔧 Fallback sicuro: solo per meteo/prezzi, se proprio
+def _safe_fallback_links(q: str) -> List[Dict[str, str]]:
+    s = (q or "").lower()
+    out: List[Dict[str, str]] = []
+
+    def add(u: str, t: str) -> None:
+        out.append({"url": u, "title": t})
+
+    if "meteo" in s or "che tempo" in s or "weather" in s:
+        add("https://www.meteoam.it/it/roma", "Meteo Aeronautica Militare – Roma")
+        add("https://www.ilmeteo.it/meteo/Roma", "ILMETEO – Roma")
+        add("https://www.3bmeteo.com/meteo/roma", "3B Meteo – Roma")
+
+    if any(
+        k in s
+        for k in [
+            "prezzo",
+            "quotazione",
+            "quanto vale",
+            "btc",
+            "bitcoin",
+            "eth",
+            "ethereum",
+            "eurusd",
+            "eur/usd",
+            "borsa",
+            "azioni",
+            "indice",
+            "cambio",
+        ]
+    ):
+        add(
+            "https://coinmarketcap.com/currencies/bitcoin/",
+            "Bitcoin (BTC) – CoinMarketCap",
+        )
+        add("https://www.coindesk.com/price/bitcoin/", "Bitcoin Price – CoinDesk")
+        add("https://www.binance.com/en/trade/BTC_USDT", "BTC/USDT – Binance")
+        add(
+            "https://www.investing.com/crypto/bitcoin/btc-usd",
+            "BTC/USD – Investing.com",
+        )
+
+    return out[:8]
+
+
+def _cheap_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    A = set(a.lower().split())
+    B = set(b.lower().split())
+    if not A or not B:
+        return 0.0
+    inter = len(A & B)
+    uni = len(A | B)
+    return round(inter / uni, 4)
+
+
+# ===================== LIVE AGENT CACHE =====================
+
+async def cached_live_call(
+    cache_key: str,
+    ttl_seconds: int,
+    coro,
+) -> Optional[str]:
+    """
+    Wrapper generico per cache live agent con Redis.
+    
+    Args:
+        cache_key: Chiave Redis (es: "live:weather:roma")
+        ttl_seconds: TTL in secondi
+        coro: Coroutine da eseguire se cache miss
+    
+    Returns:
+        Risultato dalla cache o dalla coroutine
+    """
+    try:
+        # Check cache
+        cached = redis_client.get(cache_key)
+        if cached:
+            log.info(f"Live cache HIT: {cache_key}")
+            return cached.decode("utf-8")
+    except Exception as e:
+        log.warning(f"Redis cache get error: {e}")
+    
+    # Cache miss → esegui coroutine
+    try:
+        result = await asyncio.wait_for(coro, timeout=LIVE_AGENT_TIMEOUT_S)
+        
+        if result:
+            try:
+                redis_client.setex(cache_key, ttl_seconds, result)
+                log.info(f"Live cache SET: {cache_key} (TTL={ttl_seconds}s)")
+            except Exception as e:
+                log.warning(f"Redis cache set error: {e}")
+        
+        return result
+    
+    except asyncio.TimeoutError:
+        log.warning(f"Live agent timeout for {cache_key}")
+        return None
+    except Exception as e:
+        log.error(f"Live agent error for {cache_key}: {e}")
+        return None
+
+
+def _get_live_cache_key(agent_type: str, query: str) -> str:
+    """Genera chiave cache per live agent."""
+    q_hash = hashlib.sha256(query.lower().encode("utf-8")).hexdigest()[:12]
+    return f"live:{agent_type}:{q_hash}"
+
+
+# 🔎 Riconoscitore grezzo di query su hardware/setup personale
+def _looks_like_personal_fact_query(q: str) -> bool:
+    s = (q or "").lower()
+    personal_markers = ["mia ", "mio ", "mie ", "miei ", "nostra ", "nostro "]
+    tech_markers = [
+        "jarvis",
+        "quantumdev",
+        "quantumdev-open",
+        "quantum api",
+        "vps",
+        "server",
+        "hardware",
+        "cpu",
+        "gpu",
+        "vram",
+        "llm",
+        "modello",
+        "ai personale",
+    ]
+    return any(p in s for p in personal_markers) and any(
+        t in s for t in tech_markers
+    )
+
+
+def _semcache_dualwrite(
+    prompt: str,
+    system_prompt: str,
+    model_name: str,
+    used_intent: str,
+    response_obj: Dict[str, Any],
+) -> None:
+    global _SEMCACHE
+    try:
+        if not _SEMCACHE:
+            return
+        _ensure_semcache_import()
+        now_ts = int(time.time())
+        qh = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+        base_meta = {
+            "intent": used_intent,
+            "model": model_name,
+            "ts": now_ts,
+            "q": prompt,
+            "q_hash": qh,
+        }
+        ctx_fp_intent = SemanticCache.fingerprint(  # type: ignore[name-defined]
+            system_prompt,
+            model_name,
+            used_intent,
+        )
+        _SEMCACHE.set(prompt, response_obj, ctx_fp_intent, meta=base_meta)
+        ctx_fp_auto = SemanticCache.fingerprint(  # type: ignore[name-defined]
+            system_prompt,
+            model_name,
+            "AUTO",
+        )
+        _SEMCACHE.set(
+            prompt,
+            response_obj,
+            ctx_fp_auto,
+            meta={**base_meta, "dual": True},
+        )
+    except Exception as e:  # pragma: no cover
+        log.warning(f"Semantic cache set error (dualwrite): {e}")
+
+
+# --------- Meta/capability queries → mai WEB --------------------------
+_META_PATTERNS = [
+    r"\b(chi\s+sei|che\s+cosa\s+puoi\s+fare|cosa\s+puoi\s+fare|come\s+funzioni)\b",
+    r"\b(puoi|riesci)\s+(navigare|usare|accedere)\s+(a|su)\s+internet\b",
+    r"\b(collegarti|connetterti)\s+(a|su)\s+internet\b",
+    r"\b(hai|possiedi)\s+(accesso|connessione)\s+a\s+internet\b",
+    r"\b(quali\s+sono\s+le\s+tu(e|oi)\s+capacit[aà]|limitazioni)\b",
+]
+
+_CAPABILITIES_BRIEF = (
+    "Posso accedere al web quando serve per dati aggiornati (meteo, prezzi, notizie, risultati sportivi, ecc.) "
+    "tramite il comando /web o automaticamente per query live. "
+    "Ho memoria a lungo termine via ChromaDB (facts, preferenze, betting history) e cache Redis. "
+    "Uso il web in modo selettivo: solo quando necessario, non per ogni domanda. "
+    "Non accedo a file o dispositivi dell'utente."
+)
+
+
+
+def _is_meta_capability_query(q: str) -> bool:
+    s = (q or "").lower()
+    return any(re.search(p, s) for p in _META_PATTERNS)
+
+
+# ---- Explain-guard: forzare DIRECT_LLM su "spiega/che cos'è/what is" ----
+_EXPLAIN_PATTERNS = [
+    r"\bspiega(mi|re)?\b",
+    r"\bche\s+cos[’']?è\b",
+    r"\bcos[’']?è\b",
+    r"\bwhat\s+is\b",
+    r"\bexplain\b",
+]
+
+
+def _is_explain_query(q: str) -> bool:
+    s = (q or "").lower()
+    return any(re.search(p, s) for p in _EXPLAIN_PATTERNS)
+
+
+# --------- ZERO-WEB GUARD (smalltalk/very-short) ---------------------
+_SMALLTALK_RE = re.compile(
+    r"""(?ix)^\s*(         ciao|hey|hi|hello|salve|buongiorno|buonasera|buonanotte|
+        ci\ssei??|sei\sonline??|
+        come\s+va??|ok+|perfetto|grazie|thanks
+    )\b"""
+)
+
+
+def _is_quick_live_query(q: str) -> bool:
+    s = (q or "").lower()
+    return any(
+        k in s
+        for k in [
+            "meteo",
+            "che tempo",
+            "weather",
+            "prezzo",
+            "quotazione",
+            "risultati",
+            "classifica",
+            "orari",
+        ]
+    )
+
+
+# ✅ Guard rilassata + esclusione delle live query
+def _is_smalltalk_query(q: str) -> bool:
+    s = (q or "").strip().lower()
+
+    # 1️⃣ Se è una live query (meteo, prezzo, risultati...), NON è smalltalk
+    if _is_quick_live_query(s):
+        return False
+
+    # 2️⃣ Saluti & frasette tipo "ok", "grazie"
+    if _SMALLTALK_RE.search(s):
+        return True
+
+    tokens = s.split()
+
+    # 3️⃣ Un solo token generico → smalltalk, tranne se contiene numeri (tipo "2025")
+    if len(tokens) <= 1:
+        if any(ch.isdigit() for ch in s):
+            return False
+        return True
+
+    # 4️⃣ Frasi con 2+ parole → in generale NON smalltalk
+    return False
+
+
+# ===================== Fallback Helper (STEP 2) =====================
+
+async def _fallback_internal_answer(
+    user_query: str,
+    src: str,
+    sid: str,
+    system_hint: str = "",
+) -> Dict[str, Any]:
+    """
+    STEP 2: Fallback to internal LLM when web search fails.
+    
+    Uses the normal LLM without web docs, explaining that web search failed.
+    Returns a dict compatible with the normal response pipeline.
+    
+    Args:
+        user_query: Original user query
+        src: Source identifier
+        sid: Session ID
+        system_hint: Optional system hint/context
+        
+    Returns:
+        Dict with text, sources (empty), and metadata
+    """
+    try:
+        persona = await get_persona(src, sid)
+        
+        # Build prompt explaining the situation
+        fallback_prompt = (
+            f"Non sei riuscita a trovare fonti affidabili online per questa domanda:\n"
+            f'"{user_query}"\n\n'
+            f"Rispondi usando solo la tua conoscenza interna.\n"
+            f"Se non sei sicuro o l'informazione richiede dati aggiornati in tempo reale, "
+            f"dillo esplicitamente e spiega perché.\n\n"
+        )
+        
+        if system_hint:
+            fallback_prompt += f"{system_hint}\n\n"
+        
+        fallback_prompt += f"Domanda: {user_query}\n\nRisposta:"
+        
+        # Get LLM response
+        try:
+            answer = await reply_with_llm(fallback_prompt, persona)
+        except Exception as e:
+            log.error(f"Fallback LLM failed: {e}")
+            answer = (
+                "Mi dispiace, non sono riuscito a trovare informazioni online "
+                "e non ho dati sufficienti nella mia conoscenza interna per rispondere "
+                "a questa domanda in modo affidabile."
+            )
+        
+        return {
+            "text": answer,
+            "sources": [],
+            "meta": {
+                "used_web": False,
+                "fallback_reason": "no_web_results",
+                "fallback_to_llm": True,
+            },
+        }
+    except Exception as e:
+        log.error(f"Fallback internal answer failed: {e}")
+        return {
+            "text": f"Errore nel tentativo di risposta: {str(e)}",
+            "sources": [],
+            "meta": {
+                "used_web": False,
+                "fallback_reason": "error",
+                "error": str(e),
+            },
+        }
+
+
+# ===================== Web search pipeline ===========================
+async def _web_search_pipeline(
+    q: str,
+    src: str,
+    sid: str,
+    k: int = 6,
+    nsum: int = 2,
+) -> Dict[str, Any]:
+    t_start = time.perf_counter()
+    
+    # Initialize timing variables to avoid UnboundLocalError
+    preprocess_ms = 0
+    llm_ms = 0
+
+    # 🔒 Guard: non cercare MAI su smalltalk
+    if _is_smalltalk_query(q):
+        return {
+            "query": q,
+            "policy_used": {},
+            "results": [],
+            "summary": "",
+            "note": "non_web_query",
+            "reranker_used": False,
+            "validation": None,
+            "diversity": None,
+            "stats": {
+                "raw_results": 0,
+                "dedup_results": 0,
+                "returned": 0,
+                "fetch_attempted": 0,
+                "fetch_ok": 0,
+                "fetch_timeouts": 0,
+                "fetch_errors": 0,
+                "fetch_duration_ms": 0,
+                "early_exit": False,
+                "validation_confidence": None,
+            },
+        }
+
+    pol = pick_domains(q)
+    variants = build_query_variants(q, pol)
+
+    try:
+        from core.web_search import search as web_search_core
+    except Exception as e:
+        return {
+            "error": "Backend web_search non configurato (core/web_search.py).",
+            "_exception": str(e),
+        }
+
+    raw: List[Dict[str, Any]] = []
+    for v in variants:
+        try:
+            raw.extend(web_search_core(v, num=6))
+        except Exception:
+            pass
+
+    seen: set[str] = set()
+    dedup: List[Dict[str, Any]] = []
+    for r in raw:
+        u = r.get("url")
+        if not u or u in seen:
+            continue
+        dedup.append(
+            {
+                "url": u,
+                "title": r.get("title", ""),
+                "snippet": r.get("snippet", r.get("title", "")),
+            }
+        )
+        seen.add(u)
+
+    # STEP 2: Deep-mode automatic retry if results are poor
+    deep_retry_used = False
+    good_results = [r for r in dedup if r.get("url")]
+    
+    # Only retry if we have SOME results but fewer than threshold
+    # (Zero results might indicate query is too specific/impossible)
+    if (
+        0 < len(good_results) < WEB_DEEP_MIN_RESULTS
+        and WEB_DEEP_MAX_RETRIES > 0
+    ):
+        try:
+            from core.text_preprocessing import relax_search_query
+            
+            relaxed_q = relax_search_query(q)
+            
+            # Only retry if relaxed query is different (case-insensitive comparison)
+            if relaxed_q.lower().strip() != q.lower().strip():
+                log.info(
+                    f"Deep retry: {len(good_results)} results < {WEB_DEEP_MIN_RESULTS}, "
+                    f"trying relaxed query: '{relaxed_q}'"
+                )
+                
+                # Second search with relaxed query
+                raw_deep: List[Dict[str, Any]] = []
+                for v in build_query_variants(relaxed_q, pol):
+                    try:
+                        raw_deep.extend(web_search_core(v, num=6))
+                    except Exception:
+                        pass
+                
+                # Deduplicate and merge with first results
+                for r in raw_deep:
+                    u = r.get("url")
+                    if not u or u in seen:
+                        continue
+                    dedup.append(
+                        {
+                            "url": u,
+                            "title": r.get("title", ""),
+                            "snippet": r.get("snippet", r.get("title", "")),
+                        }
+                    )
+                    seen.add(u)
+                
+                deep_retry_used = True
+                log.info(f"Deep retry: Added {len(dedup) - len(good_results)} new results")
+        except Exception as e:
+            log.warning(f"Deep retry failed: {e}")
+
+    if not dedup:
+        return {
+            "query": q,
+            "policy_used": pol,
+            "results": [],
+            "summary": "",
+            "validation": None,
+            "diversity": None,
+            "note": "SERP vuota",
+            "reranker_used": False,
+            "deep_retry_used": False,
+            "stats": {
+                "raw_results": len(raw),
+                "dedup_results": 0,
+                "returned": 0,
+                "fetch_attempted": 0,
+                "fetch_ok": 0,
+                "fetch_timeouts": 0,
+                "fetch_errors": 0,
+                "fetch_duration_ms": 0,
+                "early_exit": False,
+                "validation_confidence": None,
+            },
+        }
+
+    # === RERANKING ===
+    used = False
+    ranked: List[Dict[str, Any]]
+
+    rr = get_reranker()
+    if rr and len(dedup) > 1:
+        try:
+            ranked = rr.rerank(q, dedup, top_k=min(k * 2, len(dedup)))
+            used = True
+            log.info(f"Reranker: {len(dedup)} → top {len(ranked)}")
+        except Exception as e:
+            log.warning(f"Reranker failed: {e}")
+            ranked = _boost(dedup, pol.get("prefer", []))
+    else:
+        ranked = _boost(dedup, pol.get("prefer", []))
+
+    # Post-boost ranking
+    ranked = _postboost_ranked(ranked, pol.get("prefer", []))
+    topk: List[Dict[str, Any]] = ranked[: max(1, k)]
+
+    # === ⭐ DIVERSIFICATION (NUOVO) ⭐
+    diversity_before: Optional[Dict[str, Any]] = None
+    diversity_after: Optional[Dict[str, Any]] = None
+
+    if _SEARCH_DIVERSIFIER and DIVERSIFIER_ENABLED and len(topk) > 3:
+        try:
+            diversity_before = _SEARCH_DIVERSIFIER.analyze_diversity(topk)
+            topk_diversified = _SEARCH_DIVERSIFIER.diversify(topk)
+            diversity_after = _SEARCH_DIVERSIFIER.analyze_diversity(topk_diversified)
+
+            log.info(
+                "Diversity: %s → %s domains, score %.2f → %.2f",
+                diversity_before["unique_domains"],
+                diversity_after["unique_domains"],
+                diversity_before["diversity_score"],
+                diversity_after["diversity_score"],
+            )
+
+            topk = topk_diversified
+        except Exception as e:  # pragma: no cover
+            log.warning(f"Diversification failed: {e}")
+            # continua con topk non diversificato
+
+    # === ⚡ PARALLEL FETCHING (con helper ottimizzato) ⚡
+    t_fetch_start = time.perf_counter()
+
+    extracts: List[Dict[str, Any]] = []
+    attempted = 0
+    timeouts = 0
+    errors = 0
+    done_early = False
+    fetch_duration_ms = 0
+
+    if topk and nsum > 0:
+        # ⚡ PARALLEL FETCH
+        extracts, fetch_stats = await parallel_fetch_and_extract(
+            results=topk[:nsum],
+            max_concurrent=WEB_FETCH_MAX_INFLIGHT,
+            timeout_per_url=WEB_FETCH_TIMEOUT_S,
+            min_successful=2,
+        )
+
+        attempted = int(fetch_stats.get("attempted", 0))
+        ok_count = len(extracts)
+        timeouts = int(fetch_stats.get("timeouts", 0))
+        errors = int(fetch_stats.get("errors", 0))
+        fetch_duration_ms = int(fetch_stats.get("duration_ms", 0))
+        done_early = bool(fetch_stats.get("early_exit", False))
+    else:
+        fetch_duration_ms = int((time.perf_counter() - t_fetch_start) * 1000)
+
+    log.info(
+        f"Parallel fetch: {len(extracts)}/{attempted} in {fetch_duration_ms}ms "
+        f"(timeouts={timeouts}, errors={errors})"
+    )
+
+    # Validazione multi-fonte (consensus) — opzionale
+    validation: Optional[Dict[str, Any]] = None
+    if _VALIDATOR and extracts:
+        try:
+            validation = _VALIDATOR.validate_consensus(  # type: ignore[attr-defined]
+                q,
+                extracts[: max(0, nsum)],
+            )
+        except Exception:
+            validation = None
+
+    summary = ""
+    note: Optional[str] = "live_query" if _is_quick_live_query(q) else None
+
+    if extracts:
+        # Timing: Start preprocessing
+        t_preprocess_start = time.perf_counter()
+        
+        persona = await get_persona(src, sid)
+
+        # Documenti usati per la sintesi (limite nsum)
+        synth_docs = extracts[: max(0, nsum)]
+
+        # Contesto testuale per validator e retry
+        ctx_parts: List[str] = []
+        for e in synth_docs:
+            if not e.get("text"):
+                continue
+            ctx_parts.append(
+                f"### {e.get('title')}\nURL: {e.get('url')}\n\n{e.get('text')}"
+            )
+        ctx = "\n\n".join(ctx_parts)
+        ctx = trim_to_tokens(ctx, WEB_SUMMARY_BUDGET_TOK)
+        
+        preprocess_ms = int((time.perf_counter() - t_preprocess_start) * 1000)
+
+        # PROBLEMA 2: Use concise formatter if enabled, otherwise use aggressive synthesis
+        try:
+            # Timing: Start LLM call
+            t_llm_start = time.perf_counter()
+            
+            # ⚡ PARALLEL SYNTHESIS (STEP 1.2) - Try parallel first if enabled
+            if is_parallel_synthesis_enabled() and len(synth_docs) > 1:
+                log.info(f"[PARALLEL] Attempting parallel synthesis of {len(synth_docs)} documents")
+                
+                # Prepare documents for parallel synthesis
+                parallel_docs = [
+                    {
+                        "idx": i + 1,
+                        "title": e.get("title", ""),
+                        "url": e.get("url", ""),
+                        "text": e.get("text", ""),
+                    }
+                    for i, e in enumerate(synth_docs)
+                    if e.get("text")
+                ]
+                
+                try:
+                    # Attempt parallel synthesis
+                    summary, parallel_stats = await parallel_synthesize_documents(
+                        query=q,
+                        documents=parallel_docs,
+                        persona=persona,
+                    )
+                    
+                    # Log performance metrics
+                    if parallel_stats.get("success_rate", 0) >= 0.5:  # At least 50% success rate
+                        log.info(
+                            f"[PARALLEL] Success! {parallel_stats['successful']}/{parallel_stats['total_documents']} docs, "
+                            f"{parallel_stats['total_duration_ms']}ms (estimated sequential: {parallel_stats.get('estimated_sequential_ms', 0)}ms, "
+                            f"{parallel_stats.get('speedup', 1):.1f}x speedup)"
+                        )
+                    else:
+                        # All parallel attempts failed, fall back to sequential
+                        log.warning("[PARALLEL] All parallel synthesis attempts failed, falling back to sequential")
+                        summary = ""
+                        
+                except Exception as e:
+                    log.warning(f"[PARALLEL] Parallel synthesis failed: {e}, falling back to sequential")
+                    summary = ""
+            else:
+                summary = ""  # Will trigger fallback to sequential
+            
+            # Fallback to sequential synthesis if parallel failed or disabled
+            if not summary:
+                if WEB_USE_CONCISE_FORMATTER:
+                    # ⚡ CONCISE FORMATTER (max 50 words, 120 tokens)
+                    # Get optimized preset for web synthesis
+                    web_preset = get_preset("web_synthesis")
+                    
+                    # Create wrapper function that applies optimized parameters
+                    async def llm_func_optimized(prompt, persona_arg):
+                        if web_preset:
+                            return await reply_with_llm(
+                                prompt,
+                                persona_arg,
+                                temperature=web_preset.temperature,
+                                max_tokens=web_preset.max_tokens,
+                                stop_sequences=web_preset.stop_sequences,
+                                repetition_penalty=web_preset.repetition_penalty,
+                            )
+                        else:
+                            # Fallback to direct optimized params
+                            return await reply_with_llm(
+                                prompt,
+                                persona_arg,
+                                temperature=0.2,
+                                max_tokens=120,
+                                stop_sequences=["---", "\n\n\n", "Fonte:", "Fonti:", "Sources:"],
+                            )
+                    
+                    summary = await format_web_response(
+                        query=q,
+                        extracts=synth_docs,
+                        llm_func=llm_func_optimized,
+                        persona=persona,
+                    )
+                    log.info(f"Used concise formatter: {len(summary.split())} words")
+                else:
+                    # ⚡ AGGRESSIVE SYNTHESIS (original)
+                    prompt = build_aggressive_synthesis_prompt(
+                        q,
+                        [
+                            {
+                                "idx": i + 1,
+                                "title": e.get("title", ""),
+                                "url": e.get("url", ""),
+                                "text": e.get("text", ""),
+                            }
+                            for i, e in enumerate(synth_docs)
+                            if e.get("text")
+                        ],
+                    )
+                    summary = await reply_with_llm(prompt, persona)
+            
+            llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
+            
+        except Exception as e:
+            llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
+            log.error(f"Synthesis failed: {e}")
+            summary = ""
+            note = note or "llm_summary_failed"
+
+        # === ⭐ VALIDATION + RETRY (NUOVO) ⭐
+        if summary:
+            try:
+                from core.synthesis_validator import get_synthesis_validator
+
+                validator = get_synthesis_validator()
+                syn_validation = validator.validate(summary)
+
+                if syn_validation["score"] < 0.5 and (
+                    time.perf_counter() - t_start
+                ) < 8.0:
+                    log.warning(
+                        f"Low quality synthesis (score={syn_validation['score']:.2f}), retrying..."
+                    )
+
+                    retry_prompt = (
+                        "La risposta precedente era EVASIVA e NON ACCETTABILE.\n"
+                        f"Issues: {', '.join(syn_validation['issues'])}\n"
+                        f"Bad phrases: {validator.extract_bad_phrases(summary)}\n"
+                        "\n"
+                        "RIPROVA seguendo TUTTE le regole precedenti.\n"
+                        "Non dire MAI 'non ho abbastanza info' o 'consulta le fonti'.\n"
+                        "Fornisci SEMPRE almeno 3 facts concreti dagli estratti.\n"
+                        "\n"
+                        f"ESTRATTI:\n{ctx}\n\n"
+                        f"DOMANDA:\n{q}\n\n"
+                        "RISPONDI MEGLIO:"
+                    )
+
+                    try:
+                        summary_retry = await reply_with_llm(
+                            retry_prompt, persona
+                        )
+                        if summary_retry:
+                            syn_validation_retry = validator.validate(
+                                summary_retry
+                            )
+                            if (
+                                syn_validation_retry["score"]
+                                > syn_validation["score"]
+                            ):
+                                log.info(
+                                    "Retry improved quality: "
+                                    f"{syn_validation['score']:.2f} → {syn_validation_retry['score']:.2f}"
+                                )
+                                summary = summary_retry
+                                syn_validation = syn_validation_retry
+                    except Exception as e:
+                        log.warning(f"Retry failed: {e}")
+
+                log.info(
+                    "Final synthesis quality: score=%.2f, facts=%d, valid=%s",
+                    syn_validation["score"],
+                    syn_validation["facts_count"],
+                    syn_validation["valid"],
+                )
+            except Exception as e:
+                log.warning(f"Synthesis validation error: {e}")
+    else:
+        # STEP 2: No extracted content - fallback to LLM if enabled
+        note = "no_extracted_content"
+        
+        if WEB_FALLBACK_TO_LLM and not summary:
+            log.info("Web search failed, falling back to internal LLM")
+            try:
+                fallback_result = await _fallback_internal_answer(
+                    user_query=q,
+                    src=src,
+                    sid=sid,
+                    system_hint="Il web search non ha prodotto risultati utili.",
+                )
+                summary = fallback_result.get("text", "")
+                note = "llm_fallback_no_web"
+            except Exception as e:
+                log.error(f"LLM fallback failed: {e}")
+                note = "no_extracted_content_fallback_failed"
+
+    # autosave sintesi (se presente)
+    try:
+        if summary:
+            asv = autosave(summary, source="web_search")
+            if any([asv.get("facts"), asv.get("prefs"), asv.get("bet")]):
+                log.info(f"[autosave:web_search] {asv}")
+    except Exception as e:  # pragma: no cover
+        log.warning(f"AutoSave web_search failed: {e}")
+
+    # Calculate total time and post-process time
+    total_ms = int((time.perf_counter() - t_start) * 1000)
+    post_ms = total_ms - fetch_duration_ms - preprocess_ms - llm_ms
+    
+    # Performance breakdown log
+    log.info(
+        f"[PERF] Web synthesis breakdown: "
+        f"fetch={fetch_duration_ms}ms, "
+        f"preprocess={preprocess_ms}ms, "
+        f"llm={llm_ms}ms, "
+        f"postprocess={max(0, post_ms)}ms, "
+        f"total={total_ms}ms"
+    )
+
+    stats = {
+        "raw_results": len(raw),
+        "dedup_results": len(dedup),
+        "returned": len(topk),
+        "fetch_attempted": attempted,
+        "fetch_ok": len([e for e in extracts if e.get("text")]),
+        "fetch_timeouts": timeouts,
+        "fetch_errors": errors,
+        "fetch_duration_ms": fetch_duration_ms,
+        "early_exit": done_early,
+        "validation_confidence": (validation or {}).get("confidence")
+        if validation
+        else None,
+    }
+
+    if _ANALYTICS:
+        try:
+            _ANALYTICS.track_search(  # type: ignore[attr-defined]
+                query=q,
+                results=topk,
+                user_interaction={
+                    "latency_ms": int((time.perf_counter() - t_start) * 1000),
+                    "reranker_used": used,
+                    "cached": False,
+                },
+            )
+        except Exception:
+            pass
+
+    diversity_block = (
+        {
+            "before": diversity_before,
+            "after": diversity_after,
+            "enabled": DIVERSIFIER_ENABLED and _SEARCH_DIVERSIFIER is not None,
+        }
+        if diversity_after
+        else None
+    )
+
+    return {
+        "query": q,
+        "policy_used": pol,
+        "results": [
+            {
+                "url": r["url"],
+                "title": r["title"],
+                "rerank_score": r.get("rerank_score"),
+                "_score": r.get("_score"),
+            }
+            for r in topk
+        ],
+        "summary": summary,
+        "validation": validation,
+        "reranker_used": used,
+        "deep_retry_used": deep_retry_used,  # STEP 2: Track deep retry usage
+        "diversity": diversity_block,
+        "note": note,
+        "stats": stats,
+    }
+
+
+# ===================== DEEP Web search pipeline (nuovo) ==============
+async def _web_search_pipeline_deep(
+    q: str,
+    src: str,
+    sid: str,
+    k: int = 15,
+    nsum: int = 10,
+) -> Dict[str, Any]:
+    """
+    Enhanced pipeline per ricerche DEEP con molte fonti.
+
+    Usa un agente avanzato che fa multi-step research e restituisce
+    answer + sorgenti, mantenendo un formato compatibile con /web/search.
+    """
+    try:
+        from agents.advanced_web_research import AdvancedWebResearch
+    except Exception as e:
+        log.error(f"AdvancedWebResearch import failed, fallback standard: {e}")
+        # Fallback: usa pipeline standard
+        ws = await _web_search_pipeline(
+            q=q,
+            src=src,
+            sid=sid,
+            k=min(WEB_DEEP_MAX_SOURCES, k),
+            nsum=min(WEB_DEEP_MAX_SOURCES, nsum),
+        )
+        ws["note"] = (ws.get("note") or "") + "|deep_fallback_standard"
+        return ws
+
+    persona = await get_persona(src, sid)
+
+    researcher = AdvancedWebResearch(
+        max_steps=4,
+        min_sources=min(10, WEB_DEEP_MAX_SOURCES),
+        quality_threshold=0.75,
+    )
+
+    result = await researcher.research_deep(q, persona)
+
+    # Format per compatibilità con API esistente
+    return {
+        "summary": result["answer"],
+        "results": result["sources"],
+        "note": f"deep_research_{result['total_sources']}_sources",
+        "stats": {
+            "total_sources": result["total_sources"],
+            "quality_score": result["quality_final"],
+            "steps": len(result["steps"]),
+        },
+        "research_steps": result["steps"],
+    }
+
+
+# ========================= API Endpoints =============================
+@app.on_event("startup")
+def _init_memory() -> None:
+    global _SEMCACHE
+    try:
+        ensure_collections()
+        log.info("ChromaDB collections ensured.")
+    except Exception as e:
+        log.error(f"Chroma ensure_collections failed: {e}")
+
+    # Semantic Cache: opzionale al boot (lazy per default)
+    if SEMCACHE_INIT_ON_STARTUP:
+        try:
+            _ensure_semcache_import()
+            _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+            log.info(f"Semantic cache ready: {json.dumps(_SEMCACHE.stats())}")
+        except Exception as e:
+            log.error(f"Semantic cache init failed: {e}")
+
+
+@app.get("/healthz")
+def healthz() -> Dict[str, Any]:
+    rer_status = "disabled"
+    if USE_RERANKER:
+        rer_status = "ready" if get_reranker() else "failed"
+
+    cache_info: Dict[str, Any] = {"enabled": False}
+    try:
+        if _SEMCACHE:
+            cache_info = _SEMCACHE.stats()
+            if hasattr(_SEMCACHE, "stats_all"):
+                all_stats = _SEMCACHE.stats_all()  # type: ignore[attr-defined]
+                total = (all_stats or {}).get("total", {})
+                cache_info["total_size_items"] = total.get("size_items")
+    except Exception:
+        pass
+
+    # 🚀 Live Agents status
+    live_agents = {
+        "weather": WEATHER_AGENT_AVAILABLE,
+        "price": PRICE_AGENT_AVAILABLE,
+        "sports": SPORTS_AGENT_AVAILABLE,
+        "news": NEWS_AGENT_AVAILABLE,
+        "schedule": SCHEDULE_AGENT_AVAILABLE,
+        "code": CODE_AGENT_AVAILABLE,
+        "unified_web": UNIFIED_WEB_HANDLER_AVAILABLE,
+    }
+
+    return {
+        "ok": True,
+        "model": LLM_MODEL,
+        "endpoints_to_try": get_endpoints(),
+        "reranker": {
+            "enabled": USE_RERANKER,
+            "status": rer_status,
+            "model": RERANKER_MODEL if USE_RERANKER else None,
+        },
+        "redis": {
+            "gpu_tunnel_endpoint": _get_redis_str("gpu_tunnel_endpoint"),
+            "gpu_active_endpoint": _get_redis_str("gpu_active_endpoint"),
+        },
+        "semantic_cache": cache_info,
+        "live_agents": live_agents,
+        "live_cache_ttl": {
+            "weather": LIVE_CACHE_TTL_WEATHER,
+            "price": LIVE_CACHE_TTL_PRICE,
+            "sports": LIVE_CACHE_TTL_SPORTS,
+            "news": LIVE_CACHE_TTL_NEWS,
+            "schedule": LIVE_CACHE_TTL_SCHEDULE,
+        },
+        "smart_intent": True,
+        "feedback_enabled": INTENT_FEEDBACK_ENABLED,
+        "router_build": BUILD_SIGNATURE,
+    }
+
+
+# --------- System Status ---------
+@app.get("/system/status")
+def system_status() -> Dict[str, Any]:
+    """
+    Get real-time system metrics (CPU, RAM, disk, GPU, uptime).
+    
+    Returns ALWAYS a JSON-safe dict with this structure:
+    {
+        "ok": bool,                      # true if psutil/core metrics available
+        "psutil_available": bool,
+        "pynvml_available": bool,
+        "cpu": {
+            "percent": float,
+            "load_average": [float, float, float],
+            "cores_logical": int,
+            "cores_physical": int
+        },
+        "memory": {
+            "total": int,
+            "used": int,
+            "percent": float,
+            "swap_total": int,
+            "swap_used": int,
+            "swap_percent": float
+        },
+        "disk": {
+            "total": int,
+            "used": int,
+            "percent": float
+        },
+        "gpu": {
+            "gpus": [...],
+            "error": str | None
+        },
+        "uptime": {
+            "seconds": int
+        }
+    }
+    
+    HTTP 200 always, even if ok=false.
+    """
+    try:
+        from core.system_status import get_system_status
+        return get_system_status()
+    except Exception as e:
+        log.error(f"System status endpoint failed: {e}")
+        # Return fallback structure on catastrophic failure
+        return {
+            "ok": False,
+            "error": "system_status_exception",
+            "detail": str(e),
+            "psutil_available": False,
+            "pynvml_available": False,
+            "cpu": {
+                "percent": 0.0,
+                "load_average": [0.0, 0.0, 0.0],
+                "cores_logical": 0,
+                "cores_physical": 0,
+            },
+            "memory": {
+                "total": 0,
+                "used": 0,
+                "percent": 0.0,
+                "swap_total": 0,
+                "swap_used": 0,
+                "swap_percent": 0.0,
+            },
+            "disk": {
+                "total": 0,
+                "used": 0,
+                "percent": 0.0,
+            },
+            "gpu": {
+                "gpus": [],
+                "error": "system_status_exception",
+            },
+            "uptime": {
+                "seconds": 0,
+            },
+        }
+
+
+# --------- GPU Monitoring ---------
+@app.get("/system/gpu")
+def gpu_status(force_refresh: bool = False, history_minutes: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Get GPU metrics from remote monitoring system.
+    
+    Query Parameters:
+        force_refresh: If true, bypass cache and fetch fresh metrics (default: false)
+        history_minutes: If provided, include historical metrics for N minutes
+    
+    Returns:
+        {
+            "current": {
+                "gpus": [...],
+                "status": "ok" | "cached" | "error" | "unknown",
+                "error": str | None,
+                "timestamp": str (ISO 8601),
+                "cache_age_seconds": float | None
+            },
+            "history": [...] (optional, if history_minutes provided),
+            "health": {
+                "is_healthy": bool,
+                "alerts": [str, ...]
+            }
+        }
+    
+    HTTP 200 always.
+    """
+    try:
+        from core.gpu_monitor import get_gpu_monitor
+        
+        monitor = get_gpu_monitor()
+        
+        # Get current metrics
+        current = monitor.get_metrics(force_refresh=force_refresh)
+        
+        # Get history if requested
+        history = None
+        if history_minutes is not None and history_minutes > 0:
+            history = monitor.get_metrics_history(minutes=history_minutes)
+        
+        # Get health status
+        is_healthy = monitor.is_healthy()
+        should_alert, alerts = monitor.should_alert()
+        
+        return {
+            "current": current,
+            "history": history,
+            "health": {
+                "is_healthy": is_healthy,
+                "should_alert": should_alert,
+                "alerts": alerts,
+            },
+        }
+        
+    except Exception as e:
+        log.error(f"GPU status endpoint failed: {e}")
+        return {
+            "current": {
+                "gpus": [],
+                "status": "error",
+                "error": f"endpoint_exception: {str(e)}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cache_age_seconds": None,
+            },
+            "history": None,
+            "health": {
+                "is_healthy": False,
+                "should_alert": True,
+                "alerts": [f"GPU monitoring error: {str(e)}"],
+            },
+        }
+
+
+@app.get("/system/gpu/alerts")
+def gpu_alerts_status(hours: int = 24) -> Dict[str, Any]:
+    """
+    Get GPU alert status and history.
+    
+    Query Parameters:
+        hours: Number of hours of alert history to retrieve (default: 24)
+    
+    Returns:
+        {
+            "status": {
+                "enabled": bool,
+                "running": bool,
+                "active_alerts": int,
+                "conditions_tracked": int,
+                ...
+            },
+            "active_alerts": [...],
+            "history": [...]
+        }
+    
+    HTTP 200 always.
+    """
+    try:
+        from core.gpu_alerts import get_gpu_alert_manager
+        
+        manager = get_gpu_alert_manager()
+        
+        return {
+            "status": manager.get_status(),
+            "active_alerts": manager.get_active_alerts(),
+            "history": manager.get_alert_history(hours=hours),
+        }
+        
+    except Exception as e:
+        log.error(f"GPU alerts endpoint failed: {e}")
+        return {
+            "status": {
+                "enabled": False,
+                "running": False,
+                "error": str(e),
+            },
+            "active_alerts": [],
+            "history": [],
+        }
+
+
+@app.get("/dashboard/gpu", response_class=HTMLResponse)
+def gpu_dashboard(request: Request):
+    """
+    GPU monitoring dashboard with live metrics visualization.
+    
+    Displays:
+    - Real-time VRAM, utilization, temperature
+    - Alert history
+    - Health status
+    
+    Returns:
+        HTML page with GPU dashboard
+    """
+    try:
+        return templates.TemplateResponse("gpu_dashboard.html", {"request": request})
+    except Exception as e:
+        log.error(f"GPU dashboard endpoint failed: {e}")
+        return HTMLResponse(
+            content=f"<h1>Error loading GPU dashboard</h1><p>{str(e)}</p>",
+            status_code=500,
+        )
+
+
+# --------- AutoBug Health Checks ---------
+@app.post("/autobug/run")
+def autobug_run() -> Dict[str, Any]:
+    """
+    Run comprehensive health checks on all subsystems.
+    
+    Environment variables (all default to True if not set):
+    - AUTOBUG_ENABLED: Master switch for autobug
+    - AUTOBUG_ENABLE_LLM: Enable LLM check
+    - AUTOBUG_ENABLE_WEB_SEARCH: Enable web search check
+    - AUTOBUG_ENABLE_REDIS: Enable Redis check
+    - AUTOBUG_ENABLE_CHROMA: Enable ChromaDB check
+    - AUTOBUG_ENABLE_SYSTEM: Enable system status check
+    - AUTOBUG_LLM_TIMEOUT_S: LLM check timeout (default: 15.0s)
+    - AUTOBUG_WEB_TIMEOUT_S: Web search timeout (default: 10.0s)
+    - AUTOBUG_REDIS_TIMEOUT_S: Redis timeout (default: 5.0s)
+    - AUTOBUG_CHROMA_TIMEOUT_S: ChromaDB timeout (default: 10.0s)
+    
+    Returns:
+        JSON with check results:
+        {
+            "ok": bool,                 # true if ALL enabled checks passed
+            "started_at": str,          # ISO timestamp
+            "finished_at": str,         # ISO timestamp
+            "duration_ms": float,
+            "checks": [
+                {
+                    "name": str,        # "llm", "web", "redis", "chroma", "system"
+                    "enabled": bool,    # from AUTOBUG_ENABLE_* flag
+                    "ok": bool,
+                    "latency_ms": float | None,
+                    "error": str | None,
+                    "details": dict | None
+                },
+                ...
+            ],
+            "summary": {
+                "total": int,
+                "passed": int,
+                "failed": int
+            }
+        }
+        
+        HTTP 503 if AUTOBUG_ENABLED is False, HTTP 200 otherwise.
+    """
+    try:
+        from core.autobug import run_autobug_checks, AUTOBUG_ENABLED
+        
+        # Check if autobug is disabled
+        if not AUTOBUG_ENABLED:
+            log.warning("AutoBug run requested but AUTOBUG_ENABLED=False")
+            return {
+                "ok": False,
+                "error": "autobug_disabled",
+                "detail": "AutoBug is disabled via environment variable AUTOBUG_ENABLED"
+            }, 503
+        
+        # Run the checks
+        result = run_autobug_checks()
+        
+        # Log summary
+        summary = result.get("summary", {})
+        duration_ms = result.get("duration_ms", 0)
+        log.info(
+            f"AutoBug run completed: {summary.get('passed', 0)}/{summary.get('total', 0)} passed, "
+            f"duration: {duration_ms:.0f}ms"
+        )
+        
+        # Log any failures
+        if not result.get("ok", False):
+            checks = result.get("checks", [])
+            for check in checks:
+                if not check.get("ok", False):
+                    log.warning(
+                        f"AutoBug check '{check.get('name')}' failed: {check.get('error', 'unknown error')}"
+                    )
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"AutoBug endpoint failed: {e}", exc_info=True)
+        import time
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "ok": False,
+            "error": "autobug_exception",
+            "detail": str(e),
+            "started_at": now,
+            "finished_at": now,
+            "duration_ms": 0.0,
+            "checks": [],
+            "summary": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+            }
+        }
+
+
+# --------- Cache stats (ns / all) + flush ---------
+@app.get("/stats/cache")
+def cache_stats(ns: Optional[str] = None, all: bool = False) -> Dict[str, Any]:  # noqa: A002
+    try:
+        if not _SEMCACHE:
+            return {"enabled": False}
+        if all and hasattr(_SEMCACHE, "stats_all"):
+            return _SEMCACHE.stats_all()  # type: ignore[attr-defined]
+        if ns and hasattr(_SEMCACHE, "stats_ns"):
+            return _SEMCACHE.stats_ns(ns)  # type: ignore[attr-defined]
+        return _SEMCACHE.stats()
+    except Exception as e:
+        return {"enabled": False, "error": str(e)}
+
+
+class FlushReq(BaseModel):
+    ns: Optional[str] = None
+
+
+@app.post("/cache/flush")
+def cache_flush(req: FlushReq) -> Dict[str, Any]:
+    global _SEMCACHE
+    try:
+        if _SEMCACHE is None:
+            try:
+                _ensure_semcache_import()
+                _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+            except Exception:
+                pass
+        if not _SEMCACHE:
+            return {"ok": False, "error": "semantic cache not initialized"}
+        n = 0
+        if hasattr(_SEMCACHE, "flush"):
+            n = _SEMCACHE.flush(ns=req.ns)  # type: ignore[attr-defined]
+        elif hasattr(_SEMCACHE, "clear"):
+            n = _SEMCACHE.clear(ns=req.ns)  # type: ignore[attr-defined]
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "flushed_items": int(n or 0), "namespace": (req.ns or "ALL")}
+
+
+# --------- Multi-Level Cache Endpoints (L1/L2) ---------
+@app.get("/cache/stats")
+async def multi_cache_stats() -> Dict[str, Any]:
+    """
+    Get multi-level cache statistics.
+    
+    Returns:
+        {
+            "l1_hits": 150,
+            "l2_hits": 45,
+            "misses": 30,
+            "total_requests": 225,
+            "hit_rate": 0.867,
+            "l1_size": 87
+        }
+    """
+    try:
+        stats = ml_cache.get_stats()
+        return stats
+    except Exception as e:
+        log.error(f"/cache/stats error: {e}")
+        return {"error": str(e)}
+
+
+class CacheClearReq(BaseModel):
+    level: str = "all"
+    admin_secret: str
+
+
+@app.post("/cache/clear")
+async def multi_cache_clear(req: CacheClearReq) -> Dict[str, Any]:
+    """
+    Clear cache (admin only).
+    
+    Args:
+        level: "l1", "l2", or "all"
+        admin_secret: Must match QUANTUM_SHARED_SECRET
+    """
+    if req.admin_secret != QUANTUM_SHARED_SECRET:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
+    
+    try:
+        if req.level in ("l1", "all"):
+            cleared_count = ml_cache.clear_l1()
+            log.info(f"L1 cache cleared ({cleared_count} items)")
+        
+        if req.level in ("l2", "all"):
+            try:
+                from core.semantic_cache import get_semantic_cache
+                semcache = get_semantic_cache()
+                # Clear semantic cache (implementation depends on semantic_cache.py)
+                if hasattr(semcache, 'clear'):
+                    semcache.clear()
+                log.info("L2 cache cleared")
+            except Exception as e:
+                log.warning(f"L2 cache clear failed: {e}")
+        
+        return {"status": "ok", "cleared": req.level}
+    except Exception as e:
+        log.error(f"/cache/clear error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# --------- Endpoints admin (list/update) ---------
+@app.get("/endpoints")
+def endpoints_list() -> Dict[str, Any]:
+    return {
+        "active_env": ENV_LLM_ENDPOINT,
+        "tunnel_env": ENV_TUNNEL_ENDPOINT,
+        "active_redis": _get_redis_str("gpu_active_endpoint"),
+        "tunnel_redis": _get_redis_str("gpu_tunnel_endpoint"),
+        "resolved": get_endpoints(),
+    }
+
+
+class EndpointsUpdateReq(BaseModel):
+    active: Optional[str] = None
+    tunnel: Optional[str] = None
+    secret: Optional[str] = None
+
+
+@app.post("/endpoints/update")
+def endpoints_update(req: EndpointsUpdateReq, request: Request) -> Dict[str, Any]:
+    provided = (
+        req.secret
+        or request.headers.get("x-quantum-secret")
+        or ""
+    )
+    if QUANTUM_SHARED_SECRET and provided != QUANTUM_SHARED_SECRET:
+        return {"ok": False, "error": "unauthorized"}
+
+    changed: Dict[str, Any] = {}
+    try:
+        if req.active:
+            redis_client.set("gpu_active_endpoint", req.active)
+            changed["active"] = req.active
+        if req.tunnel:
+            redis_client.set("gpu_tunnel_endpoint", req.tunnel)
+            changed["tunnel"] = req.tunnel
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "changed": changed, "resolved": get_endpoints()}
+
+
+# --------- Cache warm -------------------------------------------------
+class WarmReq(BaseModel):
+    prompts: List[str]
+    system: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/cache/warm")
+async def cache_warm(req: WarmReq) -> Dict[str, Any]:
+    try:
+        sys_prompt = (
+            req.system
+            or (await get_persona("global", "default"))
+            or DEFAULT_SYSTEM_PROMPT
+        )
+        # layer incensurato anche per warm
+        sys_prompt = (sys_prompt.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+
+        model = (req.model or LLM_MODEL).strip()
+
+        global _SEMCACHE
+        _ensure_semcache_import()
+        if _SEMCACHE is None:
+            _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+
+        done = 0
+        errors: List[str] = []
+
+        for p in (req.prompts or []):
+            p = (p or "").strip()
+            if not p:
+                continue
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": p},
+                ],
+                "temperature": TEMPERATURE,
+                "max_tokens": 256,
+            }
+            result, _, last_err = _run_direct(payload, force=None)
+            if result:
+                try:
+                    _semcache_dualwrite(
+                        p,
+                        sys_prompt,
+                        model,
+                        "DIRECT_LLM",
+                        result,
+                    )
+                    done += 1
+                except Exception as e:
+                    errors.append(f"semcache_write:{str(e)}")
+            else:
+                errors.append(f"llm_call:{last_err or 'unknown'}")
+
+        return {"ok": True, "warmed": done, "errors": errors}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ------------------------- Generate -------------------------
+def _fb_record(**kw: Any) -> None:
+    if INTENT_FEEDBACK_ENABLED:
+        try:
+            _INTENT_FB.record_feedback(**kw)
+        except Exception:
+            pass
+
+
+@app.post("/generate")
+async def generate(
+    request: Request,
+    force: Optional[str] = None,
+) -> Dict[str, Any]:
+    global _SEMCACHE
+    try:
+        _ensure_semcache_import()
+        if _SEMCACHE is None:
+            _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    data = await request.json()
+    prompt = (data.get("prompt") or "").strip()
+    if not prompt:
+        return {"error": "Prompt mancante."}
+
+    if force not in (None, "tunnel", "direct"):
+        return {"error": "Parametro 'force' non valido. Usa 'tunnel' o 'direct'."}
+
+    try:
+        system_prompt = (
+            data.get("system")
+            or await get_persona("global", "default")
+            or DEFAULT_SYSTEM_PROMPT
+        ).strip()
+    except Exception:
+        system_prompt = DEFAULT_SYSTEM_PROMPT
+
+    # 🔥 Modalità Jarvis incensurato su generate
+    system_prompt = (system_prompt + "\n\n" + INCENSURATO_PROMPT).strip()
+
+    temperature = (
+        env_float("LLM_TEMPERATURE", TEMPERATURE)
+        if "temperature" not in data
+        else float(data.get("temperature"))
+    )
+    max_tokens = (
+        env_int("LLM_MAX_TOKENS", MAX_TOKENS)
+        if "max_tokens" not in data
+        else int(data.get("max_tokens"))
+    )
+    model_name = (data.get("model") or LLM_MODEL).strip()
+
+    # Auto-save input
+    try:
+        asv_in = autosave(prompt, source="generate_input")
+        if any([asv_in.get("facts"), asv_in.get("prefs"), asv_in.get("bet")]):
+            log.info(f"[autosave:generate_input] {asv_in}")
+    except Exception as e:
+        log.warning(f"AutoSave generate_input failed: {e}")
+
+    # === Semantic cache (pre-routing) ===
+    try:
+        if _SEMCACHE:
+            _ensure_semcache_import()
+            ctx_fp_auto = SemanticCache.fingerprint(  # type: ignore[name-defined]
+                system_prompt,
+                model_name,
+                "AUTO",
+            )
+            hit = _SEMCACHE.get(prompt, ctx_fp_auto)
+            if hit:
+                sim = hit.get("similarity")
+                if sim is None:
+                    meta_q = ((hit.get("meta") or {}).get("q") or "")
+                    sim = _cheap_similarity(prompt, meta_q)
+                out = {
+                    "ok": True,
+                    "intent": "CACHE_SEMANTIC",
+                    "confidence": 1.0,
+                    "reason": "semantic_hit_pre_route",
+                    "router_build": BUILD_SIGNATURE,
+                    "cached": True,
+                    "similarity": sim,
+                    "response": hit["response"],
+                }
+                _fb_record(
+                    query=prompt,
+                    intent_used="CACHE_SEMANTIC",
+                    satisfaction=1.0,
+                    response_time_s=0.005,
+                )
+                return out
+    except Exception as e:
+        log.warning(f"Semantic cache pre-route error: {e}")
+
+    # ===============================
+    # === ROUTING con LLM Intent ===
+    # ===============================
+    route: Optional[Dict[str, Any]] = None
+    used_intent = "DIRECT_LLM"
+
+    # 1. Correzioni utente salvate in Redis (override forte)
+    corr = _get_redis_str(f"intent_corrections:{prompt.strip().lower()}")
+    if corr:
+        used_intent = corr.upper()
+        route = {
+            "intent": used_intent,
+            "confidence": 1.0,
+            "reason": "user_correction",
+        }
+        log.info(f"Using user correction for intent: {used_intent}")
+
+    # 2. Meta queries → sempre DIRECT_LLM (niente web)
+    if route is None and _is_meta_capability_query(prompt):
+        used_intent = "DIRECT_LLM"
+        route = {
+            "intent": used_intent,
+            "confidence": 1.0,
+            "reason": "meta_query_override",
+        }
+        system_prompt = (
+            system_prompt
+            + "\n\n"
+            "Contesto: l'utente chiede delle TUE capacità. "
+            "Rispondi in modo conciso e non usare il web. "
+            f"Breve sommario: {_CAPABILITIES_BRIEF}"
+        ).strip()
+
+    # 3. Explain/definition queries → DIRECT_LLM (mai web)
+    if route is None and _is_explain_query(prompt):
+        used_intent = "DIRECT_LLM"
+        route = {
+            "intent": used_intent,
+            "confidence": 0.95,
+            "reason": "explain_query_direct",
+        }
+
+    # 4. ⭐ LLM Intent Classification (nuovo percorso principale) ⭐
+    if route is None:
+        llm_classifier = get_llm_classifier()
+        if llm_classifier:
+            route = await llm_classifier.classify(
+                prompt,
+                use_fallback_on_low_confidence=True,
+            )
+            used_intent = (route.get("intent") or "DIRECT_LLM").upper()
+            log.info(
+                "LLM Intent: %s (conf=%.2f, method=%s, latency=%dms)",
+                used_intent,
+                float(route.get("confidence") or 0.0),
+                route.get("method"),
+                int(route.get("latency_ms", 0) or 0),
+            )
+        else:
+            route = _SMART_INTENT.classify(prompt)
+            used_intent = (route.get("intent") or "DIRECT_LLM").upper()
+            log.info(
+                "Rule-based Intent: %s (conf=%.2f)",
+                used_intent,
+                float(route.get("confidence") or 0.0),
+            )
+
+    # 5. Zero-web guard: smalltalk/very-short → forza DIRECT_LLM
+    if _is_smalltalk_query(prompt) and used_intent in ("WEB_SEARCH", "WEB_READ"):
+        used_intent = "DIRECT_LLM"
+        if route is None:
+            route = {
+                "intent": used_intent,
+                "confidence": 1.0,
+                "reason": "smalltalk_guard",
+            }
+        else:
+            route["intent"] = used_intent
+            route["reason"] = (route.get("reason") or "") + "|smalltalk_guard"
+
+    # 6. 🔥 Live query (meteo, prezzi, risultati): forza WEB_SEARCH
+    if _is_quick_live_query(prompt) and used_intent != "WEB_SEARCH":
+        used_intent = "WEB_SEARCH"
+        if route is None:
+            route = {
+                "intent": used_intent,
+                "confidence": 0.95,
+                "reason": "force_web_live",
+            }
+        else:
+            route["intent"] = used_intent
+            route["reason"] = (route.get("reason") or "") + "|force_web_live"
+
+    if route is None:
+        route = {
+            "intent": used_intent,
+            "confidence": 0.0,
+            "reason": "fallback_intent",
+        }
+
+    out: Dict[str, Any] = {
+        "ok": True,
+        "intent": used_intent,
+        "confidence": route.get("confidence"),
+        "reason": route.get("reason"),
+        "router_build": BUILD_SIGNATURE,
+    }
+
+    # Cache key basata su prompt + system + intent
+    cache_key = (
+        "cache:"
+        + hash_prompt(prompt, system_prompt, temperature, max_tokens, model_name)
+        + f":{used_intent}"
+    )
+    cached = redis_client.get(cache_key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+
+    t0 = time.perf_counter()
+
+    # === Semantic cache (post-route, pre-LLM) ===
+    try:
+        if _SEMCACHE:
+            _ensure_semcache_import()
+            ctx_fp = SemanticCache.fingerprint(  # type: ignore[name-defined]
+                system_prompt,
+                model_name,
+                used_intent,
+            )
+            hit2 = _SEMCACHE.get(prompt, ctx_fp)
+            if hit2:
+                sim2 = hit2.get("similarity")
+                if sim2 is None:
+                    meta_q2 = ((hit2.get("meta") or {}).get("q") or "")
+                    sim2 = _cheap_similarity(prompt, meta_q2)
+                out.update(
+                    {
+                        "cached": True,
+                        "intent": "CACHE_SEMANTIC",
+                        "reason": (out.get("reason") or "")
+                        + "|semantic_hit_pre_llm",
+                        "similarity": sim2,
+                        "response": hit2["response"],
+                    }
+                )
+                _fb_record(
+                    query=prompt,
+                    intent_used="CACHE_SEMANTIC",
+                    satisfaction=1.0,
+                    response_time_s=0.005,
+                )
+                redis_client.setex(cache_key, 86400, json.dumps(out))
+                return out
+    except Exception as e:
+        log.warning(f"Semantic cache pre-llm error: {e}")
+
+    try:
+        # WEB_READ
+        if used_intent == "WEB_READ":
+            url = route.get("url")
+            if url:
+                try:
+                    text, _ = await asyncio.wait_for(
+                        fetch_and_extract(url),
+                        timeout=WEB_READ_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    text = ""
+                trimmed = trim_to_tokens(text or "", WEB_SUMMARY_BUDGET_TOK)
+                persona = system_prompt
+                msg = (
+                    "RUOLO: stai leggendo il contenuto di una singola pagina web.\n\n"
+                    "OBIETTIVO: riassumere la pagina in modo utile per l'utente.\n\n"
+                    "REGOLE CRITICHE:\n"
+                    "1. Riassumi in 5–10 punti chiave molto concreti (usa elenco puntato).\n"
+                    "2. Usa SOLO le informazioni presenti nel testo fornito: non inventare dati.\n"
+                    "3. Se ci sono numeri importanti (prezzi, date, percentuali, quantità), riportali indicando l'unità.\n"
+                    "4. Se il contenuto è incompleto o poco chiaro, dillo esplicitamente ma riassumi comunque ciò che è disponibile.\n"
+                    "5. NON dire all'utente di 'aprire la fonte' o 'consultare il sito' per avere i dettagli.\n"
+                    "6. Alla fine, se utile, proponi in 1–2 frasi eventuali prossimi passi pratici.\n\n"
+                    f"URL: {url}\n\n"
+                    f"TESTO PAGINA:\n{trimmed}"
+                )
+                try:
+                    summary = await reply_with_llm(msg, persona)
+                except Exception:
+                    summary = (
+                        "Non sono riuscito a generare un riassunto strutturato, ma il contenuto "
+                        "potrebbe comunque essere utile se consultato direttamente."
+                    )
+
+                try:
+                    if summary:
+                        asv = autosave(summary, source="web_read")
+                        if any(
+                            [
+                                asv.get("facts"),
+                                asv.get("prefs"),
+                                asv.get("bet"),
+                            ]
+                        ):
+                            log.info(f"[autosave:web_read] {asv}")
+                except Exception as e:
+                    log.warning(f"AutoSave web_read failed: {e}")
+
+                out.update(
+                    {
+                        "cached": False,
+                        "response": _wrap(summary, model_name),
+                        "source_url": url,
+                    }
+                )
+                _fb_record(
+                    query=prompt,
+                    intent_used="WEB_READ",
+                    satisfaction=1.0,
+                    response_time_s=time.perf_counter() - t0,
+                )
+                _ensure_semcache_import()
+                if _SEMCACHE is None:
+                    try:
+                        _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                _semcache_dualwrite(
+                    prompt,
+                    system_prompt,
+                    model_name,
+                    used_intent,
+                    out["response"],
+                )
+                redis_client.setex(cache_key, 86400, json.dumps(out))
+                return out
+            else:
+                used_intent = "DIRECT_LLM"
+                out["intent"] = used_intent
+                out["reason"] = (out.get("reason") or "") + "|url_missing_fallback"
+
+        # 🌤️ WEATHER AGENT: intercetta query meteo prima del WEB_SEARCH generico
+        if used_intent == "WEB_SEARCH" and WEATHER_AGENT_AVAILABLE and is_weather_query(prompt):
+            log.info(f"🌤️ Weather query detected: {prompt}")
+            try:
+                cache_key_weather = _get_live_cache_key("weather", prompt)
+                weather_answer = await cached_live_call(
+                    cache_key_weather,
+                    LIVE_CACHE_TTL_WEATHER,
+                    get_weather_for_query(prompt),
+                )
+                if weather_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(weather_answer, model_name),
+                            "live_agent": "weather",
+                            "note": "weather_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="WEATHER_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_WEATHER, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Weather agent failed, fallback to WEB_SEARCH: {e}")
+
+        # 💰 PRICE AGENT: intercetta query prezzi crypto/azioni/forex
+        if used_intent == "WEB_SEARCH" and PRICE_AGENT_AVAILABLE and is_price_query(prompt):
+            log.info(f"💰 Price query detected: {prompt}")
+            try:
+                cache_key_price = _get_live_cache_key("price", prompt)
+                price_answer = await cached_live_call(
+                    cache_key_price,
+                    LIVE_CACHE_TTL_PRICE,
+                    get_price_for_query(prompt),
+                )
+                if price_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(price_answer, model_name),
+                            "live_agent": "price",
+                            "note": "price_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="PRICE_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_PRICE, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Price agent failed, fallback to WEB_SEARCH: {e}")
+
+        # ⚽ SPORTS AGENT: intercetta query risultati/classifiche sportive
+        if used_intent == "WEB_SEARCH" and SPORTS_AGENT_AVAILABLE and is_sports_query(prompt):
+            log.info(f"⚽ Sports query detected: {prompt}")
+            try:
+                cache_key_sports = _get_live_cache_key("sports", prompt)
+                sports_answer = await cached_live_call(
+                    cache_key_sports,
+                    LIVE_CACHE_TTL_SPORTS,
+                    get_sports_for_query(prompt),
+                )
+                if sports_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(sports_answer, model_name),
+                            "live_agent": "sports",
+                            "note": "sports_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="SPORTS_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_SPORTS, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Sports agent failed, fallback to WEB_SEARCH: {e}")
+
+        # 📰 NEWS AGENT: intercetta query breaking news
+        if used_intent == "WEB_SEARCH" and NEWS_AGENT_AVAILABLE and is_news_query(prompt):
+            log.info(f"📰 News query detected: {prompt}")
+            try:
+                cache_key_news = _get_live_cache_key("news", prompt)
+                news_answer = await cached_live_call(
+                    cache_key_news,
+                    LIVE_CACHE_TTL_NEWS,
+                    get_news_for_query(prompt),
+                )
+                if news_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(news_answer, model_name),
+                            "live_agent": "news",
+                            "note": "news_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="NEWS_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_NEWS, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"News agent failed, fallback to WEB_SEARCH: {e}")
+
+        # 📅 SCHEDULE AGENT: intercetta query orari/calendario
+        if used_intent == "WEB_SEARCH" and SCHEDULE_AGENT_AVAILABLE and is_schedule_query(prompt):
+            log.info(f"📅 Schedule query detected: {prompt}")
+            try:
+                cache_key_schedule = _get_live_cache_key("schedule", prompt)
+                schedule_answer = await cached_live_call(
+                    cache_key_schedule,
+                    LIVE_CACHE_TTL_SCHEDULE,
+                    get_schedule_for_query(prompt),
+                )
+                if schedule_answer:
+                    out.update(
+                        {
+                            "cached": False,
+                            "response": _wrap(schedule_answer, model_name),
+                            "live_agent": "schedule",
+                            "note": "schedule_agent_response",
+                        }
+                    )
+                    _fb_record(
+                        query=prompt,
+                        intent_used="SCHEDULE_AGENT",
+                        satisfaction=1.0,
+                        response_time_s=time.perf_counter() - t0,
+                    )
+                    redis_client.setex(cache_key, LIVE_CACHE_TTL_SCHEDULE, json.dumps(out))
+                    return out
+            except Exception as e:
+                log.warning(f"Schedule agent failed, fallback to WEB_SEARCH: {e}")
+
+        # WEB_SEARCH
+        if used_intent == "WEB_SEARCH":
+            ws = await _web_search_pipeline(
+                q=prompt,
+                src="global",
+                sid="default",
+                k=int(data.get("k", 8)),
+                nsum=int(
+                    data.get("summarize_top", WEB_SUMMARIZE_TOP_DEFAULT)
+                ),
+            )
+            results = ws.get("results") or []
+            summary = (ws.get("summary") or "").strip()
+            note = ws.get("note")
+            diversity = ws.get("diversity")
+
+            # 🔁 Fallback: nessun risultato
+            if not results:
+                safe_msg = summary or "Non ho trovato risultati utili per questa ricerca."
+                out.update(
+                    {
+                        "cached": False,
+                        "response": _wrap(safe_msg, model_name),
+                        "web": {
+                            "results": [],
+                            "reranker_used": False,
+                            "stats": ws.get("stats", {}),
+                            "diversity": diversity,
+                        },
+                        "note": note or "non_web_query",
+                    }
+                )
+                _fb_record(
+                    query=prompt,
+                    intent_used="WEB_SEARCH",
+                    satisfaction=0.6,
+                    response_time_s=time.perf_counter() - t0,
+                )
+                _ensure_semcache_import()
+                if _SEMCACHE is None:
+                    try:
+                        _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+                    except Exception:
+                        pass
+                _semcache_dualwrite(
+                    prompt,
+                    system_prompt,
+                    model_name,
+                    used_intent,
+                    out["response"],
+                )
+                redis_client.setex(cache_key, 600, json.dumps(out))
+                return out
+
+            # 🔁 Fallback testuale: se la sintesi LLM è vuota ma ci sono risultati,
+            # costruisco un messaggio leggibile a partire dai risultati SERP.
+            if not summary and results:
+                lines: List[str] = []
+                for idx, r in enumerate(results[:5], start=1):
+                    title = (r.get("title") or "").strip() or (r.get("url") or "")
+                    url = (r.get("url") or "").strip()
+                    if url:
+                        lines.append(f"{idx}. {title}\n   {url}")
+                    else:
+                        lines.append(f"{idx}. {title}")
+                if lines:
+                    summary = (
+                        "Ho trovato questi risultati principali:\n\n"
+                        + "\n".join(lines)
+                    )
+                else:
+                    summary = (
+                        "Ho effettuato la ricerca, ma non sono riuscito a estrarre "
+                        "un contenuto testuale utile dalle pagine trovate."
+                    )
+
+            # Auto-save della sintesi (LLM o fallback)
+            try:
+                if summary:
+                    asv = autosave(summary, source="web_search")
+                    if any(
+                        [asv.get("facts"), asv.get("prefs"), asv.get("bet")]
+                    ):
+                        log.info(f"[autosave:web_search] {asv}")
+            except Exception as e:
+                log.warning(f"AutoSave web_search failed: {e}")
+
+            out.update(
+                {
+                    "cached": False,
+                    "response": _wrap(summary, model_name),
+                    "web": {
+                        "results": results,
+                        "reranker_used": ws.get("reranker_used", False),
+                        "stats": ws.get("stats", {}),
+                        "diversity": diversity,
+                    },
+                }
+            )
+            _fb_record(
+                query=prompt,
+                intent_used="WEB_SEARCH",
+                satisfaction=1.0,
+                response_time_s=time.perf_counter() - t0,
+            )
+            _ensure_semcache_import()
+            if _SEMCACHE is None:
+                try:
+                    _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+                except Exception:
+                    pass
+            _semcache_dualwrite(
+                prompt,
+                system_prompt,
+                model_name,
+                used_intent,
+                out["response"],
+            )
+            redis_client.setex(cache_key, 86400, json.dumps(out))
+            return out
+
+        # DIRECT LLM con budget
+        sys_trim = trim_to_tokens(system_prompt, min(600, LLM_MAX_CTX // 8))
+        user_trim = prompt
+        input_budget = (
+            LLM_MAX_CTX - LLM_OUTPUT_BUDGET_TOK - LLM_SAFETY_MARGIN_TOK
+        )
+        tokens_now = approx_tokens(sys_trim) + approx_tokens(user_trim)
+        if tokens_now > input_budget:
+            keep = max(128, input_budget - approx_tokens(sys_trim))
+            user_trim = trim_to_tokens(user_trim[-keep * 4 :], keep)
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": sys_trim},
+                {"role": "user", "content": user_trim},
+            ],
+            "temperature": temperature,
+            "max_tokens": LLM_OUTPUT_BUDGET_TOK,
+        }
+        result, endpoint_used, last_err = _run_direct(payload, force)
+        if not result:
+            fail = {
+                "ok": False,
+                "error": "Nessun endpoint raggiungibile.",
+                "last_error": last_err,
+                "endpoints_tried": get_endpoints(),
+                "intent": used_intent,
+                "confidence": route.get("confidence"),
+                "reason": route.get("reason"),
+                "router_build": BUILD_SIGNATURE,
+            }
+            redis_client.setex(cache_key, 300, json.dumps(fail))
+            return fail
+
+        try:
+            msg = (
+                (result.get("choices") or [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            if msg:
+                asv = autosave(msg, source="direct_llm")
+                if any([asv.get("facts"), asv.get("prefs"), asv.get("bet")]):
+                    log.info(f"[autosave:direct_llm] {asv}")
+        except Exception as e:
+            log.warning(f"AutoSave direct_llm failed: {e}")
+
+        out.update(
+            {
+                "cached": False,
+                "endpoint_used": endpoint_used,
+                "response": result,
+            }
+        )
+        _fb_record(
+            query=prompt,
+            intent_used="DIRECT_LLM",
+            satisfaction=1.0,
+            response_time_s=time.perf_counter() - t0,
+        )
+        _ensure_semcache_import()
+        if _SEMCACHE is None:
+            try:
+                _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+            except Exception:
+                pass
+        _semcache_dualwrite(
+            prompt,
+            system_prompt,
+            model_name,
+            out["intent"],
+            out["response"],
+        )
+        redis_client.setex(cache_key, 86400, json.dumps(out))
+        return out
+    except Exception:
+        err = {
+            "ok": False,
+            "error": (
+                "Richiesta troppo lunga o sorgente non disponibile. "
+                "Le fonti non sono accessibili in questo momento."
+            ),
+            "intent": used_intent,
+            "confidence": route.get("confidence"),
+            "reason": (route.get("reason") or "") + "|exception",
+            "router_build": BUILD_SIGNATURE,
+        }
+        redis_client.setex(cache_key, 300, json.dumps(err))
+        return err
+
+
+# ================= Persona & Web utils ===================
+@app.post("/chat")
+@limiter.limit("10/minute")
+@cached_response("chat", ttl=300, cache_key_params=["text", "source", "source_id"])
+async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, Any]:
+    """
+    Chat avanzata (v2) with Personal Memory System.
+    
+    Now includes comprehensive input validation via Pydantic models.
+    """
+    global _SEMCACHE
+    
+    # Track request start time for latency
+    request_start_time = time.perf_counter()
+
+    # ======== Input Validation ========
+    # Extract basic fields for validation
+    messages = payload.get("messages")
+    text_raw = payload.get("text", "")
+    source_raw = payload.get("source", "tg" if not messages else "gui")
+    source_id_raw = payload.get("source_id", "")
+    system_prompt_raw = payload.get("system_prompt")
+    
+    # If no text but messages array exists, extract text from last user message
+    if not text_raw and isinstance(messages, list) and messages:
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                text_raw = (m.get("content") or "").strip()
+                break
+    
+    # Ensure we have text from either direct field or messages
+    if not text_raw:
+        return {
+            "error": "validation_error",
+            "detail": "text or messages with user content is required",
+            "status_code": 422
+        }
+    
+    # Validate using ChatRequest model
+    try:
+        validated = ChatRequest(
+            text=text_raw,
+            source=source_raw,
+            source_id=source_id_raw if source_id_raw else "default",
+            system_prompt=system_prompt_raw,
+            messages=messages
+        )
+    except ValidationError as e:
+        # Return 422 with clear error messages
+        error_details = []
+        for error in e.errors():
+            field = " -> ".join(str(x) for x in error["loc"])
+            msg = error["msg"]
+            error_details.append(f"{field}: {msg}")
+        
+        return {
+            "error": "validation_error",
+            "detail": "; ".join(error_details),
+            "status_code": 422
+        }
+    except Exception as e:
+        return {
+            "error": "validation_error",
+            "detail": str(e),
+            "status_code": 422
+        }
+
+    # ======== Normalizzazione input: messages vs legacy ========
+    text: str = ""
+    explicit_sys_from_messages: str = ""
+
+    if isinstance(messages, list) and messages:
+        # Nuovo stile OpenAI-like
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                text = (m.get("content") or "").strip()
+                break
+
+        # System messages espliciti nel payload
+        sys_parts: List[str] = []
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") == "system":
+                c = (m.get("content") or "").strip()
+                if c:
+                    sys_parts.append(c)
+        if sys_parts:
+            explicit_sys_from_messages = "\n\n".join(sys_parts)
+
+        src = payload.get("source") or "gui"
+        sid = str(payload.get("source_id") or "default")
+    else:
+        # Payload legacy (usato dal bot Telegram esistente)
+        src = payload.get("source", "tg")
+        sid = str(payload.get("source_id") or "")
+        text = (payload.get("text") or "").strip()
+        explicit_sys_from_messages = ""
+
+    user_sys_prompt = (payload.get("system_prompt") or "").strip()
+
+    if not text:
+        return {"error": "text mancante"}
+    if not sid:
+        sid = "default"
+
+    # Determine conversation_id and user_id for memory
+    conversation_id = f"{src}:{sid}"
+    user_id = os.getenv("DEFAULT_USER_ID", "matteo")  # Can be extended for multi-user
+
+    # =================== Multi-Level Cache Check (L1/L2) ===================
+    cache_key = f"{src}:{sid}:{text}"
+    start_time = time.perf_counter()
+    
+    ml_cached_result = ml_cache.get(cache_key)
+    if ml_cached_result:
+        cache_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log.info(f"[CACHE HIT] {text[:50]}... (source: {src}, latency: {cache_latency_ms}ms)")
+        
+        # Track metrics
+        if METRICS_AVAILABLE:
+            track_cache_hit("multi_level")
+            track_chat_request("/chat", "success")
+            observe_chat_latency("/chat", time.perf_counter() - request_start_time)
+            observe_response_size("/chat", len(str(ml_cached_result)))
+        
+        return {
+            "reply": ml_cached_result,
+            "cached": True,
+            "cache_level": "multi_level",
+            "latency_ms": cache_latency_ms,
+        }
+    
+    # Cache MISS - proceed with normal processing
+    log.info(f"[CACHE MISS] {text[:50]}... (source: {src})")
+    
+    # Track cache miss
+    if METRICS_AVAILABLE:
+        track_cache_miss("multi_level")
+
+    # =================== NEW: Process "remember" statements ===================
+    try:
+        from core.memory_manager import process_user_message
+        memory_process = await process_user_message(user_id, conversation_id, text)
+        if memory_process.get("fact_saved"):
+            log.info(f"[memory] Saved user profile fact: {memory_process.get('fact_id')}")
+    except Exception as e:
+        log.warning(f"Memory processing failed: {e}")
+
+    # Autosave input utente (existing legacy system)
+    try:
+        asv_in = autosave(text, source="chat_user")
+        if any([asv_in.get("facts"), asv_in.get("prefs"), asv_in.get("bet")]):
+            log.info(f"[autosave:chat_user] {asv_in}")
+    except Exception as e:
+        log.warning(f"AutoSave chat_user failed: {e}")
+
+    # Persona di base
+    try:
+        persona_store = await get_persona(src, sid)
+    except Exception:
+        persona_store = None
+
+    base_sys = user_sys_prompt or persona_store or DEFAULT_SYSTEM_PROMPT
+    if explicit_sys_from_messages:
+        base_sys = explicit_sys_from_messages + "\n\n" + base_sys
+
+    # Regole dure anti-hallucination + priorità ai facts interni
+    strict_rules = (
+        "Regole interne dure (ANTI-HALLUCINATION & FACT-FIRST):\n"
+        "1. Non inventare mai numeri, date, nomi di modello hardware o importi se NON sono nella domanda o nei facts interni.\n"
+        "2. Se ti mancano dettagli specifici, dillo esplicitamente ('non ho questo dato in memoria' / 'qui sto parlando in generale').\n"
+        "3. Quando rispondi su Jarvis, QuantumDev, Quantum Edge AI o il mio ecosistema, considera i facts in memoria (Chroma) "
+        "come fonte primaria e non contraddirli.\n"
+        "4. Se usi conoscenza generale, chiarisci che è 'in generale', non riferita alla mia infrastruttura reale.\n"
+        "5. Evita frasi vaghe tipo 'potrebbe' / 'forse' quando parli di configurazioni reali: se non sai, dillo.\n"
+    )
+
+    # =================== Semantic Cache (chat) – pre-check ===================
+    try:
+        _ensure_semcache_import()
+        if _SEMCACHE is None:
+            _SEMCACHE = get_semantic_cache()  # type: ignore[name-defined]
+    except Exception as e:
+        log.warning(f"Semantic cache init error in /chat: {e}")
+        _SEMCACHE = None
+
+    if _SEMCACHE:
+        try:
+            ctx_fp = SemanticCache.fingerprint(  # type: ignore[name-defined]
+                base_sys,
+                LLM_MODEL,
+                "CHAT",
+            )
+            hit = _SEMCACHE.get(text, ctx_fp)
+        except Exception as e:
+            log.warning(f"Semantic cache get error in /chat: {e}")
+            hit = None
+
+        if hit:
+            sim = hit.get("similarity")
+            if sim is None:
+                meta_q = ((hit.get("meta") or {}).get("q") or "")
+                sim = _cheap_similarity(text, meta_q)
+            if sim is None:
+                sim = 0.0
+
+            # soglia alta
+            if sim >= 0.88:
+                resp = hit.get("response")
+                if isinstance(resp, dict) and "reply" in resp:
+                    reply_cached = resp["reply"]
+                elif isinstance(resp, str):
+                    reply_cached = resp
+                else:
+                    reply_cached = str(resp)
+
+                try:
+                    asv_out = autosave(
+                        reply_cached, source="chat_reply_cache"
+                    )
+                    if any(
+                        [
+                            asv_out.get("facts"),
+                            asv_out.get("prefs"),
+                            asv_out.get("bet"),
+                        ]
+                    ):
+                        log.info(f"[autosave:chat_reply_cache] {asv_out}")
+                except Exception as e:
+                    log.warning(
+                        f"AutoSave chat_reply_cache failed: {e}"
+                    )
+
+                return {"reply": reply_cached}
+
+    # =================== Helper: query su hardware Jarvis ===================
+    def _is_jarvis_hw_query(q: str) -> bool:
+        s = (q or "").lower()
+        hw_keywords = [
+            "hardware",
+            "cpu",
+            "gpu",
+            "vram",
+            "scheda video",
+            "scheda grafica",
+            "server",
+            "macchina",
+            "nodo",
+        ]
+        jarvis_keywords = [
+            "jarvis",
+            "mia ai",
+            "mio jarvis",
+            "quantumdev",
+            "la mia ai",
+            "ai personale",
+        ]
+        return any(k in s for k in hw_keywords) and any(
+            k in s for k in jarvis_keywords
+        )
+
+    # =================== Memory search (Chroma - OLD SYSTEM) ===================
+    mem_items: List[Dict[str, Any]] = []
+    try:
+        mem_items = search_topk(text, k=10, half_life_days=MEM_HALF_LIFE_D)
+    except Exception as e:
+        log.warning(f"memory search in /chat failed: {e}")
+        mem_items = []
+
+    # =================== NEW: Gather Personal Memory Context ===================
+    memory_context_dict = {"profile_context": "", "episodic_context": ""}
+    try:
+        from core.memory_manager import gather_memory_context
+        memory_context_dict = await gather_memory_context(user_id, conversation_id, text)
+        if memory_context_dict.get("profile_context"):
+            log.info(f"[memory] Retrieved {len(memory_context_dict['profile_context'])} chars of profile context")
+        if memory_context_dict.get("episodic_context"):
+            log.info(f"[memory] Retrieved {len(memory_context_dict['episodic_context'])} chars of episodic context")
+    except Exception as e:
+        log.warning(f"Gather memory context failed: {e}")
+
+    # Estrazione facts specifici su hardware Jarvis (CPU/GPU)
+    cpu_val: Optional[str] = None
+    gpu_val: Optional[str] = None
+
+    for it in mem_items:
+        md = (it.get("metadata") or {}) or {}
+        subj = (
+            md.get("subject")
+            or md.get("key")
+            or md.get("label")
+            or ""
+        ).lower()
+        val = (md.get("value") or "").strip()
+        doc = (it.get("document") or "").strip()
+        content = val or doc
+        if not content:
+            continue
+
+        if "jarvis.hardware.cpu" in subj:
+            cpu_val = content
+        if "jarvis.hardware.gpu" in subj:
+            gpu_val = content
+
+    # =================== Caso speciale: hardware Jarvis ===================
+    if _is_jarvis_hw_query(text):
+        if cpu_val or gpu_val:
+            parts: List[str] = []
+            if cpu_val:
+                parts.append(cpu_val)
+            if gpu_val:
+                parts.append(gpu_val)
+            reply_hw = " | ".join(parts)
+        else:
+            reply_hw = (
+                "Non ho nessun fact salvato sull'hardware reale del tuo Jarvis "
+                "(CPU/GPU) in Chroma. Finché questi dati non sono registrati, "
+                "qualsiasi risposta specifica su modelli o VRAM sarebbe inventata e quindi non te la do.\n\n"
+                "Per fissare l'hardware reale, aggiungi almeno due facts via API /memory/fact:\n"
+                "- subject: jarvis.hardware.cpu → value: descrizione CPU reale (es. 'CPU reale Jarvis: ...')\n"
+                "- subject: jarvis.hardware.gpu → value: descrizione GPU reale (es. 'GPU reale Jarvis: ...')\n"
+                "Poi rifai la domanda."
+            )
+
+        try:
+            asv_out = autosave(reply_hw, source="chat_reply")
+            if any(
+                [asv_out.get("facts"), asv_out.get("prefs"), asv_out.get("bet")]
+            ):
+                log.info(f"[autosave:chat_reply] {asv_out}")
+        except Exception as e:
+            log.warning(f"AutoSave chat_reply (hw) failed: {e}")
+
+        if _SEMCACHE:
+            try:
+                _semcache_dualwrite(
+                    text,
+                    base_sys,
+                    LLM_MODEL,
+                    "CHAT",
+                    {"reply": reply_hw},
+                )
+            except Exception as e:
+                log.warning(f"Semantic cache write (hw) failed: {e}")
+
+        # Cache hardware response in multi-level cache
+        if reply_hw and len(reply_hw) > 10:
+            try:
+                ml_cache.set(cache_key, reply_hw)
+                log.info(f"[CACHED] HW response for: {text[:50]}...")
+            except Exception as e:
+                log.warning(f"Multi-level cache set error (hw): {e}")
+        
+        hw_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        return {
+            "reply": reply_hw,
+            "cached": False,
+            "cache_level": None,
+            "latency_ms": hw_latency_ms,
+        }
+
+    # =================== Costruzione contesto dai facts (OLD LEGACY SYSTEM) ===================
+    mem_context = ""
+    if mem_items:
+        lines: List[str] = []
+        for it in mem_items[:5]:
+            md = (it.get("metadata") or {}) or {}
+            subj = (
+                md.get("subject")
+                or md.get("key")
+                or md.get("event")
+                or md.get("label")
+                or ""
+            )
+            val = (md.get("value") or "").strip()
+            doc = (it.get("document") or "").strip()
+            content = val or doc
+            if not content:
+                continue
+            if subj:
+                lines.append(f"- {subj}: {content}")
+            else:
+                lines.append(f"- {content}")
+        if lines:
+            mem_context = "Facts interni (Chroma - legacy) rilevanti:\n" + "\n".join(
+                lines
+            )
+
+    # =================== System prompt finale (WITH NEW MEMORY) ===================
+    full_sys = (
+        base_sys.strip()
+        + "\n\n"
+        + INCENSURATO_PROMPT
+        + "\n\n"
+        + strict_rules
+    )
+    
+    # Add NEW personal memory contexts
+    if memory_context_dict.get("profile_context"):
+        full_sys += "\n\n" + memory_context_dict["profile_context"]
+    
+    if memory_context_dict.get("episodic_context"):
+        full_sys += "\n\n" + memory_context_dict["episodic_context"]
+    
+    # Add legacy memory context (for backward compatibility)
+    if mem_context:
+        full_sys += "\n\n" + mem_context
+
+    sys_trim = trim_to_tokens(full_sys, 600)
+
+    # =================== Chiamata LLM ===================
+    reply_text = await reply_with_llm(text, sys_trim)
+
+    # =================== NEW: Record conversation turn for episodic memory ===================
+    try:
+        from core.memory_manager import record_conversation_turn
+        record_result = await record_conversation_turn(
+            conversation_id=conversation_id,
+            user_message=text,
+            assistant_message=reply_text,
+            user_id=user_id,
+            llm_func=reply_with_llm
+        )
+        if record_result.get("summarized"):
+            log.info(f"[memory] Created conversation summary for {conversation_id}")
+    except Exception as e:
+        log.warning(f"Record conversation turn failed: {e}")
+
+    # Autosave output
+    try:
+        if reply_text:
+            asv_out = autosave(reply_text, source="chat_reply")
+            if any(
+                [
+                    asv_out.get("facts"),
+                    asv_out.get("prefs"),
+                    asv_out.get("bet"),
+                ]
+            ):
+                log.info(f"[autosave:chat_reply] {asv_out}")
+    except Exception as e:
+        log.warning(f"AutoSave chat_reply failed: {e}")
+
+    # Scrivi in semantic cache per future richieste simili
+    if _SEMCACHE and reply_text:
+        try:
+            _semcache_dualwrite(
+                text,
+                base_sys,
+                LLM_MODEL,
+                "CHAT",
+                {"reply": reply_text},
+            )
+        except Exception as e:
+            log.warning(f"Semantic cache write (/chat) failed: {e}")
+
+    # Cache successful response in multi-level cache
+    if reply_text and len(reply_text) > 10:
+        try:
+            ml_cache.set(cache_key, reply_text)
+            log.info(f"[CACHED] Response for: {text[:50]}...")
+        except Exception as e:
+            log.warning(f"Multi-level cache set error: {e}")
+    
+    # Calculate total latency
+    total_latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    
+    # Track metrics
+    if METRICS_AVAILABLE:
+        track_chat_request("/chat", "success")
+        observe_chat_latency("/chat", time.perf_counter() - request_start_time)
+        observe_response_size("/chat", len(reply_text) if reply_text else 0)
+
+    return {
+        "reply": reply_text,
+        "cached": False,
+        "cache_level": None,
+        "latency_ms": total_latency_ms,
+    }
+
+
+# ========================= /chat/stream endpoint (SSE Streaming) =========================
+@app.post("/chat/stream")
+async def chat_stream(payload: dict = Body(...)):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    
+    Returns a progressive response with:
+    - Thinking phase updates
+    - Token-by-token LLM output
+    - Completion message
+    
+    Payload format (same as /chat):
+        - messages: list[dict] with role/content (OpenAI-style)
+        - OR text: str (legacy format)
+        - source: str (default: "gui")
+        - source_id: str (default: "default")
+        - system_prompt: str (optional)
+    
+    SSE message types:
+        - {"type": "thinking", "content": "..."}
+        - {"type": "token", "text": "...", "index": N}
+        - {"type": "done", "total_tokens": N}
+        - {"type": "error", "message": "..."}
+    """
+    
+    async def event_generator():
+        """Async generator for SSE streaming."""
+        try:
+            # ======== Parse input (same as /chat) ========
+            messages = payload.get("messages")
+            text: str = ""
+            explicit_sys_from_messages: str = ""
+
+            if isinstance(messages, list) and messages:
+                # OpenAI-like format
+                for m in reversed(messages):
+                    if isinstance(m, dict) and m.get("role") == "user":
+                        text = (m.get("content") or "").strip()
+                        break
+
+                # Extract system messages
+                sys_parts: List[str] = []
+                for m in messages:
+                    if isinstance(m, dict) and m.get("role") == "system":
+                        c = (m.get("content") or "").strip()
+                        if c:
+                            sys_parts.append(c)
+                if sys_parts:
+                    explicit_sys_from_messages = "\n\n".join(sys_parts)
+
+                src = payload.get("source") or "gui"
+                sid = str(payload.get("source_id") or "default")
+            else:
+                # Legacy format
+                src = payload.get("source", "tg")
+                sid = str(payload.get("source_id") or "")
+                text = (payload.get("text") or "").strip()
+                explicit_sys_from_messages = ""
+
+            user_sys_prompt = (payload.get("system_prompt") or "").strip()
+
+            if not text:
+                yield create_error_message("Missing text parameter", "missing_text")
+                return
+            if not sid:
+                sid = "default"
+
+            # Determine conversation_id and user_id
+            conversation_id = f"{src}:{sid}"
+            user_id = os.getenv("DEFAULT_USER_ID", "matteo")
+
+            # ======== Send thinking phase message ========
+            yield create_thinking_message("Processing query...")
+
+            # ======== Process memory (simplified for streaming) ========
+            try:
+                from core.memory_manager import process_user_message
+                memory_process = await process_user_message(user_id, conversation_id, text)
+                if memory_process.get("fact_saved"):
+                    log.info(f"[memory] Saved user profile fact: {memory_process.get('fact_id')}")
+            except Exception as e:
+                log.warning(f"Memory processing failed: {e}")
+
+            # ======== Build persona ========
+            try:
+                persona_store = await get_persona(src, sid)
+            except Exception:
+                persona_store = None
+
+            base_sys = user_sys_prompt or persona_store or DEFAULT_SYSTEM_PROMPT
+            if explicit_sys_from_messages:
+                base_sys = explicit_sys_from_messages + "\n\n" + base_sys
+
+            # Add strict rules
+            strict_rules = (
+                "Regole interne dure (ANTI-HALLUCINATION & FACT-FIRST):\n"
+                "1. Non inventare mai numeri, date, nomi di modello hardware o importi se NON sono nella domanda o nei facts interni.\n"
+                "2. Se ti mancano dettagli specifici, dillo esplicitamente ('non ho questo dato in memoria' / 'qui sto parlando in generale').\n"
+                "3. Quando rispondi su Jarvis, QuantumDev, Quantum Edge AI o il mio ecosistema, considera i facts in memoria (Chroma) "
+                "come fonte primaria e non contraddirli.\n"
+                "4. Se usi conoscenza generale, chiarisci che è 'in generale', non riferita alla mia infrastruttura reale.\n"
+                "5. Evita frasi vaghe tipo 'potrebbe' / 'forse' quando parli di configurazioni reali: se non sai, dillo.\n"
+            )
+
+            # ======== Gather memory context ========
+            memory_context_dict = {"profile_context": "", "episodic_context": ""}
+            try:
+                from core.memory_manager import gather_memory_context
+                memory_context_dict = await gather_memory_context(user_id, conversation_id, text)
+            except Exception as e:
+                log.warning(f"Gather memory context failed: {e}")
+
+            # ======== Build final system prompt ========
+            full_sys = (
+                base_sys.strip()
+                + "\n\n"
+                + INCENSURATO_PROMPT
+                + "\n\n"
+                + strict_rules
+            )
+            
+            if memory_context_dict.get("profile_context"):
+                full_sys += "\n\n" + memory_context_dict["profile_context"]
+            
+            if memory_context_dict.get("episodic_context"):
+                full_sys += "\n\n" + memory_context_dict["episodic_context"]
+
+            sys_trim = trim_to_tokens(full_sys, 600)
+
+            # ======== Send thinking complete ========
+            yield create_thinking_message("Generating response...")
+
+            # ======== Stream LLM response ========
+            token_count = 0
+            accumulated_text = ""
+            
+            async for chunk in reply_with_llm_streaming(text, sys_trim):
+                chunk_type = chunk.get("type")
+                
+                if chunk_type == "token":
+                    # Stream token to client
+                    token_text = chunk.get("text", "")
+                    accumulated_text += token_text
+                    token_count += 1
+                    yield create_token_message(token_text, token_count - 1)
+                    
+                elif chunk_type == "done":
+                    # LLM finished
+                    total_tokens = chunk.get("total_tokens", token_count)
+                    elapsed_ms = chunk.get("elapsed_ms", 0)
+                    
+                    # Record conversation turn for episodic memory
+                    # Note: Using reply_with_llm as reference (not streaming) for memory system
+                    try:
+                        from core.memory_manager import record_conversation_turn
+                        record_result = await record_conversation_turn(
+                            conversation_id=conversation_id,
+                            user_message=text,
+                            assistant_message=accumulated_text,
+                            user_id=user_id,
+                            llm_func=reply_with_llm  # Use non-streaming for memory consistency
+                        )
+                        if record_result.get("summarized"):
+                            log.info(f"[memory] Created conversation summary for {conversation_id}")
+                    except Exception as e:
+                        log.warning(f"Record conversation turn failed: {e}")
+                    
+                    # Autosave output
+                    try:
+                        if accumulated_text:
+                            asv_out = autosave(accumulated_text, source="chat_reply_stream")
+                            if any([asv_out.get("facts"), asv_out.get("prefs"), asv_out.get("bet")]):
+                                log.info(f"[autosave:chat_reply_stream] {asv_out}")
+                    except Exception as e:
+                        log.warning(f"AutoSave chat_reply_stream failed: {e}")
+                    
+                    # Send completion
+                    yield create_done_message(
+                        total_tokens=total_tokens,
+                        metadata={
+                            "elapsed_ms": elapsed_ms,
+                            "source": src,
+                            "source_id": sid,
+                        }
+                    )
+                    break
+                    
+                elif chunk_type == "error":
+                    # Stream error
+                    error_msg = chunk.get("message", "Unknown error")
+                    error_code = chunk.get("code", "error")
+                    yield create_error_message(error_msg, error_code)
+                    break
+
+        except Exception as e:
+            log.error(f"Streaming error: {e}")
+            yield create_error_message(str(e), "stream_exception")
+            yield create_done_message(0, metadata={"error": True})
+
+    # Return StreamingResponse with SSE headers
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=get_sse_headers()
+    )
+
+
+# ========================= /unified endpoint (Master Orchestrator) =========================
+@app.post("/unified")
+@limiter.limit("10/minute")
+@cached_response("unified", ttl=300, cache_key_params=["q", "source", "source_id"])
+async def unified_endpoint(payload: dict = Body(...), request: Request = None) -> Dict[str, Any]:
+    """
+    Unified endpoint using Master Orchestrator.
+    Automatically decides whether to use tools/web or direct LLM.
+    
+    Payload:
+        - q: query string (required)
+        - source: source identifier (default: "api")
+        - source_id: user/chat identifier (required)
+    """
+    try:
+        # Import master orchestrator
+        from core.master_orchestrator import get_master_orchestrator
+        from core.chat_engine import reply_with_llm
+        
+        # Extract params
+        query = (payload.get("q") or "").strip()
+        source = payload.get("source", "api")
+        source_id = str(payload.get("source_id") or "default")
+        
+        if not query:
+            return {
+                "error": "q parameter is required",
+                "success": False,
+            }
+        
+        # Get orchestrator instance with LLM function
+        orchestrator = get_master_orchestrator(llm_func=reply_with_llm)
+        
+        # Process through orchestrator
+        result = await orchestrator.process(
+            query=query,
+            source=source,
+            source_id=source_id,
+            show_reasoning=True,
+            create_artifacts=False,  # Disable artifacts for now
+        )
+        
+        # Return response in format compatible with telegram bot
+        return {
+            "reply": result.response,
+            "query_type": result.context.query_type.value,
+            "strategy": result.context.strategy.value,
+            "tool_results": result.context.tool_results,
+            "duration_ms": result.duration_ms,
+            "success": result.success,
+        }
+        
+    except Exception as e:
+        log.error(f"/unified error: {e}")
+        return {
+            "error": str(e),
+            "success": False,
+        }
+
+
+@app.post("/analyze")
+async def analyze_query_debug(text: str = Body(..., embed=True)) -> Dict[str, Any]:
+    """
+    Debug endpoint: Analyze query without executing.
+    
+    Returns complexity, token budget, and recommended strategy.
+    """
+    try:
+        from core.query_analyzer_v2 import get_query_analyzer
+        
+        analyzer = get_query_analyzer()
+        score = analyzer.analyze(text)
+        
+        return score.to_dict()
+    except Exception as e:
+        log.error(f"/analyze error: {e}")
+        return {
+            "error": str(e)
+        }
+
+
+@app.post("/persona/set")
+async def persona_set(payload: dict = Body(...)) -> Dict[str, Any]:
+    src = payload.get("source", "tg")
+    sid = str(payload.get("source_id"))
+    text = (payload.get("text") or "").strip()
+    if not sid or not text:
+        return {"error": "source_id o text mancanti"}
+    await set_persona(src, sid, text)
+    return {"ok": True}
+
+
+@app.post("/persona/get")
+async def persona_get(payload: dict = Body(...)) -> Dict[str, Any]:
+    src = payload.get("source", "tg")
+    sid = str(payload.get("source_id"))
+    if not sid:
+        return {"error": "source_id mancante"}
+    p = await get_persona(src, sid)
+    return {"persona": p}
+
+
+@app.post("/persona/reset")
+async def persona_reset(payload: dict = Body(...)) -> Dict[str, Any]:
+    src = payload.get("source", "tg")
+    sid = str(payload.get("source_id"))
+    if not sid:
+        return {"error": "source_id mancante"}
+    await reset_persona(src, sid)
+    return {"ok": True}
+
+
+# ---------- /web/summarize : URL o Query -----------------
+@app.post("/web/summarize")
+@limiter.limit("15/minute")
+@cached_response("web_summarize", ttl=1800, cache_key_params=["q", "source", "source_id"])
+async def web_summarize(payload: WebSummarizeRequest, request: Request = None) -> Dict[str, Any]:
+    """
+    Web summarize endpoint with comprehensive input validation.
+    
+    Supports both URL summarization and query-based search+summarize.
+    """
+    if payload.q:
+        if _is_smalltalk_query(payload.q):
+            return {
+                "summary": "",
+                "results": [],
+                "note": "non_web_query",
+            }
+
+        # 🌤️ Weather Agent: intercetta query meteo
+        if WEATHER_AGENT_AVAILABLE and is_weather_query and is_weather_query(payload.q):
+            try:
+                weather_answer = await get_weather_for_query(payload.q)
+                if weather_answer:
+                    return {
+                        "summary": weather_answer,
+                        "results": [],
+                        "note": "weather_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Weather agent failed in /web/summarize: {e}")
+
+        # 💰 Price Agent: intercetta query prezzi
+        if PRICE_AGENT_AVAILABLE and is_price_query(payload.q):
+            try:
+                price_answer = await get_price_for_query(payload.q)
+                if price_answer:
+                    return {
+                        "summary": price_answer,
+                        "results": [],
+                        "note": "price_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Price agent failed in /web/summarize: {e}")
+
+        # ⚽ Sports Agent: intercetta query sportive
+        if SPORTS_AGENT_AVAILABLE and is_sports_query(payload.q):
+            try:
+                sports_answer = await get_sports_for_query(payload.q)
+                if sports_answer:
+                    return {
+                        "summary": sports_answer,
+                        "results": [],
+                        "note": "sports_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Sports agent failed in /web/summarize: {e}")
+
+        # 📰 News Agent: intercetta query news
+        if NEWS_AGENT_AVAILABLE and is_news_query(payload.q):
+            try:
+                news_answer = await get_news_for_query(payload.q)
+                if news_answer:
+                    return {
+                        "summary": news_answer,
+                        "results": [],
+                        "note": "news_agent",
+                    }
+            except Exception as e:
+                log.warning(f"News agent failed in /web/summarize: {e}")
+
+        # 📅 Schedule Agent: intercetta query calendario
+        if SCHEDULE_AGENT_AVAILABLE and is_schedule_query(payload.q):
+            try:
+                schedule_answer = await get_schedule_for_query(payload.q)
+                if schedule_answer:
+                    return {
+                        "summary": schedule_answer,
+                        "results": [],
+                        "note": "schedule_agent",
+                    }
+            except Exception as e:
+                log.warning(f"Schedule agent failed in /web/summarize: {e}")
+
+        # Fallback a web search standard
+        ws = await _web_search_pipeline(
+            q=payload.q,
+            src=payload.source,
+            sid=str(payload.source_id),
+            k=int(payload.k or 6),
+            nsum=int(
+                payload.summarize_top or WEB_SUMMARIZE_TOP_DEFAULT
+            ),
+        )
+
+        if not ws.get("results"):
+            return {
+                "summary": ws.get("summary", ""),
+                "results": [],
+                "note": ws.get("note") or "non_web_query",
+            }
+
+        return {
+            "summary": ws.get("summary", ""),
+            "results": ws.get("results", []),
+        }
+
+    if not payload.url:
+        return {"error": "url o q mancante"}
+
+    url = payload.url.strip()
+    persona = await get_persona(payload.source, str(payload.source_id))
+    try:
+        text, og_img = await asyncio.wait_for(
+            fetch_and_extract(url),
+            timeout=WEB_READ_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        text, og_img = "", None
+
+    trimmed = trim_to_tokens(text or "", WEB_SUMMARY_BUDGET_TOK)
+    prompt = (
+        "RUOLO: stai leggendo il contenuto di una singola pagina web.\n\n"
+        "OBIETTIVO: riassumere la pagina in modo utile per l'utente.\n\n"
+        "REGOLE CRITICHE:\n"
+        "1. Riassumi in 5–10 punti chiave molto concreti (usa elenco puntato).\n"
+        "2. Usa SOLO le informazioni presenti nel testo fornito: non inventare dati.\n"
+        "3. Se ci sono numeri importanti (prezzi, date, percentuali, quantità), riportali indicando l'unità.\n"
+        "4. Se il contenuto è incompleto o poco chiaro, dillo esplicitamente ma riassumi comunque ciò che è disponibile.\n"
+        "5. NON dire all'utente di 'aprire la fonte' o 'consultare il sito' per avere i dettagli.\n"
+        "6. Alla fine, se utile, proponi 1–2 prossimi passi pratici.\n\n"
+        f"URL: {url}\n\n"
+        f"TESTO PAGINA:\n{trimmed}"
+    )
+    try:
+        summary = await reply_with_llm(prompt, persona)
+    except Exception:
+        summary = (
+            "Non sono riuscito a generare un riassunto strutturato, ma il contenuto della "
+            "pagina potrebbe comunque esserti utile se consultato."
+        )
+
+    try:
+        if summary:
+            asv = autosave(summary, source="web_summarize")
+            if any([asv.get("facts"), asv.get("prefs"), asv.get("bet")]):
+                log.info(f"[autosave:web_summarize] {asv}")
+    except Exception as e:
+        log.warning(f"AutoSave web_summarize failed: {e}")
+
+    return {
+        "summary": summary,
+        "og_image": og_img,
+        "results": [{"url": url, "title": url}],
+    }
+
+
+@app.post("/web/search")
+@limiter.limit("20/minute")
+@cached_response("web_search", ttl=600, cache_key_params=["q", "source", "source_id"])
+async def web_search(req: WebSearchRequest, request: Request = None) -> Dict[str, Any]:
+    """
+    Web search endpoint with conversational context and concise responses.
+    
+    Now includes comprehensive input validation via Pydantic models.
+    PROBLEMA 2 FIX: Uses format_web_response for ultra-concise answers (max 50 words, 120 tokens)
+    PROBLEMA 3 FIX: Uses conversational context to resolve follow-up queries
+    """
+    # Track request start time
+    request_start_time = time.perf_counter()
+    
+    # PROBLEMA 3: Get conversational context manager
+    context_manager = get_web_context_manager()
+    
+    # PROBLEMA 3: Resolve query using context (handles follow-ups)
+    # Session ID combines source and source_id for isolation
+    session_id = f"{req.source}:{req.source_id}"
+    resolved_query = context_manager.resolve_query(req.q, session_id=session_id)
+    
+    # Log if query was resolved from context
+    if resolved_query != req.q:
+        log.info(f"Resolved follow-up: '{req.q}' → '{resolved_query}'")
+    
+    # Use resolved query for the actual search
+    search_query = resolved_query
+    
+    if _is_smalltalk_query(search_query):
+        return {
+            "summary": "",
+            "results": [],
+            "note": "non_web_query",
+            "stats": {},
+        }
+
+    # Se query complessa o flag deep, usa deep pipeline
+    is_complex = len(search_query.split()) > 8 or "?" in search_query
+
+    if WEB_SEARCH_DEEP_MODE or is_complex:
+        ws = await _web_search_pipeline_deep(
+            q=search_query,
+            src=req.source,
+            sid=str(req.source_id),
+            k=WEB_DEEP_MAX_SOURCES,
+            nsum=min(10, WEB_DEEP_MAX_SOURCES),
+        )
+    else:
+        ws = await _web_search_pipeline(
+            q=search_query,
+            src=req.source,
+            sid=str(req.source_id),
+            k=int(req.k or 6),
+            nsum=int(
+                req.summarize_top or WEB_SUMMARIZE_TOP_DEFAULT
+            ),
+        )
+
+    # PROBLEMA 3: Update context with entities and domain after search
+    # Extract domain from ws.get("note") or detect from query
+    domain = ws.get("note") or "general"
+    if domain.endswith("_query"):
+        domain = domain.replace("_query", "")
+    
+    # Use context manager's entity extraction for consistency
+    entities = context_manager._extract_entities(req.q)
+    
+    # Update context for future follow-ups
+    context_manager.update_context(
+        query=search_query,
+        entities=entities if entities else None,
+        domain=domain if domain else None,
+        session_id=session_id,
+    )
+    
+    log.info(f"Updated context: domain={domain}, entities={entities}")
+
+    out: Dict[str, Any] = {
+        "summary": (ws.get("summary") or ""),
+        "results": (ws.get("results") or []),
+        "note": ws.get("note"),
+        "stats": ws.get("stats", {}),
+        "reranker_used": ws.get("reranker_used", False),
+        "diversity": ws.get("diversity"),
+        "original_query": req.q,  # Include original query for reference
+        "resolved_query": resolved_query if resolved_query != req.q else None,
+    }
+    if ws.get("validation") is not None:
+        out["validation"] = ws["validation"]
+    
+    # Track metrics
+    if METRICS_AVAILABLE:
+        search_type = "deep" if WEB_SEARCH_DEEP_MODE or is_complex else "standard"
+        track_web_search(search_type, "success")
+        observe_chat_latency("/web/search", time.perf_counter() - request_start_time)
+        observe_response_size("/web/search", len(str(out)))
+    
+    return out
+
+
+# -------------------------- /web/research -----------------------------
+class WebResearchReq(BaseModel):
+    q: str
+    source: str = "tg"
+    source_id: str = "default"
+
+
+@app.post("/web/research")
+async def web_research(req: WebResearchReq) -> Dict[str, Any]:
+    """Ricerca orchestrata multi-step (Claude-style)."""
+    if _is_smalltalk_query(req.q):
+        return {
+            "answer": "",
+            "sources": [],
+            "steps": [],
+            "total_steps": 0,
+            "note": "non_web_query",
+        }
+
+    agent = get_web_research_agent()
+    if agent is None:
+        ws = await _web_search_pipeline(
+            q=req.q,
+            src=req.source,
+            sid=str(req.source_id),
+            k=6,
+            nsum=WEB_SUMMARIZE_TOP_DEFAULT,
+        )
+        return {
+            "answer": ws.get("summary") or "",
+            "sources": ws.get("results") or [],
+            "steps": [],
+            "total_steps": 1,
+            "note": "fallback_standard_search",
+        }
+
+    persona = (
+        await get_persona(req.source, str(req.source_id))
+        or DEFAULT_SYSTEM_PROMPT
+    )
+    persona = (persona.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+    try:
+        result = await agent.research(
+            query=req.q,
+            persona=persona,
+        )
+        return result
+    except Exception as e:
+        log.error(f"/web/research error: {e}")
+        ws = await _web_search_pipeline(
+            q=req.q,
+            src=req.source,
+            sid=str(req.source_id),
+            k=6,
+            nsum=WEB_SUMMARIZE_TOP_DEFAULT,
+        )
+        return {
+            "answer": ws.get("summary")
+            or "Errore nel motore di ricerca avanzato. Ho usato una ricerca standard.",
+            "sources": ws.get("results") or [],
+            "steps": [],
+            "total_steps": 1,
+            "note": "web_research_error_fallback",
+            "error": str(e),
+        }
+
+
+# -------------------------- /web/deep ---------------------------------
+class WebDeepReq(BaseModel):
+    q: str
+    source: str = "tg"
+    source_id: str = "default"
+
+
+@app.post("/web/deep")
+async def web_deep(req: WebDeepReq) -> Dict[str, Any]:
+    """
+    Ricerca approfondita multi-step (comando /webdeep).
+    Usa AdvancedWebResearch per coverage completo.
+    """
+    if _is_smalltalk_query(req.q):
+        return {
+            "answer": "",
+            "sources": [],
+            "steps": [],
+            "quality": 0.0,
+            "note": "non_web_query",
+        }
+
+    try:
+        from agents.advanced_web_research import get_advanced_research
+
+        researcher = get_advanced_research()
+        persona = (
+            await get_persona(req.source, str(req.source_id))
+            or DEFAULT_SYSTEM_PROMPT
+        )
+        persona = (persona.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+
+        result = await researcher.research_deep(req.q, persona)
+
+        return {
+            "answer": result.get("answer", ""),
+            "sources": result.get("sources", []),
+            "steps": result.get("steps", []),
+            "quality": result.get("quality_final", 0.0),
+            "total_sources": result.get("total_sources", 0),
+            "note": "deep_research",
+        }
+
+    except Exception as e:
+        log.error(f"/web/deep error: {e}")
+        # Fallback a ricerca standard
+        ws = await _web_search_pipeline_deep(
+            q=req.q,
+            src=req.source,
+            sid=str(req.source_id),
+        )
+        return {
+            "answer": ws.get("summary") or "",
+            "sources": ws.get("results") or [],
+            "steps": [],
+            "quality": 0.5,
+            "note": "deep_fallback_standard",
+            "error": str(e),
+        }
+
+
+# -------------------------- /code -------------------------------------
+class CodeReq(BaseModel):
+    q: str
+    language: Optional[str] = None
+    source: str = "tg"
+    source_id: str = "default"
+
+
+@app.post("/code")
+async def code_generate(req: CodeReq) -> Dict[str, Any]:
+    """
+    Generazione codice dedicata (comando /code).
+    Usa il Code Agent per risposte strutturate.
+    """
+    if not CODE_AGENT_AVAILABLE:
+        return {
+            "ok": False,
+            "error": "Code Agent non disponibile.",
+            "code": "",
+        }
+
+    try:
+        persona = (
+            await get_persona(req.source, str(req.source_id))
+            or DEFAULT_SYSTEM_PROMPT
+        )
+        persona = (persona.strip() + "\n\n" + INCENSURATO_PROMPT).strip()
+
+        result = await get_code_for_query(
+            req.q,
+            llm_func=reply_with_llm,
+            persona=persona,
+        )
+
+        return {
+            "ok": True,
+            "code": result or "",
+            "language": req.language,
+            "note": "code_agent_response",
+        }
+
+    except Exception as e:
+        log.error(f"/code error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "code": "",
+        }
+
+
+# ========================= AUTONOMOUS AGENT ENDPOINT =========================
+
+# Autonomous mode configuration
+ENABLE_AUTONOMOUS_MODE = env_bool("ENABLE_AUTONOMOUS_MODE", True)
+AUTONOMOUS_MAX_STEPS = env_int("AUTONOMOUS_MAX_STEPS", 10)
+AUTONOMOUS_REQUIRE_APPROVAL = env_bool("AUTONOMOUS_REQUIRE_APPROVAL", False)
+
+
+@app.post("/autonomous")
+@limiter.limit("5/minute")
+async def autonomous_execute(req: AutonomousRequest, request: Request = None) -> Dict[str, Any]:
+    """
+    Execute a goal using the autonomous ReAct-style agent.
+    
+    Now includes comprehensive input validation via Pydantic models.
+    
+    This endpoint uses a multi-step planning and execution loop:
+    1. PLAN: LLM generates a step-by-step plan
+    2. EXECUTE: Each step is executed using available tools
+    3. REFLECT: Results are evaluated, with retry on failure
+    4. SYNTHESIZE: Final response is generated from all results
+    
+    Args:
+        goal: The user's goal/task to accomplish
+        source: Source identifier
+        source_id: User identifier
+        require_approval: If true, returns plan for approval before execution
+        show_plan: If true, includes plan details in response
+        
+    Returns:
+        JSON with execution results, plan, and reasoning trace
+    """
+    if not ENABLE_AUTONOMOUS_MODE:
+        return {
+            "ok": False,
+            "error": "Autonomous mode is disabled. Set ENABLE_AUTONOMOUS_MODE=1 in .env",
+            "goal": req.goal,
+        }
+    
+    try:
+        # Import autonomous agent
+        from core.autonomous_agent import get_autonomous_agent
+        from core.tool_registry import get_autonomous_tool_registry
+        
+        # Get tool registry and agent
+        tool_registry = get_autonomous_tool_registry()
+        agent = get_autonomous_agent(
+            llm_func=reply_with_llm,
+            tool_registry=tool_registry,
+        )
+        
+        # If require_approval, just generate and return the plan
+        if req.require_approval:
+            plan = await agent.generate_plan(req.goal)
+            if not plan:
+                return {
+                    "ok": False,
+                    "error": "Failed to generate execution plan",
+                    "goal": req.goal,
+                }
+            
+            return {
+                "ok": True,
+                "status": "awaiting_approval",
+                "goal": req.goal,
+                "plan": plan.to_dict(),
+                "plan_display": plan.format_for_approval(),
+                "message": "Plan generated. Send POST /autonomous/approve to execute.",
+            }
+        
+        # Execute the goal
+        result = await agent.run(goal=req.goal)
+        
+        # Only 'completed' is considered successful
+        # 'aborted' means user cancelled or agent stopped, which is not a success
+        response: Dict[str, Any] = {
+            "ok": result.status.value == "completed",
+            "status": result.status.value,
+            "goal": req.goal,
+            "response": result.final_response,
+            "total_duration_ms": result.total_duration_ms,
+        }
+        
+        if result.error:
+            response["error"] = result.error
+        
+        if req.show_plan and result.plan:
+            response["plan"] = result.plan.to_dict()
+            response["step_results"] = [sr.to_dict() for sr in result.step_results]
+        
+        # Include reasoning trace for transparency
+        if result.reasoning_trace:
+            response["reasoning_trace"] = result.reasoning_trace
+        
+        return response
+        
+    except Exception as e:
+        log.error(f"/autonomous error: {e}", exc_info=True)
+        return {
+            "ok": False,
+            "error": str(e),
+            "goal": req.goal,
+        }
+
+
+@app.get("/autonomous/status")
+async def autonomous_status() -> Dict[str, Any]:
+    """Get autonomous agent status and available tools."""
+    try:
+        from core.tool_registry import get_autonomous_tool_registry
+        
+        registry = get_autonomous_tool_registry()
+        tools = registry.list_tools()
+        
+        return {
+            "ok": True,
+            "enabled": ENABLE_AUTONOMOUS_MODE,
+            "max_steps": AUTONOMOUS_MAX_STEPS,
+            "require_approval_default": AUTONOMOUS_REQUIRE_APPROVAL,
+            "available_tools": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "category": t.category.value,
+                    "enabled": t.enabled,
+                }
+                for t in tools
+            ],
+            "tool_count": len(tools),
+        }
+        
+    except Exception as e:
+        log.error(f"/autonomous/status error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "enabled": ENABLE_AUTONOMOUS_MODE,
+        }
+
+
+# ========================= TOOLS ENDPOINTS (BLOCK 4) =========================
+
+# -------------------------- /tools/math ------------------------------
+class MathToolReq(BaseModel):
+    expr: str
+
+
+@app.post("/tools/math")
+async def tools_math(req: MathToolReq) -> Dict[str, Any]:
+    """
+    Math/Calculator tool endpoint.
+    Evaluates mathematical expressions safely.
+    """
+    if not TOOLS_MATH_ENABLED:
+        return {
+            "ok": False,
+            "error": "math_tool_disabled",
+            "result": None,
+        }
+    
+    try:
+        expr = req.expr.strip()
+        if not expr:
+            return {
+                "ok": False,
+                "error": "empty_expression",
+                "result": None,
+            }
+        
+        # Evaluate using Calculator
+        result = Calculator.evaluate(expr)
+        
+        if result is None:
+            return {
+                "ok": False,
+                "error": "invalid_expression",
+                "result": None,
+                "expr": expr,
+            }
+        
+        formatted_result, result_type = result
+        
+        return {
+            "ok": True,
+            "result": formatted_result,
+            "type": result_type,
+            "expr": expr,
+        }
+        
+    except Exception as e:
+        log.error(f"/tools/math error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "result": None,
+        }
+
+
+# -------------------------- /tools/python ------------------------------
+
+@app.post("/tools/python")
+async def tools_python(req: Request) -> Dict[str, Any]:
+    """
+    Python code executor endpoint (sandboxed).
+    
+    Executes small Python snippets with safety limits. This is NOT a fully
+    trusted multi-tenant environment - use only with trusted users or in
+    controlled contexts.
+    
+    Security features:
+    - Code length limits (4000 chars)
+    - Blacklist of dangerous imports/operations
+    - Subprocess isolation
+    - Timeout enforcement
+    - No environment variable leakage
+    
+    Returns:
+        JSON with ok, stdout, stderr, error, timeout fields
+    """
+    if not (TOOLS_PYTHON_EXEC_ENABLED and CODE_EXEC_ENABLED):
+        return {"ok": False, "error": "python_exec_disabled", "stdout": "", "stderr": "", "timeout": False}
+    
+    try:
+        body = await req.json()
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="invalid_json")
+    
+    code = body.get("code", "")
+    timeout_s = body.get("timeout_s", CODE_EXEC_TIMEOUT)
+    
+    try:
+        timeout_s = float(timeout_s)
+    except Exception:
+        timeout_s = CODE_EXEC_TIMEOUT
+    
+    result = execute_python_snippet(code=code, timeout_s=timeout_s)
+    return result
+
+
+# -------------------------- /files/upload ------------------------------
+@app.post("/files/upload")
+async def files_upload(
+    file: UploadFile = File(...),
+    user_id: str = Body("default"),
+) -> Dict[str, Any]:
+    """
+    Upload and index a document for RAG.
+    Supports: txt, markdown, PDF
+    """
+    if not TOOLS_DOCS_ENABLED:
+        return {
+            "ok": False,
+            "error": "docs_tool_disabled",
+            "file_id": None,
+        }
+    
+    try:
+        # Check file size
+        content = await file.read()
+        size_mb = len(content) / (1024 * 1024)
+        
+        if size_mb > MAX_UPLOAD_SIZE_MB:
+            return {
+                "ok": False,
+                "error": f"file_too_large (max {MAX_UPLOAD_SIZE_MB}MB)",
+                "file_id": None,
+            }
+        
+        # Detect mime type
+        filename = file.filename or "document"
+        mime_type = file.content_type or "application/octet-stream"
+        
+        # Generate file_id
+        file_id = hashlib.sha256(content).hexdigest()[:16]
+        
+        # Extract text
+        try:
+            text = extract_text_from_bytes(content, mime_type, filename)
+        except ValueError as e:
+            return {
+                "ok": False,
+                "error": str(e),
+                "file_id": None,
+            }
+        
+        # Index document
+        result = index_document(
+            user_id=user_id,
+            file_id=file_id,
+            filename=filename,
+            text=text,
+            max_chunks=DOCS_MAX_CHUNKS_PER_FILE
+        )
+        
+        # Add file metadata to result
+        if result.get("ok"):
+            result["size_mb"] = round(size_mb, 2)
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"/files/upload error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "file_id": None,
+        }
+
+
+# -------------------------- /files/query ------------------------------
+class FileQueryReq(BaseModel):
+    q: str
+    user_id: str = "default"
+    top_k: int = 5
+    file_id: Optional[str] = None
+
+
+@app.post("/files/query")
+async def files_query(req: FileQueryReq) -> Dict[str, Any]:
+    """
+    Query user documents using semantic search.
+    Returns relevant document chunks.
+    """
+    if not TOOLS_DOCS_ENABLED:
+        return {
+            "ok": False,
+            "error": "docs_tool_disabled",
+            "matches": [],
+        }
+    
+    try:
+        # Validate inputs
+        if not req.q or not req.q.strip():
+            return {
+                "ok": False,
+                "error": "empty_query",
+                "matches": [],
+            }
+        
+        # Query documents
+        matches = query_user_docs(
+            user_id=req.user_id,
+            query=req.q,
+            top_k=min(req.top_k, 20),  # Cap at 20
+            file_id=req.file_id,
+        )
+        
+        return {
+            "ok": True,
+            "matches": matches,
+            "count": len(matches),
+        }
+        
+    except Exception as e:
+        log.error(f"/files/query error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "matches": [],
+        }
+
+
+# ========================= OCR ENDPOINTS (BLOCK 5) =========================
+
+# -------------------------- /ocr/image ------------------------------
+@app.post("/ocr/image")
+async def ocr_image(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = None,
+    lang: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract text from an image using OCR.
+    
+    Args:
+        file: Image file to process
+        user_id: Optional user identifier
+        lang: Language(s) for OCR (e.g., 'eng', 'ita', 'eng+ita')
+        
+    Returns:
+        JSON with ok, text, error, filename, content_type
+    """
+    try:
+        from core.ocr_tools import is_ocr_enabled, run_ocr_on_image_bytes, OCR_DEFAULT_LANG
+        
+        # Check if OCR is enabled
+        if not is_ocr_enabled():
+            return {
+                "ok": False,
+                "text": "",
+                "error": "ocr_disabled",
+                "filename": file.filename,
+            }
+        
+        # Read file content
+        content = await file.read()
+        
+        # Check file type by extension and content_type
+        filename = file.filename or "image"
+        content_type = file.content_type or "application/octet-stream"
+        
+        # Validate image type
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp', '.gif')
+        valid_mimes = ('image/png', 'image/jpeg', 'image/webp', 'image/tiff', 'image/bmp', 'image/gif')
+        
+        is_valid = (
+            filename.lower().endswith(valid_extensions) or
+            content_type.lower() in valid_mimes
+        )
+        
+        if not is_valid:
+            return {
+                "ok": False,
+                "text": "",
+                "error": "unsupported_image_type",
+                "filename": filename,
+                "content_type": content_type,
+            }
+        
+        # Run OCR
+        result = run_ocr_on_image_bytes(
+            data=content,
+            lang=lang or OCR_DEFAULT_LANG,
+        )
+        
+        # Add metadata to result
+        result["filename"] = filename
+        result["content_type"] = content_type
+        
+        if user_id:
+            result["user_id"] = user_id
+        
+        log.info(
+            f"OCR image: filename={filename}, size={len(content)} bytes, "
+            f"ok={result['ok']}, text_length={len(result.get('text', ''))}"
+        )
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"/ocr/image error: {e}")
+        return {
+            "ok": False,
+            "text": "",
+            "error": str(e),
+            "filename": file.filename if file else None,
+        }
+
+
+# -------------------------- /ocr/image/index ------------------------------
+@app.post("/ocr/image/index")
+async def ocr_image_index(
+    file: UploadFile = File(...),
+    user_id: str = Body(...),
+    lang: Optional[str] = None,
+    label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract text from image via OCR and index it into user documents.
+    
+    Args:
+        file: Image file to process
+        user_id: User identifier (required)
+        lang: Language(s) for OCR
+        label: Optional label/tag for the document
+        
+    Returns:
+        JSON with ok, text_preview, file_id, num_chunks
+    """
+    try:
+        from core.ocr_tools import is_ocr_enabled, run_ocr_on_image_bytes, OCR_DEFAULT_LANG
+        from core.docs_ingest import index_document
+        import uuid
+        
+        # Check if OCR is enabled
+        if not is_ocr_enabled():
+            return {
+                "ok": False,
+                "error": "ocr_disabled",
+                "file_id": None,
+            }
+        
+        # Check if docs tool is enabled
+        if not TOOLS_DOCS_ENABLED:
+            return {
+                "ok": False,
+                "error": "docs_tool_disabled",
+                "file_id": None,
+            }
+        
+        # Read file content
+        content = await file.read()
+        filename = file.filename or "ocr_image"
+        content_type = file.content_type or "application/octet-stream"
+        
+        # Validate image type
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp', '.gif')
+        valid_mimes = ('image/png', 'image/jpeg', 'image/webp', 'image/tiff', 'image/bmp', 'image/gif')
+        
+        is_valid = (
+            filename.lower().endswith(valid_extensions) or
+            content_type.lower() in valid_mimes
+        )
+        
+        if not is_valid:
+            return {
+                "ok": False,
+                "error": "unsupported_image_type",
+                "file_id": None,
+            }
+        
+        # Run OCR
+        ocr_result = run_ocr_on_image_bytes(
+            data=content,
+            lang=lang or OCR_DEFAULT_LANG,
+        )
+        
+        if not ocr_result["ok"]:
+            return {
+                "ok": False,
+                "error": ocr_result.get("error", "ocr_failed"),
+                "file_id": None,
+            }
+        
+        text = ocr_result.get("text", "")
+        
+        if not text or not text.strip():
+            return {
+                "ok": False,
+                "error": "no_text_extracted",
+                "file_id": None,
+            }
+        
+        # Generate file_id for OCR source
+        unique_id = str(uuid.uuid4())[:8]
+        file_id = f"ocr:{unique_id}"
+        
+        # Create descriptive filename
+        if label:
+            indexed_filename = f"{label} (OCR: {filename})"
+        else:
+            indexed_filename = f"OCR: {filename}"
+        
+        # Index the extracted text
+        index_result = index_document(
+            user_id=user_id,
+            file_id=file_id,
+            filename=indexed_filename,
+            text=text,
+            max_chunks=DOCS_MAX_CHUNKS_PER_FILE,
+        )
+        
+        if not index_result.get("ok"):
+            return {
+                "ok": False,
+                "error": index_result.get("error", "indexing_failed"),
+                "file_id": None,
+            }
+        
+        # Create preview (first 200 chars)
+        text_preview = text[:200] + ("..." if len(text) > 200 else "")
+        
+        log.info(
+            f"OCR+index: filename={filename}, user={user_id}, "
+            f"text_length={len(text)}, chunks={index_result.get('num_chunks', 0)}"
+        )
+        
+        return {
+            "ok": True,
+            "file_id": file_id,
+            "text_preview": text_preview,
+            "num_chunks": index_result.get("num_chunks", 0),
+            "filename": indexed_filename,
+            "original_filename": filename,
+        }
+        
+    except Exception as e:
+        log.error(f"/ocr/image/index error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "file_id": None,
+        }
+
+
+# -------------------------- /ocr/info ------------------------------
+@app.get("/ocr/info")
+def ocr_info() -> Dict[str, Any]:
+    """
+    Get OCR system information and status.
+    
+    Returns:
+        JSON with OCR system details
+    """
+    try:
+        from core.ocr_tools import get_ocr_info
+        
+        info = get_ocr_info()
+        return {
+            "ok": True,
+            **info,
+        }
+    except Exception as e:
+        log.error(f"/ocr/info error: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+        }
+
+
+# -------------------------- /unified-web ------------------------------
+class UnifiedWebReq(BaseModel):
+    q: str
+    deep: bool = False
+    source: str = "api"
+
+
+@app.post("/unified-web")
+async def unified_web_endpoint(req: UnifiedWebReq) -> Dict[str, Any]:
+    """
+    Endpoint unificato per tutte le richieste web.
+    Garantisce consistenza di routing e formato risposta.
+    """
+    if not UNIFIED_WEB_HANDLER_AVAILABLE:
+        # Fallback a pipeline standard
+        ws = await _web_search_pipeline(
+            q=req.q,
+            src=req.source,
+            sid="default",
+        )
+        return {
+            "response": ws.get("summary") or "",
+            "intent": "general_web",
+            "cached": False,
+            "note": "unified_handler_not_available",
+        }
+
+    try:
+        result = await handle_web_query(
+            query=req.q,
+            source=req.source,
+            deep=req.deep,
+        )
+        return result
+
+    except Exception as e:
+        log.error(f"/unified-web error: {e}")
+        return {
+            "response": f"Errore: {e}",
+            "intent": "error",
+            "cached": False,
+            "error": str(e),
+        }
+
+
+# -------------------------- /web/cache --------------------------------
+@app.get("/web/cache/stats")
+def web_cache_stats() -> Dict[str, Any]:
+    try:
+        st = _webcache_stats()
+        return {"ok": True, "cache": st}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class WebCacheFlushReq(BaseModel):
+    url: Optional[str] = None
+
+
+@app.post("/web/cache/flush")
+def web_cache_flush(req: WebCacheFlushReq) -> Dict[str, Any]:
+    try:
+        res = _webcache_flush(req.url)
+        return {"ok": True, **res}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# -------------------------- /cache/stats --------------------------------
+@app.get("/cache/stats")
+def cache_stats_endpoint() -> Dict[str, Any]:
+    """
+    Get comprehensive cache statistics for all cached endpoints.
+    
+    Returns both middleware-level stats (per-endpoint hit/miss rates) and
+    multi-level cache stats (L1/L2 performance metrics).
+    """
+    try:
+        stats = get_cache_stats()
+        return {"ok": True, **stats}
+    except Exception as e:
+        log.error(f"/cache/stats error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= Memory API (ChromaDB) =======================
+class FactIn(BaseModel):
+    subject: str
+    value: str
+    source: str = "system"
+    metadata: dict | None = None
+
+
+class PrefIn(BaseModel):
+    key: str
+    value: str
+    scope: str = "global"
+    source: str = "user"
+    metadata: dict | None = None
+
+
+class BetIn(BaseModel):
+    event: str
+    market: str
+    odds: float
+    stake: float
+    result: str | None = None
+    source: str = "bet"
+    metadata: dict | None = None
+
+
+@app.post("/memory/fact")
+def memory_add_fact(payload: FactIn) -> Dict[str, Any]:
+    _id = add_fact(
+        payload.subject,
+        payload.value,
+        payload.source,
+        payload.metadata,
+    )
+    return {"ok": True, "id": _id}
+
+
+@app.post("/memory/pref")
+def memory_add_pref(payload: PrefIn) -> Dict[str, Any]:
+    _id = add_pref(
+        payload.key,
+        payload.value,
+        payload.scope,
+        payload.source,
+        payload.metadata,
+    )
+    return {"ok": True, "id": _id}
+
+
+@app.post("/memory/bet")
+def memory_add_bet(payload: BetIn) -> Dict[str, Any]:
+    _id = add_bet(
+        payload.event,
+        payload.market,
+        payload.odds,
+        payload.stake,
+        payload.result,
+        payload.source,
+        payload.metadata,
+    )
+    return {"ok": True, "id": _id}
+
+
+# --- Fallback-aware search base ---
+def _recency_score(ts: int, half_life_days: float) -> float:
+    if not ts:
+        return 0.0
+    age_days = max(0.0, (int(time.time()) - ts) / 86400.0)
+    return math.exp(-math.log(2) * (age_days / max(1e-9, half_life_days)))
+
+
+def _src_prior(md: dict) -> float:
+    src = (md or {}).get("source") or ""
+    table = {
+        "system": 1.00,
+        "admin": 0.98,
+        "user": 0.95,
+        "web": 0.92,
+        "model": 0.85,
+        "bet": 0.90,
+    }
+    return table.get(src, 0.9)
+
+
+@app.get("/memory/search")
+def memory_search(
+    q: str,
+    k: int = 5,
+    half_life_days: float = MEM_HALF_LIFE_D,
+) -> Dict[str, Any]:
+    items = search_topk(q, k=k, half_life_days=half_life_days)
+    if items:
+        return {"q": q, "k": k, "items": items}
+
+    pool: List[Dict[str, Any]] = []
+    for name in (FACTS, PREFS, BETS):
+        try:
+            pool.extend(
+                _substring_fallback(name, q, limit=max(256, k * 10))
+            )
+        except Exception:
+            pass
+
+    ranked: List[Dict[str, Any]] = []
+    for it in pool:
+        md = it.get("metadata", {}) or {}
+        rec = _recency_score(
+            int(md.get("ts") or 0),
+            half_life_days=half_life_days,
+        )
+        srcp = _src_prior(md)
+        it["sim"] = 0.0
+        it["recency"] = round(rec, 6)
+        it["src_prior"] = round(srcp, 3)
+        it["score"] = round(0.6 * rec + 0.4 * srcp, 6)
+        ranked.append(it)
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return {"q": q, "k": k, "items": ranked[:k]}
+
+
+# ---- /memory/debug: versione leggera ----
+def _light_debug_dump() -> Dict[str, Any]:
+    if chromadb is None or _ChromaSettings is None:
+        try:
+            return debug_dump()
+        except Exception as e:
+            return {
+                "persist_dir": CHROMA_PERSIST_DIR,
+                "embed_model": EMBED_MODEL_NAME,
+                "collections": [],
+                "error": str(e),
+            }
+
+    try:
+        client = None
+        try:
+            PersistentClient = getattr(chromadb, "PersistentClient", None)
+            if PersistentClient:
+                client = PersistentClient(
+                    path=CHROMA_PERSIST_DIR,
+                    settings=_ChromaSettings(
+                        persist_directory=CHROMA_PERSIST_DIR,
+                        anonymized_telemetry=False,
+                    ),
+                )
+        except Exception:
+            client = None
+
+        if client is None:
+            client = chromadb.Client(
+                _ChromaSettings(
+                    persist_directory=CHROMA_PERSIST_DIR,
+                    anonymized_telemetry=False,
+                )
+            )
+        cols = []
+        for c in client.list_collections():
+            try:
+                col = client.get_collection(name=c.name)
+                try:
+                    cnt = col.count()  # type: ignore[attr-defined]
+                except Exception:
+                    data = col.get()
+                    cnt = len((data or {}).get("ids") or [])
+                cols.append({"name": c.name, "count": int(cnt)})
+            except Exception:
+                cols.append({"name": c.name, "count": -1})
+        return {
+            "persist_dir": CHROMA_PERSIST_DIR,
+            "embed_model": EMBED_MODEL_NAME,
+            "collections": cols,
+        }
+    except Exception as e:
+        return {
+            "persist_dir": CHROMA_PERSIST_DIR,
+            "embed_model": EMBED_MODEL_NAME,
+            "collections": [],
+            "error": str(e),
+        }
+
+
+@app.get("/memory/debug")
+def memory_debug() -> Dict[str, Any]:
+    try:
+        return {"ok": True, "debug": _light_debug_dump()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/list")
+def memory_list(
+    collection: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    try:
+        col = _col(collection)
+        try:
+            cnt = col.count()  # type: ignore[attr-defined]
+        except Exception:
+            data_all = col.get()
+            cnt = len(data_all.get("ids") or [])
+        try:
+            data = col.get(
+                include=["documents", "metadatas"],
+                limit=limit,
+                offset=offset,
+            )
+        except Exception:
+            data = col.get()
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        items: List[Dict[str, Any]] = []
+        for i, _id in enumerate(ids):
+            items.append(
+                {
+                    "id": _id,
+                    "document": docs[i] if i < len(docs) else None,
+                    "metadata": metas[i] if i < len(metas) else None,
+                }
+            )
+        return {
+            "ok": True,
+            "collection": collection,
+            "count": int(cnt),
+            "items": items,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= CHROMA ADVANCED API =========================
+class SearchAdvancedReq(BaseModel):
+    q: str = Field(..., description="Query testuale")
+    k: int = Field(5, ge=1, le=100)
+    where: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Filtri Chroma where{}",
+    )
+    collections: Optional[List[str]] = Field(
+        None,
+        description="Override collezioni",
+    )
+
+
+class BetsBatchReq(BaseModel):
+    items: List[Dict[str, Any]]
+
+
+class CleanupReq(BaseModel):
+    collection: str = Field(..., description=f"Una tra: {FACTS}, {PREFS}, {BETS}")
+    days: int = Field(..., ge=1)
+    dry_run: bool = True
+
+
+class MigrateReq(BaseModel):
+    old_name: str
+    new_name: str
+    new_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    batch_size: int = 500
+    delete_old: bool = False
+
+
+class ReembedReq(BaseModel):
+    name: Optional[str] = Field(None, description="Nome collection o 'all'")
+    batch: int = 512
+
+
+@app.post("/memory/search/advanced")
+def memory_search_advanced(req: SearchAdvancedReq) -> Dict[str, Any]:
+    cols = tuple(req.collections) if req.collections else (FACTS, PREFS, BETS)
+    items = search_topk_with_filters(
+        query=req.q,
+        k=req.k,
+        where=req.where,
+        collections=cols,
+    )
+    return {
+        "ok": True,
+        "q": req.q,
+        "k": req.k,
+        "where": req.where,
+        "collections": list(cols),
+        "items": items,
+    }
+
+
+@app.post("/memory/bets/batch")
+def memory_bets_batch(req: BetsBatchReq) -> Dict[str, Any]:
+    res = add_bets_batch(req.items)
+    return {"ok": True, **res}
+
+
+@app.post("/memory/cleanup")
+def memory_cleanup(req: CleanupReq) -> Dict[str, Any]:
+    if req.collection == FACTS:
+        res = cleanup_old_facts(days=req.days, dry_run=req.dry_run)
+    elif req.collection == BETS:
+        res = cleanup_old_bets(days=req.days, dry_run=req.dry_run)
+    else:
+        res = cleanup_old(  # type: ignore[arg-type]
+            collection=req.collection,
+            older_than_days=req.days,
+            dry_run=req.dry_run,
+        )
+    return {"ok": True, "collection": req.collection, **res}
+
+
+@app.post("/memory/migrate")
+def memory_migrate(req: MigrateReq) -> Dict[str, Any]:
+    res = migrate_collection(
+        old_name=req.old_name,
+        new_name=req.new_name,
+        new_model=req.new_model,
+        batch_size=req.batch_size,
+        delete_old=req.delete_old,
+    )
+    return {"ok": True, **res}
+
+
+@app.post("/memory/reembed")
+def memory_reembed(req: Optional[ReembedReq] = None) -> Dict[str, Any]:
+    try:
+        if req is None or (req.name in (None, "", "all")):
+            processed = reembed_all(batch=(req.batch if req else 512))
+            return {"ok": True, "reembedded": processed}
+        count = reembed_collection(req.name, batch=req.batch)
+        return {"ok": True, "collection": req.name, "count": count}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= NEW: Personal Memory API =======================
+@app.get("/memory/debug_state")
+def memory_debug_state(
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Debug endpoint to inspect personal memory system state.
+    Returns counts and status for user profile and episodic memory.
+    """
+    try:
+        from core.memory_manager import get_memory_stats
+        
+        # Use defaults if not provided
+        if not user_id:
+            user_id = os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        stats = get_memory_stats(user_id=user_id, conversation_id=conversation_id)
+        
+        # Also include legacy Chroma collections info
+        legacy_debug = _light_debug_dump()
+        
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "personal_memory": stats,
+            "legacy_chroma": legacy_debug,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class UserProfileFactReq(BaseModel):
+    user_id: Optional[str] = None
+    fact_text: str = Field(..., description="The fact content to save")
+    category: Optional[str] = Field(None, description="Category (bio/goal/preference/project/misc)")
+
+
+@app.post("/memory/user_profile/save")
+def memory_save_user_profile_fact(req: UserProfileFactReq) -> Dict[str, Any]:
+    """Save a user profile fact manually."""
+    try:
+        from core.user_profile_memory import save_user_profile_fact
+        
+        user_id = req.user_id or os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        fact_id = save_user_profile_fact(
+            user_id=user_id,
+            fact_text=req.fact_text,
+            category=req.category
+        )
+        
+        if fact_id:
+            return {"ok": True, "fact_id": fact_id, "user_id": user_id}
+        else:
+            return {"ok": False, "error": "Failed to save fact"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/user_profile/list")
+def memory_list_user_profile(user_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    """List all user profile facts."""
+    try:
+        from core.user_profile_memory import get_all_user_facts
+        
+        user_id = user_id or os.getenv("DEFAULT_USER_ID", "matteo")
+        
+        facts = get_all_user_facts(user_id=user_id, limit=limit)
+        
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "count": len(facts),
+            "facts": facts
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/episodic/summaries")
+def memory_list_episodic_summaries(
+    conversation_id: str,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List episodic conversation summaries."""
+    try:
+        from core.episodic_memory import get_recent_conversation_summaries
+        
+        summaries = get_recent_conversation_summaries(
+            conversation_id=conversation_id,
+            limit=limit
+        )
+        
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "count": len(summaries),
+            "summaries": summaries
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/episodic/buffer_status")
+def memory_episodic_buffer_status(conversation_id: str) -> Dict[str, Any]:
+    """Get current buffer status for a conversation."""
+    try:
+        from core.episodic_memory import get_current_buffer_status
+        
+        status = get_current_buffer_status(conversation_id)
+        
+        return {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "status": status
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= NEW: Knowledge Graph API =======================
+@app.get("/memory/graph/explore")
+def memory_graph_explore(
+    concept: str,
+    max_depth: int = 2,
+    max_results: int = 20
+) -> Dict[str, Any]:
+    """
+    Explore knowledge graph from a concept.
+    Returns related concepts at multiple hop distances.
+    
+    Args:
+        concept: Starting concept name
+        max_depth: Maximum traversal depth (1-3)
+        max_results: Maximum total results
+        
+    Returns:
+        JSON with multi-hop related concepts
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Validate inputs
+        max_depth = min(max(max_depth, KG_API_MAX_DEPTH_MIN), KG_API_MAX_DEPTH_MAX)
+        max_results = min(max(max_results, KG_API_MAX_RESULTS_MIN), KG_API_MAX_RESULTS_MAX)
+        
+        # Multi-hop traversal
+        results_by_hop = kg.find_related_multi_hop(
+            concept=concept,
+            max_depth=max_depth,
+            max_results=max_results
+        )
+        
+        # Format results
+        formatted = {}
+        total_results = 0
+        
+        for hop_distance, concepts in results_by_hop.items():
+            formatted[f"{hop_distance}-hop"] = [
+                {
+                    "concept": c.concept,
+                    "relation": c.relation_type,
+                    "weight": c.weight,
+                    "distance": c.distance,
+                }
+                for c in concepts
+            ]
+            total_results += len(concepts)
+        
+        return {
+            "ok": True,
+            "concept": concept,
+            "max_depth": max_depth,
+            "total_results": total_results,
+            "results_by_hop": formatted,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/explore error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/clusters")
+def memory_graph_clusters(min_cluster_size: int = 3) -> Dict[str, Any]:
+    """
+    Get concept clusters detected in the knowledge graph.
+    Uses Louvain community detection algorithm.
+    
+    Args:
+        min_cluster_size: Minimum cluster size to include
+        
+    Returns:
+        JSON with cluster information
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Detect communities
+        concept_clusters = kg.detect_communities(min_cluster_size=min_cluster_size)
+        
+        if not concept_clusters:
+            return {
+                "ok": True,
+                "num_clusters": 0,
+                "clusters": [],
+                "note": "no_clusters_found"
+            }
+        
+        # Get unique cluster IDs
+        cluster_ids = set(concept_clusters.values())
+        
+        # Build cluster information
+        clusters = []
+        for cluster_id in sorted(cluster_ids):
+            cluster_info = kg.get_cluster_info(cluster_id, concept_clusters)
+            clusters.append(cluster_info)
+        
+        return {
+            "ok": True,
+            "num_clusters": len(clusters),
+            "total_concepts": len(concept_clusters),
+            "clusters": clusters,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/clusters error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/evolution")
+def memory_graph_evolution(concept: str) -> Dict[str, Any]:
+    """
+    Get evolution history of a concept.
+    Shows how the concept has changed over time.
+    
+    Args:
+        concept: Concept name
+        
+    Returns:
+        JSON with version history
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Get evolution history
+        history = kg.get_concept_evolution(concept)
+        
+        if not history:
+            # Check if concept exists
+            if kg.graph.has_node(concept):
+                return {
+                    "ok": True,
+                    "concept": concept,
+                    "versions": 0,
+                    "history": [],
+                    "note": "no_version_history"
+                }
+            else:
+                return {
+                    "ok": False,
+                    "error": "concept_not_found",
+                    "concept": concept
+                }
+        
+        return {
+            "ok": True,
+            "concept": concept,
+            "versions": len(history),
+            "history": history,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/evolution error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/suggest")
+def memory_graph_suggest(
+    current_topic: str,
+    top_k: int = 5,
+    use_centrality: bool = True
+) -> Dict[str, Any]:
+    """
+    Get topic suggestions based on knowledge graph.
+    Uses graph centrality or PageRank to find important related concepts.
+    
+    Args:
+        current_topic: Current concept/topic
+        top_k: Number of suggestions (1-10)
+        use_centrality: Use degree centrality (fast) vs PageRank (slow but accurate)
+        
+    Returns:
+        JSON with suggested topics
+    """
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        # Validate inputs
+        top_k = min(max(top_k, KG_API_TOP_K_MIN), KG_API_TOP_K_MAX)
+        
+        # Get suggestions
+        suggestions = kg.suggest_related_topics(
+            current_topic=current_topic,
+            top_k=top_k,
+            use_centrality=use_centrality
+        )
+        
+        if not suggestions:
+            return {
+                "ok": True,
+                "current_topic": current_topic,
+                "suggestions": [],
+                "note": "no_suggestions_found"
+            }
+        
+        return {
+            "ok": True,
+            "current_topic": current_topic,
+            "suggestions": suggestions,
+            "algorithm": "centrality" if use_centrality else "pagerank",
+            "proactive_message": f"You might also want to know about: {', '.join(suggestions[:3])}"
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/suggest error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/memory/graph/stats")
+def memory_graph_stats() -> Dict[str, Any]:
+    """Get knowledge graph statistics."""
+    try:
+        from core.knowledge_graph import get_knowledge_graph
+        
+        kg = get_knowledge_graph()
+        if kg is None:
+            return {"ok": False, "error": "knowledge_graph_not_enabled"}
+        
+        stats = kg.get_stats()
+        
+        return {
+            "ok": True,
+            "stats": stats,
+        }
+        
+    except Exception as e:
+        log.error(f"/memory/graph/stats error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# ======================= Analytics endpoints =========================
+@app.get("/analytics/search/report")
+def analytics_report(days: int = 7) -> Dict[str, Any]:
+    try:
+        if not _ANALYTICS:
+            return {"ok": False, "error": "SearchAnalytics non inizializzato."}
+        rep = _ANALYTICS.report(days=days)  # type: ignore[attr-defined]
+        return {"ok": True, "report": rep, "days": int(days)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/analytics/search/tail")
+def analytics_tail(n: int = 100) -> Dict[str, Any]:
+    try:
+        path = getattr(_ANALYTICS, "path", SEARCH_ANALYTICS_LOG)
+        if not os.path.isfile(path):
+            return {"ok": True, "path": path, "events": []}
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        tail: List[Any] = []
+        for line in lines[-max(1, int(n)) :]:
+            try:
+                tail.append(json.loads(line))
+            except Exception:
+                tail.append({"raw": line.strip()})
+        return {"ok": True, "path": path, "events": tail}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class ClickTrackReq(BaseModel):
+    url: str
+    query: Optional[str] = None
+    ts: Optional[int] = None
+
+
+@app.post("/analytics/track_click")
+def analytics_track_click(req: ClickTrackReq) -> Dict[str, Any]:
+    """Registra un evento di click su una sorgente."""
+    try:
+        path = getattr(_ANALYTICS, "path", SEARCH_ANALYTICS_LOG)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ev = {
+            "ts": int(req.ts or time.time()),
+            "type": "click",
+            "url": (req.url or "").strip(),
+            "query": (req.query or "").strip(),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        return {"ok": True, "logged": ev}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ==================== STATS ENDPOINT per LLM Intent (NUOVO) ====================
+@app.get("/stats/intent_classifier")
+async def intent_classifier_stats() -> Dict[str, Any]:
+    """Statistiche LLM Intent Classifier + comparazione con rule-based."""
+    result: Dict[str, Any] = {
+        "llm": {
+            "enabled": bool(LLM_INTENT_ENABLED),
+            "available": False,
+            "stats": None,
+        },
+        "rule_based": {
+            "enabled": True,
+            "available": True,
+        },
+        "comparison": {
+            "note": "LLM provides semantic understanding, rule-based is fallback",
+        },
+    }
+    llm_classifier = get_llm_classifier()
+    if llm_classifier:
+        result["llm"]["available"] = True
+        try:
+            result["llm"]["stats"] = llm_classifier.get_stats()
+        except Exception as e:
+            log.warning(f"LLM Intent get_stats failed: {e}")
+
+    return result
+
+
+@app.post("/admin/intent_classifier/clear_cache")
+async def clear_intent_cache(secret: str = Body(...)) -> Dict[str, Any]:
+    """Svuota la cache interna del LLM Intent Classifier."""
+    if secret != QUANTUM_SHARED_SECRET:
+        return {"ok": False, "error": "unauthorized"}
+    llm_classifier = get_llm_classifier()
+    if llm_classifier:
+        try:
+            cleared = llm_classifier.clear_cache()
+        except Exception as e:
+            log.warning(f"LLM Intent clear_cache failed: {e}")
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "cleared_entries": cleared}
+
+    return {"ok": False, "error": "llm_classifier_not_available"}
+
+
+# ==================== DIVERSITY STATS ENDPOINT (NUOVO) ====================
+@app.get("/stats/search_diversity")
+async def search_diversity_stats() -> Dict[str, Any]:
+    """Statistiche diversità ricerche web."""
+    result: Dict[str, Any] = {
+        "diversifier": {
+            "enabled": DIVERSIFIER_ENABLED,
+            "available": _SEARCH_DIVERSIFIER is not None,
+            "config": {
+                "max_per_domain": DIVERSIFIER_MAX_PER_DOMAIN,
+                "preserve_top_n": DIVERSIFIER_PRESERVE_TOP_N,
+                "min_unique_domains": DIVERSIFIER_MIN_UNIQUE_DOMAINS,
+            },
+        },
+        "recent_searches": None,
+    }
+    if not _ANALYTICS:
+        return result
+
+    try:
+        recent = _ANALYTICS.tail(50)  # type: ignore[attr-defined]
+    except Exception as e:
+        log.error(f"Diversity stats error (tail): {e}")
+        return result
+
+    if not recent:
+        return result
+
+    diversity_scores: List[float] = []
+    unique_domains_counts: List[int] = []
+
+    for search in recent:
+        urls = search.get("result_urls", [])
+        if not urls:
+            continue
+        diversifier = _SEARCH_DIVERSIFIER or get_search_diversifier()
+        if not diversifier:
+            break
+        mock_results = [{"url": u} for u in urls[:10]]
+        try:
+            analysis = diversifier.analyze_diversity(mock_results)
+        except Exception as e:
+            log.warning(f"Diversity analyze error: {e}")
+            continue
+        diversity_scores.append(analysis["diversity_score"])
+        unique_domains_counts.append(analysis["unique_domains"])
+
+    if diversity_scores:
+        result["recent_searches"] = {
+            "samples": len(diversity_scores),
+            "avg_diversity_score": round(
+                sum(diversity_scores) / len(diversity_scores), 3
+            ),
+            "avg_unique_domains": round(
+                sum(unique_domains_counts) / len(unique_domains_counts), 1
+            ),
+            "min_unique_domains": min(unique_domains_counts),
+            "max_unique_domains": max(unique_domains_counts),
+        }
+
+    return result
+
+
+@app.post("/admin/test_diversity")
+async def test_diversity_endpoint(
+    query: str = Body(...),
+    secret: str = Body(...),
+) -> Dict[str, Any]:
+    """Test diversification su query specifica (admin only)."""
+    if secret != QUANTUM_SHARED_SECRET:
+        return {"ok": False, "error": "unauthorized"}
+    try:
+        try:
+            from core.web_search import search as web_search_core
+        except Exception as e:
+            return {"ok": False, "error": f"web_search_import_failed:{e}"}
+
+        results = web_search_core(query, num=16) or []
+
+        if not results:
+            return {"ok": False, "error": "no_results"}
+
+        diversifier = _SEARCH_DIVERSIFIER or get_search_diversifier()
+        if not diversifier:
+            return {"ok": False, "error": "diversifier_not_available"}
+
+        before = diversifier.analyze_diversity(results[:10])
+        after_results = diversifier.diversify(results[:10])
+        after = diversifier.analyze_diversity(after_results)
+
+        return {
+            "ok": True,
+            "query": query,
+            "total_results": len(results),
+            "before": before,
+            "after": after,
+            "improvement": {
+                "unique_domains": after["unique_domains"]
+                - before["unique_domains"],
+                "diversity_score": round(
+                    after["diversity_score"] - before["diversity_score"],
+                    3,
+                ),
+            },
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

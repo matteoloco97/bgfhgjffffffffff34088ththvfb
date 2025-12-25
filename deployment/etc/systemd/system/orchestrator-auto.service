@@ -1,0 +1,11 @@
+[Unit]
+Description=Esecuzione ogni 30 minuti di orchestrator_auto.py
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

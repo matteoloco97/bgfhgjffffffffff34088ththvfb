@@ -1,0 +1,21 @@
+[Unit]
+Description=QuantumDev ChromaDB cleanup (%I)
+After=network-online.target quantum-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/quantumdev-open
+EnvironmentFile=-/root/quantumdev-open/.env
+Environment=API_URL=http://127.0.0.1:8081/memory/cleanup
+Environment=DEFAULT_DAYS=90
+Environment=DRY_RUN=false
+ExecStart=/root/quantumdev-open/venv/bin/python -m utils.chroma_cleanup %I --prefer=api
+
+# Hardening (facoltativo)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+LockPersonality=true
+RestrictRealtime=true

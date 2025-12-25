@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
+.env.local
+*.env.backup
+.env.encrypted
+
+# Encryption keys
+*.key
+encryption.key
+secrets.key
+
+# Data directories
+data/
+chroma_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.backup-*
+*_backup_*
+*.old
+
+# Deprecated docs
+IMPLEMENTATION_*.md
+SESSION_SUMMARY.md
+PERSONA_CLEANUP_SUMMARY.md
+
+
+# Backups
+*.backup
+*.backup-*
+*.pre-*
+
+# Backups
+*.backup
+*.backup-*
+*.pre-*
+
+# Backups
+*.backup
+*.backup-*
+*.pre-*
+
+# ChromaDB and large databases (NEVER commit!)
+/memory/
+memory/
+chroma_data/
+*.bin
+*.db
+*.sqlite
+*.sqlite3

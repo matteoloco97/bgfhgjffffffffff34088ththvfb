@@ -1,0 +1,74 @@
+[
+  {
+    "agent": "restore.py",
+    "path": "agents/restore.py",
+    "last_modified": "2025-07-09T17:02:00.617755",
+    "status": "attivo"
+  },
+  {
+    "agent": "test_telegram_agent.py",
+    "path": "agents/test_telegram_agent.py",
+    "last_modified": "2025-07-05T18:32:36.892010",
+    "status": "attivo"
+  },
+  {
+    "agent": "bootstrapper.py",
+    "path": "agents/bootstrapper.py",
+    "last_modified": "2025-07-14T13:03:05.595694",
+    "status": "attivo"
+  },
+  {
+    "agent": "orchestrator.py",
+    "path": "agents/orchestrator.py",
+    "last_modified": "2025-07-14T13:58:22.692453",
+    "status": "attivo"
+  },
+  {
+    "agent": "orchestrator_auto.py",
+    "path": "agents/orchestrator_auto.py",
+    "last_modified": "2025-07-19T00:54:27.133579",
+    "status": "attivo"
+  },
+  {
+    "agent": "telegram_bot_agent.py",
+    "path": "agents/telegram_bot_agent.py",
+    "last_modified": "2025-07-11T12:37:17.229394",
+    "status": "attivo"
+  },
+  {
+    "agent": "chroma_bridge.py",
+    "path": "agents/chroma_bridge.py",
+    "last_modified": "2025-07-11T23:42:31.534993",
+    "status": "attivo"
+  },
+  {
+    "agent": "monitor.py",
+    "path": "agents/monitor.py",
+    "last_modified": "2025-07-09T18:31:14.942055",
+    "status": "attivo"
+  },
+  {
+    "agent": "api_gateway.py",
+    "path": "agents/api_gateway.py",
+    "last_modified": "2025-07-18T16:26:48.499705",
+    "status": "attivo"
+  },
+  {
+    "agent": "wasabi_agent.py",
+    "path": "agents/wasabi_agent.py",
+    "last_modified": "2025-07-19T00:26:09.498351",
+    "status": "attivo"
+  },
+  {
+    "agent": "flush_cache.py",
+    "path": "agents/flush_cache.py",
+    "last_modified": "2025-07-05T18:39:24.889261",
+    "status": "attivo"
+  },
+  {
+    "agent": "backup.py",
+    "path": "agents/backup.py",
+    "last_modified": "2025-07-09T18:18:46.472477",
+    "status": "attivo"
+  }
+]

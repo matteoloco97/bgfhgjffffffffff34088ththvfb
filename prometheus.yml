@@ -1,0 +1,85 @@
+# Prometheus Configuration for QuantumDev Monitoring
+# This configuration defines how Prometheus scrapes metrics from the FastAPI application
+
+global:
+  # How often to scrape targets
+  scrape_interval: 15s
+  
+  # How often to evaluate rules
+  evaluation_interval: 15s
+  
+  # External labels to attach to all metrics
+  external_labels:
+    monitor: 'quantumdev-monitor'
+    environment: 'production'
+
+# Data retention
+# Note: This is configured via command line flag --storage.tsdb.retention.time=30d
+# when starting Prometheus
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - 'alertmanager:9093'
+
+# Rule files (optional - for alert rules)
+# rule_files:
+#   - "alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # QuantumDev FastAPI Application
+  - job_name: 'quantumdev-api'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8081']
+        labels:
+          service: 'quantumdev'
+          application: 'fastapi'
+          component: 'backend'
+    
+    # Optional: Add basic auth if your /metrics endpoint is protected
+    # basic_auth:
+    #   username: 'prometheus'
+    #   password: 'secure_password'
+    
+    # Optional: Add custom headers
+    # params:
+    #   format: ['prometheus']
+    
+    # Relabeling (optional - for metric manipulation)
+    metric_relabel_configs:
+      # Drop metrics we don't need (example)
+      # - source_labels: [__name__]
+      #   regex: 'go_.*'
+      #   action: drop
+      
+      # Add custom labels (example)
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'quantumdev-main'
+
+  # Optional: Add Redis exporter for Redis metrics
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+
+  # Optional: Add Node exporter for system metrics
+  # - job_name: 'node'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
+  #       labels:
+  #         service: 'node-exporter'

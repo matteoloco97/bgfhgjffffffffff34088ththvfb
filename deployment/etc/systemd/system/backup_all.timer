@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup automatico su Wasabi ogni 12 ore
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

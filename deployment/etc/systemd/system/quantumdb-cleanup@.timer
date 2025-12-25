@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule QuantumDev ChromaDB cleanup weekly (%I)
+
+[Timer]
+OnCalendar=Sun 03:30
+RandomizedDelaySec=20m
+Persistent=true
+Unit=quantumdb-cleanup@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+# /etc/systemd/system/telegram-bot.service
+[Unit]
+Description=QuantumDev Telegram Bot (Smart Routing)
+After=network-online.target intent-router.service quantum-api.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/quantumdev-open
+EnvironmentFile=/root/quantumdev-open/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/root/quantumdev-open
+ExecStart=/root/quantumdev-open/venv/bin/python3 /root/quantumdev-open/scripts/telegram_bot.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+Collecting aiodns
+  Downloading aiodns-3.6.1-py3-none-any.whl.metadata (5.8 kB)
+Collecting pycares<5,>=4.9.0 (from aiodns)
+  Downloading pycares-4.11.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (4.5 kB)
+Collecting cffi>=1.5.0 (from pycares<5,>=4.9.0->aiodns)
+  Downloading cffi-2.0.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.6 kB)
+Collecting pycparser (from cffi>=1.5.0->pycares<5,>=4.9.0->aiodns)
+  Downloading pycparser-2.23-py3-none-any.whl.metadata (993 bytes)
+Downloading aiodns-3.6.1-py3-none-any.whl (8.0 kB)
+Downloading pycares-4.11.0-cp310-cp310-manylinux_2_28_x86_64.whl (643 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 644.0/644.0 kB 15.3 MB/s  0:00:00
+Downloading cffi-2.0.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (216 kB)
+Downloading pycparser-2.23-py3-none-any.whl (118 kB)
+Installing collected packages: pycparser, cffi, pycares, aiodns
+
+Successfully installed aiodns-3.6.1 cffi-2.0.0 pycares-4.11.0 pycparser-2.23
