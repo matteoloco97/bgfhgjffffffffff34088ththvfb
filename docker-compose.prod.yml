@@ -1,0 +1,197 @@
+# ============================================================================
+# QuantumDev - Production Docker Compose Configuration
+# Optimized for production with resource limits, security, and reliability
+# ============================================================================
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # API Service - Production Configuration
+  # ===========================================================================
+  api:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    environment:
+      # Production settings
+      - LOG_LEVEL=WARNING
+      - ENVIRONMENT=production
+      # Security - use secrets in production
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      - QUANTUM_SHARED_SECRET=${QUANTUM_SHARED_SECRET}
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp:size=100M
+
+  # ===========================================================================
+  # Telegram Bot Service - Production Configuration
+  # ===========================================================================
+  telegram-bot:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # Redis - Production Configuration
+  # ===========================================================================
+  redis:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    command: >
+      redis-server 
+      --appendonly yes 
+      --maxmemory 768mb 
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --tcp-keepalive 300
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ===========================================================================
+  # ChromaDB - Production Configuration
+  # ===========================================================================
+  chromadb:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.2'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ===========================================================================
+  # Prometheus - Production Configuration
+  # ===========================================================================
+  prometheus:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=90d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.enable-lifecycle'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ===========================================================================
+  # Grafana - Production Configuration
+  # ===========================================================================
+  grafana:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    environment:
+      # Production security
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      # Disable anonymous access
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Logging
+      - GF_LOG_LEVEL=warn
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+# =============================================================================
+# Production-specific network configuration
+# =============================================================================
+networks:
+  frontend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1500
+  backend:
+    driver: bridge
+    internal: true  # Not accessible from outside in production
+
+# =============================================================================
+# Production volumes with backup labels
+# =============================================================================
+volumes:
+  redis-data:
+    labels:
+      - "backup=daily"
+      - "retention=7d"
+  chroma-data:
+    labels:
+      - "backup=daily"
+      - "retention=30d"
+  prometheus-data:
+    labels:
+      - "backup=weekly"
+      - "retention=90d"
+  grafana-data:
+    labels:
+      - "backup=weekly"
+      - "retention=30d"
+  app-logs:
+    labels:
+      - "backup=daily"
+      - "retention=14d"
