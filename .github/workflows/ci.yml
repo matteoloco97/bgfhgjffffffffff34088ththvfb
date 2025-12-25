@@ -51,7 +51,7 @@ jobs:
           black --check .
 
   test:
-    name: Run Tests
+    name: Run Tests with Coverage
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -71,16 +71,38 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       
-      - name: Run tests
+      - name: Run unit tests with coverage
         run: |
-          # Run tests from the quantumdev-open directory if they exist
-          if [ -d "Contabo VPS/quantumdev-open/tests" ]; then
-            cd "Contabo VPS/quantumdev-open"
-            pytest tests/ -v --tb=short
-          else
-            echo "No tests directory found, skipping tests"
-          fi
-        continue-on-error: true  # Don't fail build if no tests exist yet
+          pytest tests/unit/ -v --tb=short --cov=core --cov=backend --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        env:
+          ENABLE_L2_CACHE: "0"
+          OPENAI_API_KEY: "test-key-for-mocking"
+        continue-on-error: true
+      
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ -v --tb=short
+        env:
+          ENABLE_L2_CACHE: "0"
+          OPENAI_API_KEY: "test-key-for-mocking"
+        continue-on-error: true
+      
+      - name: Upload coverage report
+        if: matrix.python-version == '3.10'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          retention-days: 7
+      
+      - name: Coverage report summary
+        if: matrix.python-version == '3.10'
+        run: |
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See uploaded artifact for detailed coverage report." >> $GITHUB_STEP_SUMMARY
 
   security:
     name: Security Audit

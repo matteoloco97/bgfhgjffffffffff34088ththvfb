@@ -1,0 +1,81 @@
+[run]
+# Source directories to measure
+source = core,backend
+
+# Enable branch coverage
+branch = True
+
+# Omit files from coverage
+omit =
+    */tests/*
+    */__pycache__/*
+    */venv/*
+    */venv_bot/*
+    */.git/*
+    */scripts/*
+    */deployment/*
+    */.github/*
+    # Example and demo files
+    */demo_*.py
+    */debug_*.py
+    # Setup files
+    setup.py
+    setup_gpu.py
+
+# Parallel execution support
+parallel = True
+
+# Dynamic context
+dynamic_context = test_function
+
+[report]
+# Fail under this coverage percentage
+fail_under = 80
+
+# Exclude lines from coverage
+exclude_lines =
+    # Standard pragmas
+    pragma: no cover
+    
+    # Don't complain about debug code
+    def __repr__
+    def __str__
+    
+    # Don't complain about missing defensive assertions
+    raise AssertionError
+    raise NotImplementedError
+    
+    # Don't complain if tests don't hit defensive code
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    
+    # Don't complain about abstract methods
+    @abstractmethod
+    
+    # Don't complain about imports that may fail
+    except ImportError
+    except ModuleNotFoundError
+
+# Show missing lines
+show_missing = True
+
+# Precision for percentages
+precision = 2
+
+# Skip covered files in report
+skip_covered = False
+
+[html]
+# Directory for HTML report
+directory = htmlcov
+
+# Title for HTML report
+title = QuantumDev Coverage Report
+
+[xml]
+# Output file for XML report (for CI integration)
+output = coverage.xml
+
+[json]
+# Output file for JSON report
+output = coverage.json

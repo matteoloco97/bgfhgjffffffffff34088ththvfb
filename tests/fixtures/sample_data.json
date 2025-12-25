@@ -1,0 +1,117 @@
+{
+  "web_search_results": [
+    {
+      "idx": 1,
+      "title": "Python 3.12 Release Notes",
+      "url": "https://docs.python.org/3.12/whatsnew/3.12.html",
+      "text": "Python 3.12 introduces several new features including improved error messages, support for the Linux perf profiler, and many other improvements.",
+      "snippet": "Python 3.12 is the newest major release of the Python programming language."
+    },
+    {
+      "idx": 2,
+      "title": "Getting Started with Python",
+      "url": "https://www.python.org/about/gettingstarted/",
+      "text": "Python is a programming language that lets you work quickly and integrate systems more effectively. Learn how to get started.",
+      "snippet": "Python is a programming language that lets you work quickly."
+    },
+    {
+      "idx": 3,
+      "title": "Python Tutorial - W3Schools",
+      "url": "https://www.w3schools.com/python/",
+      "text": "Python is a popular programming language. Python can be used on a server to create web applications.",
+      "snippet": "Well organized and easy to understand Web building tutorials."
+    }
+  ],
+  "llm_responses": {
+    "default": "This is a helpful response to your question.",
+    "weather": "The current weather in Rome is sunny with temperatures around 22°C (72°F). Expect clear skies throughout the day.",
+    "code": "```python\ndef hello_world():\n    print('Hello, World!')\n```",
+    "synthesis": "**TL;DR:** Python 3.12 brings significant improvements.\n\n• Improved error messages with better location tracking\n• Enhanced performance optimizations\n• New syntax features for cleaner code\n• Better debugging support"
+  },
+  "conversation_history": [
+    {
+      "role": "user",
+      "content": "What is Python?"
+    },
+    {
+      "role": "assistant",
+      "content": "Python is a high-level, interpreted programming language known for its simplicity and readability."
+    },
+    {
+      "role": "user",
+      "content": "How do I install it?"
+    },
+    {
+      "role": "assistant",
+      "content": "You can install Python from python.org or use a package manager like apt (Linux) or brew (macOS)."
+    }
+  ],
+  "memory_entries": [
+    {
+      "content": "User prefers concise, bullet-point responses",
+      "metadata": {
+        "type": "preference",
+        "timestamp": 1700000000,
+        "source": "explicit"
+      }
+    },
+    {
+      "content": "User is learning Python for data science",
+      "metadata": {
+        "type": "context",
+        "timestamp": 1700001000,
+        "source": "inferred"
+      }
+    },
+    {
+      "content": "Previous discussion about FastAPI and async programming",
+      "metadata": {
+        "type": "topic",
+        "timestamp": 1700002000,
+        "source": "conversation"
+      }
+    }
+  ],
+  "telegram_messages": [
+    {
+      "message_id": 12345,
+      "chat_id": 67890,
+      "text": "What's the weather in Rome?",
+      "from": {
+        "id": 111222,
+        "first_name": "Test",
+        "username": "testuser"
+      }
+    },
+    {
+      "message_id": 12346,
+      "chat_id": 67890,
+      "text": "/search Python tutorials",
+      "from": {
+        "id": 111222,
+        "first_name": "Test",
+        "username": "testuser"
+      }
+    }
+  ],
+  "autonomous_tasks": [
+    {
+      "goal": "Find the best Python web frameworks for 2024",
+      "expected_steps": [
+        "Search for Python web frameworks",
+        "Compare Django, FastAPI, Flask",
+        "Analyze recent benchmarks",
+        "Summarize findings"
+      ]
+    },
+    {
+      "goal": "Research machine learning libraries",
+      "expected_steps": [
+        "Search for ML libraries",
+        "Compare TensorFlow, PyTorch, scikit-learn",
+        "Check documentation quality",
+        "Summarize pros and cons"
+      ]
+    }
+  ]
+}
