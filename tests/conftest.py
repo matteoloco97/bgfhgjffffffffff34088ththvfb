@@ -35,7 +35,7 @@ if ROOT not in sys.path:
 os.environ.setdefault("ENABLE_L2_CACHE", "0")
 os.environ.setdefault("REDIS_HOST", "localhost")
 os.environ.setdefault("REDIS_PORT", "6379")
-os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocking")
+os.environ.setdefault("OPENAI_API_KEY", "test-api-key-do-not-use")
 os.environ.setdefault("PARALLEL_SYNTHESIS_ENABLED", "1")
 
 
