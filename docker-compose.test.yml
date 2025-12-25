@@ -1,0 +1,58 @@
+# Docker Compose configuration for test environment
+# Provides isolated test instances of Redis and other services
+
+version: '3.8'
+
+services:
+  # Redis test instance
+  redis-test:
+    image: redis:7-alpine
+    container_name: quantumdev-redis-test
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    command: redis-server --appendonly no --maxmemory 100mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - test-network
+
+  # ChromaDB test instance (if needed)
+  chromadb-test:
+    image: chromadb/chroma:latest
+    container_name: quantumdev-chromadb-test
+    ports:
+      - "8001:8000"  # Different port to avoid conflicts
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - chromadb-test-data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
+
+volumes:
+  chromadb-test-data:
+    driver: local
+
+# Usage:
+# Start test environment:
+#   docker-compose -f docker-compose.test.yml up -d
+#
+# Run tests:
+#   REDIS_HOST=localhost REDIS_PORT=6380 pytest tests/ -v
+#
+# Stop test environment:
+#   docker-compose -f docker-compose.test.yml down -v
