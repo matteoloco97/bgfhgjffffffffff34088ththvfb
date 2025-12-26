@@ -306,6 +306,59 @@ class AutonomousToolRegistry:
             lines.append(f"- {tool.name}({params}): {tool.description}")
         return "\n".join(lines)
     
+    def get_tools_for_api(self, enabled_only: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get tools formatted for API response with full schema information.
+        
+        This method returns a list of tools with:
+        - Name and description
+        - JSON Schema for parameters
+        - Example usage
+        - Category and configuration
+        
+        Args:
+            enabled_only: Only include enabled tools
+            
+        Returns:
+            List of tool dicts with full schema information
+        """
+        tools = self.list_tools(enabled_only=enabled_only)
+        result = []
+        
+        for tool in tools:
+            # Build parameters schema
+            properties = {}
+            required = []
+            
+            for param in tool.parameters:
+                properties[param.name] = {
+                    "type": param.type,
+                    "description": param.description
+                }
+                if param.default is not None:
+                    properties[param.name]["default"] = param.default
+                if param.enum:
+                    properties[param.name]["enum"] = param.enum
+                if param.required:
+                    required.append(param.name)
+            
+            result.append({
+                "name": tool.name,
+                "description": tool.description,
+                "category": tool.category.value,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                },
+                "examples": tool.examples,
+                "timeout_s": tool.timeout_s,
+                "enabled": tool.enabled,
+                "requires_confirmation": tool.requires_confirmation
+            })
+        
+        return result
+    
     def disable_tool(self, name: str) -> bool:
         """Disable a tool by name."""
         tool = self._tools.get(name)
@@ -323,6 +376,247 @@ class AutonomousToolRegistry:
             log.info(f"Tool enabled: {name}")
             return True
         return False
+
+
+# === Tool Execution Wrapper ===
+import asyncio
+import time
+from dataclasses import dataclass as execution_dataclass
+
+
+@execution_dataclass
+class ToolExecutionResult:
+    """
+    Structured result from tool execution.
+    
+    Attributes:
+        ok: Whether the execution was successful
+        result: The result data if successful, None otherwise
+        error: Error message if execution failed, None otherwise
+        tool_name: Name of the tool that was executed
+        execution_time_ms: Time taken for execution in milliseconds
+    """
+    ok: bool
+    result: Any
+    error: Optional[str]
+    tool_name: str
+    execution_time_ms: int
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "ok": self.ok,
+            "result": self.result,
+            "error": self.error,
+            "tool_name": self.tool_name,
+            "execution_time_ms": self.execution_time_ms
+        }
+
+
+class ToolExecutionWrapper:
+    """
+    Wrapper for executing tools with timeout, validation, and logging.
+    
+    Features:
+    - Parameter validation against JSON schema
+    - Async execution with configurable timeout
+    - Structured result format: {ok: bool, result: any, error: str}
+    - Logging with [TOOL] prefix
+    - Execution timing
+    
+    Usage:
+        wrapper = ToolExecutionWrapper(registry)
+        result = await wrapper.execute("calculator", expression="2 + 2")
+        # Returns: ToolExecutionResult(ok=True, result={...}, error=None, ...)
+    """
+    
+    def __init__(self, registry: AutonomousToolRegistry):
+        """
+        Initialize wrapper with tool registry.
+        
+        Args:
+            registry: The tool registry to use for tool lookup
+        """
+        self.registry = registry
+    
+    def validate_parameters(self, tool: Tool, params: Dict[str, Any]) -> Optional[str]:
+        """
+        Validate parameters against tool's parameter definitions.
+        
+        Args:
+            tool: The tool to validate parameters for
+            params: The parameters to validate
+            
+        Returns:
+            Error message if validation fails, None if valid
+        """
+        # Check required parameters
+        for param_def in tool.parameters:
+            if param_def.required and param_def.name not in params:
+                return f"Missing required parameter: {param_def.name}"
+            
+            if param_def.name in params:
+                value = params[param_def.name]
+                
+                # Type validation
+                expected_type = param_def.type
+                if expected_type == "string" and not isinstance(value, str):
+                    return f"Parameter '{param_def.name}' must be a string"
+                elif expected_type == "number" and not isinstance(value, (int, float)):
+                    return f"Parameter '{param_def.name}' must be a number"
+                elif expected_type == "integer" and not isinstance(value, int):
+                    return f"Parameter '{param_def.name}' must be an integer"
+                elif expected_type == "boolean" and not isinstance(value, bool):
+                    return f"Parameter '{param_def.name}' must be a boolean"
+                elif expected_type == "array" and not isinstance(value, list):
+                    return f"Parameter '{param_def.name}' must be an array"
+                elif expected_type == "object" and not isinstance(value, dict):
+                    return f"Parameter '{param_def.name}' must be an object"
+                
+                # Enum validation
+                if param_def.enum and value not in param_def.enum:
+                    return f"Parameter '{param_def.name}' must be one of: {param_def.enum}"
+        
+        return None
+    
+    async def execute(
+        self,
+        tool_name: str,
+        timeout_override: Optional[int] = None,
+        **params: Any
+    ) -> ToolExecutionResult:
+        """
+        Execute a tool with timeout, validation, and logging.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            timeout_override: Optional timeout override in seconds
+            **params: Tool parameters
+            
+        Returns:
+            ToolExecutionResult with ok, result, error, tool_name, execution_time_ms
+        """
+        start_time = time.perf_counter()
+        
+        # Get tool from registry
+        tool = self.registry.get(tool_name)
+        if tool is None:
+            log.warning(f"[TOOL] Tool not found: {tool_name}")
+            return ToolExecutionResult(
+                ok=False,
+                result=None,
+                error=f"Tool not found: {tool_name}",
+                tool_name=tool_name,
+                execution_time_ms=0
+            )
+        
+        # Check if tool is enabled
+        if not tool.enabled:
+            log.warning(f"[TOOL] Tool disabled: {tool_name}")
+            return ToolExecutionResult(
+                ok=False,
+                result=None,
+                error=f"Tool is disabled: {tool_name}",
+                tool_name=tool_name,
+                execution_time_ms=0
+            )
+        
+        # Validate parameters
+        validation_error = self.validate_parameters(tool, params)
+        if validation_error:
+            log.warning(f"[TOOL] Validation failed for {tool_name}: {validation_error}")
+            return ToolExecutionResult(
+                ok=False,
+                result=None,
+                error=validation_error,
+                tool_name=tool_name,
+                execution_time_ms=0
+            )
+        
+        # Determine timeout
+        timeout = timeout_override or tool.timeout_s
+        
+        log.info(f"[TOOL] Executing {tool_name} with params: {list(params.keys())} (timeout={timeout}s)")
+        
+        try:
+            # Execute with timeout
+            result = await asyncio.wait_for(
+                tool.handler(**params),
+                timeout=timeout
+            )
+            
+            execution_time = int((time.perf_counter() - start_time) * 1000)
+            
+            # Normalize result format
+            if isinstance(result, dict):
+                # Check if already in structured format
+                if "ok" in result:
+                    ok = result.get("ok", result.get("success", True))
+                    return ToolExecutionResult(
+                        ok=ok,
+                        result=result.get("result", result),
+                        error=result.get("error"),
+                        tool_name=tool_name,
+                        execution_time_ms=execution_time
+                    )
+                elif "success" in result:
+                    ok = result.get("success", True)
+                    return ToolExecutionResult(
+                        ok=ok,
+                        result=result,
+                        error=result.get("error"),
+                        tool_name=tool_name,
+                        execution_time_ms=execution_time
+                    )
+            
+            # Wrap raw result
+            log.info(f"[TOOL] {tool_name} completed in {execution_time}ms")
+            return ToolExecutionResult(
+                ok=True,
+                result=result,
+                error=None,
+                tool_name=tool_name,
+                execution_time_ms=execution_time
+            )
+            
+        except asyncio.TimeoutError:
+            execution_time = int((time.perf_counter() - start_time) * 1000)
+            error_msg = f"Tool execution timed out after {timeout}s"
+            log.error(f"[TOOL] {tool_name}: {error_msg}")
+            return ToolExecutionResult(
+                ok=False,
+                result=None,
+                error=error_msg,
+                tool_name=tool_name,
+                execution_time_ms=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = int((time.perf_counter() - start_time) * 1000)
+            error_msg = f"Tool execution failed: {str(e)}"
+            log.error(f"[TOOL] {tool_name}: {error_msg}")
+            return ToolExecutionResult(
+                ok=False,
+                result=None,
+                error=error_msg,
+                tool_name=tool_name,
+                execution_time_ms=execution_time
+            )
+
+
+def get_tool_execution_wrapper(registry: Optional[AutonomousToolRegistry] = None) -> ToolExecutionWrapper:
+    """
+    Get a tool execution wrapper instance.
+    
+    Args:
+        registry: Optional registry to use, defaults to global registry
+        
+    Returns:
+        ToolExecutionWrapper instance
+    """
+    if registry is None:
+        registry = get_autonomous_tool_registry()
+    return ToolExecutionWrapper(registry)
 
 
 # === Global Registry Singleton ===
