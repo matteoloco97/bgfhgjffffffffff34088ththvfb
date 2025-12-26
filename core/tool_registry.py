@@ -464,6 +464,8 @@ class ToolExecutionWrapper:
                     return f"Parameter '{param_def.name}' must be a string"
                 elif expected_type == "number" and not isinstance(value, (int, float)):
                     return f"Parameter '{param_def.name}' must be a number"
+                elif expected_type == "integer" and not isinstance(value, int):
+                    return f"Parameter '{param_def.name}' must be an integer"
                 elif expected_type == "boolean" and not isinstance(value, bool):
                     return f"Parameter '{param_def.name}' must be a boolean"
                 elif expected_type == "array" and not isinstance(value, list):

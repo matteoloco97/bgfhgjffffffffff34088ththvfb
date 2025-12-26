@@ -129,7 +129,8 @@ class WebSearchTool:
         Returns:
             Structured result: {"ok": bool, "result": any, "error": str}
         """
-        log.info(f"[TOOL] web_search: query='{query[:50]}...' num_results={num_results}")
+        query_preview = query[:50] + "..." if len(query) > 50 else query
+        log.info(f"[TOOL] web_search: query='{query_preview}' num_results={num_results}")
         
         # Validate parameters
         validation_error = WebSearchTool.validate_parameters(query, num_results)

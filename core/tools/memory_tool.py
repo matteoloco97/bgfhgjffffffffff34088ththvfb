@@ -133,7 +133,8 @@ class MemorySearchTool:
         Returns:
             Structured result: {"ok": bool, "result": any, "error": str}
         """
-        log.info(f"[TOOL] memory_search: query='{query[:50]}...' k={k}")
+        query_preview = query[:50] + "..." if len(query) > 50 else query
+        log.info(f"[TOOL] memory_search: query='{query_preview}' k={k}")
         
         # Validate parameters
         validation_error = MemorySearchTool.validate_parameters(query, k)

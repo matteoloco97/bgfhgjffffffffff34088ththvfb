@@ -114,7 +114,8 @@ class CalculatorTool:
         Returns:
             Structured result: {"ok": bool, "result": any, "error": str}
         """
-        log.info(f"[TOOL] calculator: expression='{expression[:50]}...'")
+        expr_preview = expression[:50] + "..." if len(expression) > 50 else expression
+        log.info(f"[TOOL] calculator: expression='{expr_preview}'")
         
         # Validate parameters
         validation_error = CalculatorTool.validate_parameters(expression)

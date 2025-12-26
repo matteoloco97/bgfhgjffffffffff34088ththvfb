@@ -131,7 +131,8 @@ class FetchUrlTool:
         Returns:
             Structured result: {"ok": bool, "result": any, "error": str}
         """
-        log.info(f"[TOOL] fetch_url: url='{url[:80]}...'")
+        url_preview = url[:80] + "..." if len(url) > 80 else url
+        log.info(f"[TOOL] fetch_url: url='{url_preview}'")
         
         # Validate parameters
         validation_error = FetchUrlTool.validate_parameters(url)
