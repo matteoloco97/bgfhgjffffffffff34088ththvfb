@@ -1,0 +1,226 @@
+# ============================================================================
+# QuantumDev - Docker Compose Configuration
+# Full stack orchestration for development and testing
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # API Service - FastAPI Backend
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quantumdev-api
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      # Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      # ChromaDB connection
+      - CHROMA_PERSIST_DIR=/memory/chroma
+      # Application settings
+      - LLM_ENDPOINT=${LLM_ENDPOINT:-}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5-32b-awq}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-512}
+      # Prometheus metrics
+      - ENABLE_METRICS=true
+    volumes:
+      - chroma-data:/memory/chroma
+      - app-logs:/app/logs
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # Telegram Bot Service
+  # ===========================================================================
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: quantumdev-telegram-bot
+    restart: unless-stopped
+    environment:
+      # Telegram configuration
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_ADMIN_ID=${TELEGRAM_ADMIN_ID:-}
+      # Backend connection (internal network)
+      - QUANTUM_CHAT_URL=http://api:8081/chat
+      - QUANTUM_UNIFIED_URL=http://api:8081/unified
+      - QUANTUM_WEB_SEARCH_URL=http://api:8081/web/search
+      - QUANTUM_WEB_SUMMARY_URL=http://api:8081/web/summarize
+      - QUANTUM_WEB_RESEARCH_URL=http://api:8081/web/research
+      - QUANTUM_HEALTH_URL=http://api:8081/healthz
+      - QUANTUM_SYSTEM_STATUS_URL=http://api:8081/system/status
+      - QUANTUM_CHAT_STREAM_URL=http://api:8081/chat/stream
+      # Streaming configuration
+      - TELEGRAM_STREAMING_ENABLED=${TELEGRAM_STREAMING_ENABLED:-0}
+    volumes:
+      - app-logs:/app/logs
+    networks:
+      - frontend
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Redis - Cache Layer
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: quantumdev-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server 
+      --appendonly yes 
+      --maxmemory 512mb 
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # ChromaDB - Vector Database
+  # ===========================================================================
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: quantumdev-chromadb
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ANONYMIZED_TELEMETRY=False
+      - IS_PERSISTENT=TRUE
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Prometheus - Metrics Collection
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quantumdev-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ===========================================================================
+  # Grafana - Dashboards and Visualization
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: quantumdev-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Security settings - CHANGE IN PRODUCTION!
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-quantumdev2024}
+      # Server settings
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      # Anonymous access (disable in production)
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana:/var/lib/grafana/dashboards:ro
+    networks:
+      - backend
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Frontend network - for external access
+  frontend:
+    driver: bridge
+  # Backend network - for internal communication
+  backend:
+    driver: bridge
+
+# =============================================================================
+# Volumes - Persistent Storage
+# =============================================================================
+volumes:
+  # Redis data persistence
+  redis-data:
+    driver: local
+  # ChromaDB vector database persistence
+  chroma-data:
+    driver: local
+  # Prometheus metrics persistence
+  prometheus-data:
+    driver: local
+  # Grafana dashboards persistence
+  grafana-data:
+    driver: local
+  # Application logs
+  app-logs:
+    driver: local

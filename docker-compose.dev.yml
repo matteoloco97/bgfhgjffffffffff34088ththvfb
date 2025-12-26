@@ -1,0 +1,133 @@
+# ============================================================================
+# QuantumDev - Development Docker Compose Configuration
+# Optimized for local development with debugging and hot reload
+# ============================================================================
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # API Service - Development Configuration
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime  # Can use builder for debugging
+    volumes:
+      # Mount source code for hot reload
+      - .:/app:cached
+      - /app/__pycache__
+      - /app/.pytest_cache
+      # Persist virtual environment
+      - venv-dev:/opt/venv
+    environment:
+      # Development settings
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - PYTHONDONTWRITEBYTECODE=0
+      # Reload on code changes
+      - UVICORN_RELOAD=true
+    command: ["uvicorn", "backend.quantum_api:app", "--host", "0.0.0.0", "--port", "8081", "--reload"]
+    # Disable health check in development for faster startup
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # Telegram Bot Service - Development Configuration
+  # ===========================================================================
+  telegram-bot:
+    volumes:
+      # Mount source code for development
+      - .:/app:cached
+      - /app/__pycache__
+    environment:
+      # Development settings
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+
+  # ===========================================================================
+  # Redis - Development Configuration
+  # ===========================================================================
+  redis:
+    ports:
+      - "6379:6379"  # Expose for local debugging
+    command: >
+      redis-server 
+      --appendonly no
+      --maxmemory 256mb 
+      --maxmemory-policy allkeys-lru
+      --loglevel verbose
+
+  # ===========================================================================
+  # ChromaDB - Development Configuration
+  # ===========================================================================
+  chromadb:
+    ports:
+      - "8000:8000"  # Expose for local debugging
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  # ===========================================================================
+  # Prometheus - Development Configuration
+  # ===========================================================================
+  prometheus:
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'  # Shorter retention for dev
+      - '--web.enable-lifecycle'
+      - '--log.level=debug'
+
+  # ===========================================================================
+  # Grafana - Development Configuration
+  # ===========================================================================
+  grafana:
+    ports:
+      - "3000:3000"
+    environment:
+      # Development defaults
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Enable anonymous access for easier testing
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # Logging
+      - GF_LOG_LEVEL=debug
+
+  # ===========================================================================
+  # Mailhog - Email Testing (Development Only)
+  # ===========================================================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: quantumdev-mailhog-dev
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - backend
+
+# =============================================================================
+# Development-specific volumes
+# =============================================================================
+volumes:
+  venv-dev:
+    driver: local
+
+# =============================================================================
+# Development network configuration
+# =============================================================================
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    # Not internal in development for easier debugging

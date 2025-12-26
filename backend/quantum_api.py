@@ -2035,6 +2035,53 @@ def healthz() -> Dict[str, Any]:
     }
 
 
+@app.get("/readyz")
+def readyz() -> Response:
+    """
+    Kubernetes-style readiness probe endpoint.
+    
+    Checks if the application is ready to serve traffic by verifying
+    critical dependencies (Redis, LLM endpoints).
+    
+    Returns:
+        - 200 OK with JSON body if ready
+        - 503 Service Unavailable if not ready
+    """
+    checks: Dict[str, bool] = {}
+    all_ok = True
+    
+    # Check Redis connection
+    try:
+        redis_client.ping()
+        checks["redis"] = True
+    except Exception:
+        checks["redis"] = False
+        all_ok = False
+    
+    # Check if LLM endpoint is configured
+    endpoints = get_endpoints()
+    checks["llm_endpoint_configured"] = len(endpoints) > 0
+    if not endpoints:
+        all_ok = False
+    
+    # Check if essential collections are accessible (ChromaDB)
+    try:
+        ensure_collections()
+        checks["chromadb"] = True
+    except Exception:
+        checks["chromadb"] = False
+        # ChromaDB is not strictly required for basic functionality
+    
+    response_data = {
+        "ready": all_ok,
+        "checks": checks,
+        "timestamp": int(time.time()),
+    }
+    
+    status_code = 200 if all_ok else 503
+    return JSONResponse(content=response_data, status_code=status_code)
+
+
 # --------- System Status ---------
 @app.get("/system/status")
 def system_status() -> Dict[str, Any]:
