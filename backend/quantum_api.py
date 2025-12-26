@@ -4695,6 +4695,49 @@ async def autonomous_status() -> Dict[str, Any]:
 
 # ========================= TOOLS ENDPOINTS (BLOCK 4) =========================
 
+# -------------------------- /tools/list ------------------------------
+@app.get("/tools/list")
+async def tools_list() -> Dict[str, Any]:
+    """
+    List all available tools with their schemas.
+    
+    Returns all registered tools with:
+    - Name and description
+    - JSON Schema for parameters
+    - Example usage
+    - Category and configuration
+    
+    This endpoint is useful for:
+    - LLM tool selection
+    - API documentation
+    - Client tool discovery
+    
+    Returns:
+        JSON with list of tools and their full schemas
+    """
+    try:
+        from core.tool_registry import get_autonomous_tool_registry
+        
+        registry = get_autonomous_tool_registry()
+        tools = registry.get_tools_for_api(enabled_only=True)
+        
+        return {
+            "ok": True,
+            "tools": tools,
+            "count": len(tools),
+            "note": "Use POST /autonomous to execute goals using these tools"
+        }
+        
+    except Exception as e:
+        log.error(f"/tools/list error: {e}")
+        return {
+            "ok": False,
+            "tools": [],
+            "count": 0,
+            "error": str(e)
+        }
+
+
 # -------------------------- /tools/math ------------------------------
 class MathToolReq(BaseModel):
     expr: str
