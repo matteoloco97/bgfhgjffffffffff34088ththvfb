@@ -101,3 +101,6 @@ chroma_data/
 *.db
 *.sqlite
 *.sqlite3
+
+# Runtime status (changes frequently)
+status/status.json
