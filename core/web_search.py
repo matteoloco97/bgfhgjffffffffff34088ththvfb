@@ -1073,19 +1073,24 @@ def adaptive_synthesis(
     if not snippets:
         return ""
     
+    # Calculate char limit based on max_tokens (approx 4 chars per token)
+    char_limit = max_tokens * 4
+    
     if synthesis_mode == 'concise':
-        # Just the first snippet, shortened
+        # Just the first snippet, shortened based on max_tokens
         text = snippets[0]['text']
-        if len(text) > 200:
-            text = text[:200] + "..."
+        concise_limit = min(char_limit, 200)
+        if len(text) > concise_limit:
+            text = text[:concise_limit] + "..."
         return text
     
     elif synthesis_mode == 'detailed':
-        # First 3 snippets combined
+        # First 3 snippets combined, respecting max_tokens
         texts = [s['text'] for s in snippets[:3]]
         combined = " ".join(texts)
-        if len(combined) > 600:
-            combined = combined[:600] + "..."
+        detailed_limit = min(char_limit, 1200)
+        if len(combined) > detailed_limit:
+            combined = combined[:detailed_limit] + "..."
         return combined
     
     else:  # comprehensive
@@ -1097,6 +1102,12 @@ def adaptive_synthesis(
             output_parts.append(f"[{i}] {text}")
         
         combined = "\n\n".join(output_parts)
+        
+        # Truncate to max_tokens limit (leaving room for sources)
+        source_reserve = 500  # Reserve chars for sources
+        comprehensive_limit = max(char_limit - source_reserve, 500)
+        if len(combined) > comprehensive_limit:
+            combined = combined[:comprehensive_limit] + "..."
         
         # Add sources
         sources_list = [f"[{i}] {s['title']}: {s['url']}" 

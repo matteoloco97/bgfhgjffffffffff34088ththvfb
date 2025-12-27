@@ -18,6 +18,12 @@ import logging
 
 from core.datetime_helper import format_datetime_context
 
+# === Auto-Search Intelligence imports ===
+# Imported at module level for better performance
+from core.auto_search_detector import get_auto_search_detector
+from core.query_classifier import get_query_classifier
+from core.search_strategy_planner import get_search_strategy_planner
+
 # === Token budget utils (fallback interni se modulo non presente) ===
 try:
     from core.token_budget import approx_tokens, trim_to_tokens
@@ -495,10 +501,6 @@ async def process_with_auto_search(
             'confidence': float
         }
     """
-    from core.auto_search_detector import get_auto_search_detector
-    from core.query_classifier import get_query_classifier
-    from core.search_strategy_planner import get_search_strategy_planner
-    
     context = context or {}
     
     # Get detector and classifier instances
