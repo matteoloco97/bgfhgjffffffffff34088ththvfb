@@ -453,3 +453,379 @@ if __name__ == "__main__":
         asyncio.run(_run())
     except KeyboardInterrupt:
         print("Interrotto.")
+
+
+# ==================== Auto Web Search Intelligence Integration ====================
+
+async def process_with_auto_search(
+    user_message: str,
+    user_id: str,
+    context: Optional[Dict[str, Any]] = None,
+    persona: str = ""
+) -> Dict[str, Any]:
+    """
+    New intelligent flow with auto-search detection.
+    
+    Flow:
+    1. Classify intent (conversational/factual/live_data/research)
+    2. If conversational → direct response
+    3. If factual → check memory, then search if gap
+    4. If live_data → ALWAYS search with optimized strategy
+    5. If research → deep search multi-source
+    
+    Parameters
+    ----------
+    user_message : str
+        The user's message/query.
+    user_id : str
+        User identifier for memory context.
+    context : Dict, optional
+        Additional context information.
+    persona : str
+        System prompt/persona for the response.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        {
+            'response': str,
+            'sources': List[Dict],
+            'search_triggered': bool,
+            'search_reason': str,
+            'confidence': float
+        }
+    """
+    from core.auto_search_detector import get_auto_search_detector
+    from core.query_classifier import get_query_classifier
+    from core.search_strategy_planner import get_search_strategy_planner
+    
+    context = context or {}
+    
+    # Get detector and classifier instances
+    detector = get_auto_search_detector()
+    classifier = get_query_classifier()
+    planner = get_search_strategy_planner()
+    
+    # Step 1: Classify intent
+    intent_result = await classifier.classify_intent(user_message, context)
+    intent = intent_result.get('intent', 'factual')
+    
+    log.info(f"Auto-search: intent={intent}, confidence={intent_result.get('confidence', 0):.2f}")
+    
+    # Step 2: Check if search should be triggered
+    user_memory = context.get('user_memory', {})
+    search_decision = await detector.should_trigger_search(user_message, context, user_memory)
+    
+    should_search = search_decision.get('should_search', False)
+    search_reason = search_decision.get('search_reason', 'none')
+    search_type = search_decision.get('search_type', 'none')
+    
+    # Step 3: Handle based on intent
+    if intent == 'conversational' and not should_search:
+        # Direct LLM response for conversational
+        try:
+            response = await reply_with_llm(user_message, persona)
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': False,
+                'search_reason': 'conversational',
+                'confidence': intent_result.get('confidence', 0.9)
+            }
+        except Exception as e:
+            log.error(f"LLM error in conversational: {e}")
+            return {
+                'response': "Mi dispiace, c'è stato un problema nel generare la risposta.",
+                'sources': [],
+                'search_triggered': False,
+                'search_reason': 'error',
+                'confidence': 0.0
+            }
+    
+    if intent == 'calculation':
+        # Handle calculation directly
+        try:
+            response = await reply_with_llm(user_message, persona)
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': False,
+                'search_reason': 'calculation',
+                'confidence': intent_result.get('confidence', 0.95)
+            }
+        except Exception as e:
+            log.error(f"LLM error in calculation: {e}")
+            return {
+                'response': "Errore nel calcolo. Riprova.",
+                'sources': [],
+                'search_triggered': False,
+                'search_reason': 'error',
+                'confidence': 0.0
+            }
+    
+    # Step 4: Handle live_data or search-required queries
+    if should_search or intent in ['live_data', 'research', 'factual']:
+        data_type = search_decision.get('data_type', intent_result.get('sub_intent', 'general'))
+        
+        # Get search strategy
+        strategy = await planner.plan_search_strategy(user_message, intent_result)
+        
+        # Handle live data query
+        if intent == 'live_data' or data_type in ['price', 'weather', 'news', 'sports']:
+            return await _handle_live_data_query(user_message, data_type, context, persona, strategy)
+        
+        # Handle research query
+        if intent == 'research':
+            return await _handle_research_query(user_message, context, persona, strategy)
+        
+        # Handle factual query with potential search
+        return await _handle_factual_query(user_message, context, persona, strategy, intent_result)
+    
+    # Default: Direct LLM response
+    try:
+        response = await reply_with_llm(user_message, persona)
+        return {
+            'response': response,
+            'sources': [],
+            'search_triggered': False,
+            'search_reason': 'default_llm',
+            'confidence': 0.6
+        }
+    except Exception as e:
+        log.error(f"LLM error: {e}")
+        return {
+            'response': "Mi dispiace, si è verificato un errore.",
+            'sources': [],
+            'search_triggered': False,
+            'search_reason': 'error',
+            'confidence': 0.0
+        }
+
+
+async def _handle_live_data_query(
+    query: str,
+    data_type: str,
+    context: Dict[str, Any],
+    persona: str,
+    strategy: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Handle specialized live data query.
+    
+    Routes to specific tool (price_tool, weather_tool).
+    Bypasses cache if expired.
+    Uses concise synthesis.
+    """
+    from core.web_search import smart_search, adaptive_synthesis
+    
+    log.info(f"Handling live data query: type={data_type}")
+    
+    try:
+        # Perform smart search
+        search_result = await smart_search(
+            query,
+            strategy,
+            {'intent': 'live_data', 'sub_intent': data_type}
+        )
+        
+        results = search_result.get('results', [])
+        
+        if not results:
+            # Fallback to LLM with context about no results
+            response = await reply_with_llm(
+                f"Non ho trovato informazioni aggiornate su: {query}. "
+                "Basandomi sulla mia conoscenza, rispondo: " + query,
+                persona
+            )
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': True,
+                'search_reason': f'live_data:{data_type}',
+                'confidence': 0.5
+            }
+        
+        # Synthesize results
+        synthesis_mode = strategy.get('synthesis_mode', 'concise')
+        synthesized = adaptive_synthesis(results, synthesis_mode)
+        
+        # Build response with LLM
+        synthesis_prompt = (
+            f"Basandoti su queste informazioni recenti:\n\n{synthesized}\n\n"
+            f"Rispondi alla domanda: {query}"
+        )
+        
+        response = await reply_with_llm(synthesis_prompt, persona)
+        
+        sources = [{'url': r.get('url', ''), 'title': r.get('title', '')} 
+                   for r in results[:3]]
+        
+        return {
+            'response': response,
+            'sources': sources,
+            'search_triggered': True,
+            'search_reason': f'live_data:{data_type}',
+            'confidence': 0.85
+        }
+        
+    except Exception as e:
+        log.error(f"Live data query error: {e}")
+        return {
+            'response': f"Errore nel recupero dati live: {str(e)}",
+            'sources': [],
+            'search_triggered': True,
+            'search_reason': 'error',
+            'confidence': 0.0
+        }
+
+
+async def _handle_research_query(
+    query: str,
+    context: Dict[str, Any],
+    persona: str,
+    strategy: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Handle deep research query.
+    
+    Multi-source search, deep synthesis, source citation.
+    """
+    from core.web_search import smart_search, adaptive_synthesis
+    
+    log.info(f"Handling research query")
+    
+    try:
+        # Perform comprehensive search
+        search_result = await smart_search(
+            query,
+            strategy,
+            {'intent': 'research', 'sub_intent': 'deep_research'}
+        )
+        
+        results = search_result.get('results', [])
+        
+        if not results:
+            response = await reply_with_llm(query, persona)
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': True,
+                'search_reason': 'research',
+                'confidence': 0.6
+            }
+        
+        # Comprehensive synthesis
+        synthesized = adaptive_synthesis(results, 'comprehensive')
+        
+        synthesis_prompt = (
+            f"Fornisci una risposta dettagliata e approfondita basandoti su queste fonti:\n\n"
+            f"{synthesized}\n\n"
+            f"Domanda originale: {query}\n\n"
+            "Includi informazioni chiave e cita le fonti quando appropriato."
+        )
+        
+        response = await reply_with_llm(synthesis_prompt, persona)
+        
+        sources = [{'url': r.get('url', ''), 'title': r.get('title', '')} 
+                   for r in results[:5]]
+        
+        return {
+            'response': response,
+            'sources': sources,
+            'search_triggered': True,
+            'search_reason': 'research',
+            'confidence': 0.88
+        }
+        
+    except Exception as e:
+        log.error(f"Research query error: {e}")
+        return {
+            'response': f"Errore nella ricerca approfondita: {str(e)}",
+            'sources': [],
+            'search_triggered': True,
+            'search_reason': 'error',
+            'confidence': 0.0
+        }
+
+
+async def _handle_factual_query(
+    query: str,
+    context: Dict[str, Any],
+    persona: str,
+    strategy: Dict[str, Any],
+    intent_result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Handle factual query with optional search.
+    
+    Checks memory first, then searches if knowledge gap detected.
+    """
+    from core.web_search import smart_search, adaptive_synthesis
+    
+    log.info(f"Handling factual query")
+    
+    try:
+        # Check if search is really needed based on urgency
+        urgency = intent_result.get('search_urgency', 'low')
+        
+        if urgency == 'none':
+            # No search needed, use LLM directly
+            response = await reply_with_llm(query, persona)
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': False,
+                'search_reason': 'factual_no_search',
+                'confidence': intent_result.get('confidence', 0.7)
+            }
+        
+        # Perform search
+        search_result = await smart_search(
+            query,
+            strategy,
+            intent_result
+        )
+        
+        results = search_result.get('results', [])
+        
+        if not results:
+            response = await reply_with_llm(query, persona)
+            return {
+                'response': response,
+                'sources': [],
+                'search_triggered': True,
+                'search_reason': 'factual_no_results',
+                'confidence': 0.6
+            }
+        
+        # Synthesize
+        synthesized = adaptive_synthesis(results, 'detailed')
+        
+        synthesis_prompt = (
+            f"Rispondi alla domanda basandoti su queste informazioni:\n\n"
+            f"{synthesized}\n\n"
+            f"Domanda: {query}"
+        )
+        
+        response = await reply_with_llm(synthesis_prompt, persona)
+        
+        sources = [{'url': r.get('url', ''), 'title': r.get('title', '')} 
+                   for r in results[:3]]
+        
+        return {
+            'response': response,
+            'sources': sources,
+            'search_triggered': True,
+            'search_reason': 'factual',
+            'confidence': 0.80
+        }
+        
+    except Exception as e:
+        log.error(f"Factual query error: {e}")
+        return {
+            'response': f"Errore nel processare la domanda: {str(e)}",
+            'sources': [],
+            'search_triggered': True,
+            'search_reason': 'error',
+            'confidence': 0.0
+        }
