@@ -39,8 +39,8 @@ BAD_PATTERNS = [
 HALLUCINATION_PATTERNS = [
     # Generic placeholder prices (common hallucination)
     r"(prezzo|costo|valore)\s+(attuale\s+)?(è|di)\s+(circa\s+)?\d{2,3}[.,]\d{2}\s*(€|\$|euro|dollari)",
-    # Invented dates in the near future or past
-    r"(dal|il|nel)\s+\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+202[3-5]",
+    # Invented dates in the near future or past (dynamic range: 2023-2029)
+    r"(dal|il|nel)\s+\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+202[3-9]",
     # Generic percentage claims
     r"(aument|diminu|cresc|cal)[aeiou]+\s+del\s+\d{1,2}[.,]?\d*\s*%",
     # Fictional exact values without context

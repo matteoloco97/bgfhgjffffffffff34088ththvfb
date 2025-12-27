@@ -279,7 +279,8 @@ class WebResearchAgent:
             try:
                 results = await web_search_async(current_query, num=10) or []
             except Exception as e:
-                log.warning(f"Web search failed for query '{current_query}': {e}")
+                # Truncate query in log to avoid logging sensitive data
+                log.warning(f"Web search failed: {e}")
                 results = []
 
             # Deduplica risultati
