@@ -651,10 +651,14 @@ async def _handle_live_data_query(
         synthesis_mode = strategy.get('synthesis_mode', 'concise')
         synthesized = adaptive_synthesis(results, synthesis_mode)
         
-        # Build response with LLM
+        # Build response with LLM - ANTI-HALLUCINATION prompt
         synthesis_prompt = (
-            f"Basandoti su queste informazioni recenti:\n\n{synthesized}\n\n"
-            f"Rispondi alla domanda: {query}"
+            f"REGOLA FONDAMENTALE: Rispondi SOLO usando le informazioni seguenti. "
+            f"NON inventare dati, numeri o fatti non presenti.\n\n"
+            f"DATI DISPONIBILI:\n{synthesized}\n\n"
+            f"DOMANDA: {query}\n\n"
+            f"Se i dati non contengono l'informazione richiesta, dillo chiaramente. "
+            f"Rispondi in modo conciso e accurato:"
         )
         
         response = await reply_with_llm(synthesis_prompt, persona)
@@ -720,10 +724,12 @@ async def _handle_research_query(
         synthesized = adaptive_synthesis(results, 'comprehensive')
         
         synthesis_prompt = (
-            f"Fornisci una risposta dettagliata e approfondita basandoti su queste fonti:\n\n"
-            f"{synthesized}\n\n"
-            f"Domanda originale: {query}\n\n"
-            "Includi informazioni chiave e cita le fonti quando appropriato."
+            f"REGOLA FONDAMENTALE: Rispondi SOLO usando le informazioni seguenti. "
+            f"NON inventare dati, numeri o fatti non presenti nelle fonti.\n\n"
+            f"FONTI DISPONIBILI:\n{synthesized}\n\n"
+            f"DOMANDA: {query}\n\n"
+            f"Fornisci una risposta dettagliata basandoti ESCLUSIVAMENTE sui dati presenti. "
+            f"Se un'informazione richiesta non è nelle fonti, indicalo chiaramente."
         )
         
         response = await reply_with_llm(synthesis_prompt, persona)
@@ -804,9 +810,11 @@ async def _handle_factual_query(
         synthesized = adaptive_synthesis(results, 'detailed')
         
         synthesis_prompt = (
-            f"Rispondi alla domanda basandoti su queste informazioni:\n\n"
-            f"{synthesized}\n\n"
-            f"Domanda: {query}"
+            f"REGOLA FONDAMENTALE: Rispondi SOLO usando le informazioni seguenti. "
+            f"NON inventare dati, numeri o fatti non presenti.\n\n"
+            f"INFORMAZIONI DISPONIBILI:\n{synthesized}\n\n"
+            f"DOMANDA: {query}\n\n"
+            f"Rispondi in modo accurato. Se l'informazione richiesta non è presente, indicalo."
         )
         
         response = await reply_with_llm(synthesis_prompt, persona)

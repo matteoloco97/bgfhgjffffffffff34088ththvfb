@@ -28,11 +28,11 @@ from core.chat_engine import reply_with_llm
 
 log = logging.getLogger(__name__)
 
-# web_search è sincrona, ma la usiamo direttamente (come in _web_search_pipeline)
+# CRITICAL FIX: web_search is now ASYNC - import correctly
 try:
-    from core.web_search import search as web_search_simple
+    from core.web_search import search as web_search_async
 except Exception:
-    web_search_simple = None  # type: ignore
+    web_search_async = None  # type: ignore
 
 # Per limitare il contesto
 try:
@@ -256,7 +256,7 @@ class WebResearchAgent:
         self.seen_urls = set()
         self.seen_domains = {}
 
-        if not web_search_simple:
+        if not web_search_async:
             return {
                 "answer": (
                     "Il motore di ricerca interno non è configurato, quindi non posso "
@@ -275,10 +275,11 @@ class WebResearchAgent:
         for step_num in range(1, self.max_steps + 1):
             step_start = time.perf_counter()
 
-            # STEP N: ricerca SERP
+            # STEP N: ricerca SERP - CRITICAL FIX: await async search
             try:
-                results = web_search_simple(current_query, num=10) or []
-            except Exception:
+                results = await web_search_async(current_query, num=10) or []
+            except Exception as e:
+                log.warning(f"Web search failed for query '{current_query}': {e}")
                 results = []
 
             # Deduplica risultati
@@ -358,10 +359,13 @@ class WebResearchAgent:
         ctx = "\n\n".join(ctx_parts)
         ctx = trim_to_tokens(ctx, WEB_RESEARCH_BUDGET_TOK)
 
-        # === Prompt finale ULTRA-AGGRESSIVO V3 (con formato standardizzato) ===
+        # === Prompt finale V4 - ANTI-HALLUCINATION (grounded response) ===
         user_prompt = (
-            "CONTESTO: Sei un ricercatore esperto che DEVE SEMPRE fornire valore massimo, "
-            "anche con informazioni parziali o incomplete.\n"
+            "CONTESTO: Sei un assistente che risponde ESCLUSIVAMENTE basandosi sui dati forniti.\n"
+            "\n"
+            "=== REGOLA FONDAMENTALE ===\n"
+            "NON INVENTARE MAI dati, numeri, date, prezzi o fatti non presenti negli estratti.\n"
+            "Se un'informazione NON è negli estratti, NON la citare.\n"
             "\n"
             "HAI A DISPOSIZIONE questi estratti da pagine web:\n"
             f"{ctx}\n"
@@ -369,51 +373,42 @@ class WebResearchAgent:
             "DOMANDA UTENTE:\n"
             f"{query}\n"
             "\n"
-            "=== REGOLE CRITICHE (VIOLAZIONE = FALLIMENTO) ===\n"
+            "=== REGOLE CRITICHE ===\n"
             "\n"
-            "1. **VIETATO ASSOLUTAMENTE**:\n"
-            "   - Dire 'non ho abbastanza informazioni'\n"
-            "   - Dire 'le fonti non contengono'\n"
-            "   - Dire 'consulta/apri/visita le fonti'\n"
-            "   - Dire 'per maggiori dettagli vai a...'\n"
-            "   - Qualsiasi frase che rimanda l'utente altrove\n"
+            "1. **USA SOLO I DATI PRESENTI NEGLI ESTRATTI**:\n"
+            "   - Cita SOLO numeri, date, prezzi che sono ESPLICITAMENTE scritti negli estratti\n"
+            "   - Se un dato non è presente, NON inventarlo\n"
+            "   - Preferisci dire 'gli estratti non riportano questo dato' piuttosto che inventare\n"
             "\n"
-            "2. **OBBLIGATORIO**:\n"
-            "   - Sintetizza TUTTO ciò che è presente negli estratti\n"
-            "   - Se mancano dati specifici, usa: 'Gli estratti coprono [A, B, C] ma non "
-            "menzionano [X]'\n"
-            "   - SEMPRE fornire almeno 3-4 facts concreti trovati\n"
-            "   - Se informazioni parziali, dillo ma poi fornisci quello che c'è\n"
+            "2. **COSA FARE SE I DATI SONO PARZIALI**:\n"
+            "   - Riporta TUTTO quello che trovi effettivamente negli estratti\n"
+            "   - Se trovi informazioni correlate ma non esattamente ciò che è stato chiesto, riportale\n"
+            "   - Indica chiaramente cosa è presente e cosa manca\n"
             "\n"
-            "3. **NUMERI E DATI**:\n"
-            "   - Se trovi numeri (prezzi, date, %, quantità), riportali CON UNITÀ\n"
-            "   - Esempio CORRETTO: 'Il prezzo attuale è €45.50'\n"
-            "   - Esempio SBAGLIATO: 'Il prezzo è indicato nelle fonti'\n"
+            "3. **FORMATO RISPOSTA**:\n"
             "\n"
-            "4. **FORMATO RISPOSTA STANDARDIZZATO**:\n"
-            "   Usa ESATTAMENTE questo formato:\n"
+            "   📌 **[Titolo argomento]**\n"
             "\n"
-            "   📌 **[Titolo breve argomento]**\n"
+            "   **✅ Informazioni dalle fonti:**\n"
+            "   • [Solo fatti trovati negli estratti - con numeri esatti se presenti]\n"
+            "   • [Altro fatto presente]\n"
             "\n"
-            "   **✅ Dati verificati:**\n"
-            "   • [Fatto 1 con numeri/date se presenti]\n"
-            "   • [Fatto 2]\n"
-            "   • [Fatto 3]\n"
+            "   **⚠️ Nota:** [Se mancano dati specifici, indicalo qui onestamente]\n"
             "\n"
-            "   **⚠️ Analisi/Interpretazione:**\n"
-            "   [1-2 frasi con considerazioni, trend, o cosa significano i dati]\n"
+            "4. **SE GLI ESTRATTI NON CONTENGONO INFO RILEVANTI**:\n"
+            "   Rispondi così:\n"
+            "   📌 **Ricerca Web**\n"
+            "   \n"
+            "   Gli estratti disponibili non contengono informazioni specifiche su [argomento richiesto].\n"
+            "   \n"
+            "   **Contenuti trovati:** [descrivi brevemente cosa c'è nelle fonti]\n"
             "\n"
-            "5. **SE DAVVERO MANCANO INFO**:\n"
-            "   - Descrivi cosa c'È invece di cosa manca\n"
-            "   - Esempio: 'Le fonti parlano di [tema generale] e menzionano [dettagli A, B].'\n"
-            "   - Mai solo 'non c'è abbastanza' senza dare nulla\n"
+            "5. **VERIFICA FINALE PRIMA DI RISPONDERE**:\n"
+            "   - Ho citato SOLO dati presenti negli estratti? ✓\n"
+            "   - Ho evitato di inventare numeri/date/prezzi? ✓\n"
+            "   - Ho indicato chiaramente se mancano informazioni? ✓\n"
             "\n"
-            "6. **VERIFICA FINALE**:\n"
-            "   - La risposta contiene almeno 3 facts concreti? ✓\n"
-            "   - Hai usato i blocchi ✅ e ⚠️? ✓\n"
-            "   - L'utente ottiene valore senza aprire le fonti? ✓\n"
-            "\n"
-            "RISPONDI ORA in italiano seguendo il formato:"
+            "RISPONDI ORA in italiano:"
         )
 
         try:

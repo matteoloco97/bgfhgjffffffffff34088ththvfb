@@ -1054,7 +1054,7 @@ def adaptive_synthesis(
     - 'comprehensive': Multi-paragraph with sources (for research)
     """
     if not results:
-        return ""
+        return "[NESSUN RISULTATO DI RICERCA DISPONIBILE - NON inventare informazioni]"
     
     # Extract snippets and titles
     snippets = []
@@ -1071,7 +1071,11 @@ def adaptive_synthesis(
             })
     
     if not snippets:
-        return ""
+        # We have results but no snippets - provide titles at least
+        titles_only = [f"• {r.get('title', 'Senza titolo')}" for r in results[:5] if r.get('title')]
+        if titles_only:
+            return "[NOTA: Gli snippets non sono disponibili. Titoli delle fonti trovate:\n" + "\n".join(titles_only) + "\n\nNON inventare contenuti non presenti in questi titoli]"
+        return "[NESSUN CONTENUTO TESTUALE DISPONIBILE - NON inventare informazioni]"
     
     # Calculate char limit based on max_tokens (approx 4 chars per token)
     char_limit = max_tokens * 4
