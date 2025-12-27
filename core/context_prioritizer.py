@@ -65,6 +65,7 @@ MIN_CONTEXT_ITEM_TOKENS = _env_int("MIN_CONTEXT_ITEM_TOKENS", 10)
 
 # Lazy imports
 _np = None
+_semantic_analyzer = None
 
 
 def _get_numpy():
@@ -78,6 +79,20 @@ def _get_numpy():
             log.warning("NumPy not installed")
             _np = False
     return _np if _np is not False else None
+
+
+def _get_semantic_analyzer():
+    """Lazy import semantic analyzer to avoid circular imports."""
+    global _semantic_analyzer
+    if _semantic_analyzer is None:
+        try:
+            from core.semantic_context_analyzer import get_semantic_analyzer
+            _semantic_analyzer = get_semantic_analyzer()
+            log.debug("Semantic analyzer loaded for context prioritizer")
+        except ImportError as e:
+            log.debug(f"Semantic analyzer not available: {e}")
+            _semantic_analyzer = False
+    return _semantic_analyzer if _semantic_analyzer is not False else None
 
 
 # === Token Utilities ===
@@ -345,21 +360,23 @@ class ContextPrioritizer:
         query: str
     ) -> None:
         """Update relevance scores based on current query."""
-        try:
-            from core.semantic_context_analyzer import get_semantic_analyzer
-            analyzer = get_semantic_analyzer()
-            
-            for item in items:
-                similarity = analyzer.compute_similarity(query, item.content)
-                item.relevance_score = similarity
-        except Exception as e:
-            log.debug(f"Could not compute semantic relevance: {e}")
-            # Fallback: simple keyword overlap
-            query_words = set(query.lower().split())
-            for item in items:
-                content_words = set(item.content.lower().split())
-                overlap = len(query_words & content_words)
-                item.relevance_score = min(1.0, overlap / max(len(query_words), 1))
+        # Use lazy-loaded semantic analyzer
+        analyzer = _get_semantic_analyzer()
+        if analyzer is not None:
+            try:
+                for item in items:
+                    similarity = analyzer.compute_similarity(query, item.content)
+                    item.relevance_score = similarity
+                return
+            except Exception as e:
+                log.debug(f"Could not compute semantic relevance: {e}")
+        
+        # Fallback: simple keyword overlap
+        query_words = set(query.lower().split())
+        for item in items:
+            content_words = set(item.content.lower().split())
+            overlap = len(query_words & content_words)
+            item.relevance_score = min(1.0, overlap / max(len(query_words), 1))
     
     def _compress_item(
         self,

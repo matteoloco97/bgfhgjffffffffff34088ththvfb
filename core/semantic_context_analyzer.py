@@ -61,6 +61,7 @@ TOPIC_DECAY_HALF_LIFE_HOURS = _env_float("TOPIC_DECAY_HALF_LIFE_HOURS", 24.0)
 # Lazy imports
 _embedding_function = None
 _np = None
+_concept_extractor = None
 
 
 def _get_numpy():
@@ -91,12 +92,37 @@ def _get_embedding_function():
     return _embedding_function if _embedding_function is not False else None
 
 
+def _get_concept_extractor():
+    """Lazy import concept extractor module."""
+    global _concept_extractor
+    if _concept_extractor is None:
+        try:
+            from core import concept_extractor as ce
+            _concept_extractor = ce
+            log.info("Concept extractor loaded for semantic analysis")
+        except ImportError as e:
+            log.warning(f"Concept extractor not available, using fallback: {e}")
+            _concept_extractor = False
+    return _concept_extractor if _concept_extractor is not False else None
+
+
 # === Data Classes ===
 @dataclass
 class Topic:
-    """Represents an extracted topic with metadata."""
+    """
+    Represents an extracted topic with metadata.
+    
+    Attributes:
+        text: The topic text/name (e.g., "Python", "FastAPI")
+        importance: Importance score from 0.0 to 2.0 (1.0 = default, boosted by frequency)
+        frequency: Number of times this topic has been mentioned
+        first_seen: Unix timestamp when topic was first extracted
+        last_seen: Unix timestamp when topic was last seen
+        related_topics: List of semantically related topic texts
+        context_source: Origin of the topic ("user", "assistant", "both")
+    """
     text: str
-    importance: float = 1.0
+    importance: float = 1.0  # Range: 0.0-2.0, default 1.0
     frequency: int = 1
     first_seen: int = field(default_factory=lambda: int(time.time()))
     last_seen: int = field(default_factory=lambda: int(time.time()))
@@ -255,38 +281,40 @@ class SemanticContextAnalyzer:
         
         topics = []
         
-        try:
-            from core.concept_extractor import extract_concepts
-            
-            concepts = extract_concepts(text)
-            
-            for concept in concepts[:MAX_TOPICS_PER_CONTEXT]:
-                topic_text = concept.text
+        # Use lazy-loaded concept extractor
+        ce = _get_concept_extractor()
+        if ce is not None:
+            try:
+                concepts = ce.extract_concepts(text)
                 
-                # Check if topic already exists in cache
-                if topic_text in self._topic_cache:
-                    existing = self._topic_cache[topic_text]
-                    existing.frequency += 1
-                    existing.last_seen = int(time.time())
-                    existing.importance = min(existing.importance * 1.1, 2.0)  # Boost importance, cap at 2.0
-                    topics.append(existing)
-                else:
-                    # Create new topic
-                    new_topic = Topic(
-                        text=topic_text,
-                        importance=concept.confidence,
-                        frequency=1,
-                        context_source=context_source,
-                    )
-                    self._topic_cache[topic_text] = new_topic
-                    topics.append(new_topic)
-            
-        except Exception as e:
-            log.warning(f"Topic extraction failed: {e}")
-            # Fallback: extract capitalized words as topics
-            topics = self._extract_topics_fallback(text, context_source)
+                for concept in concepts[:MAX_TOPICS_PER_CONTEXT]:
+                    topic_text = concept.text
+                    
+                    # Check if topic already exists in cache
+                    if topic_text in self._topic_cache:
+                        existing = self._topic_cache[topic_text]
+                        existing.frequency += 1
+                        existing.last_seen = int(time.time())
+                        existing.importance = min(existing.importance * 1.1, 2.0)  # Boost importance, cap at 2.0
+                        topics.append(existing)
+                    else:
+                        # Create new topic
+                        new_topic = Topic(
+                            text=topic_text,
+                            importance=concept.confidence,
+                            frequency=1,
+                            context_source=context_source,
+                        )
+                        self._topic_cache[topic_text] = new_topic
+                        topics.append(new_topic)
+                
+                return topics
+                
+            except Exception as e:
+                log.warning(f"Topic extraction failed: {e}")
         
-        return topics
+        # Fallback: extract capitalized words as topics
+        return self._extract_topics_fallback(text, context_source)
     
     def _extract_topics_fallback(
         self,
