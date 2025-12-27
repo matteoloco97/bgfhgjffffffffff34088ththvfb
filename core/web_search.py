@@ -2,7 +2,7 @@
 import os, re, html, time
 import asyncio
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from urllib.parse import urlparse, parse_qs, unquote, quote_plus, urlunparse, urlencode
 
 # Async HTTP client
@@ -884,3 +884,299 @@ async def search(query: str, num: int = 8) -> List[Dict[str, str]]:
     final = _rank_by_domain_policy(norm_all, q)[:num]
     _cache_set(q, num, final)
     return final
+
+
+# ================= Smart Search Methods (Auto-Web Search Intelligence) =================
+
+async def smart_search(
+    query: str,
+    strategy: Dict[str, Any],
+    intent: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Intelligent search with optimized strategy.
+    
+    Chooses best engines based on intent, applies temporal filters if relevant,
+    and optimizes result count based on urgency.
+    
+    Parameters
+    ----------
+    query : str
+        The search query.
+    strategy : Dict
+        Search strategy from SearchStrategyPlanner.
+    intent : Dict
+        Intent classification from QueryClassifier.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        {
+            'results': List[Dict],
+            'sources_used': List[str],
+            'cache_hit': bool,
+            'search_time_ms': int
+        }
+    """
+    import time
+    
+    start_time = time.perf_counter()
+    
+    # Extract strategy parameters
+    max_results = strategy.get('max_results', 5)
+    timeout = strategy.get('timeout', 15)
+    sources = strategy.get('sources', ['web_search'])
+    cache_policy = strategy.get('cache_policy', 'normal')
+    
+    # Check cache first unless bypassing
+    cache_hit = False
+    if cache_policy != 'bypass':
+        cached = _cache_get(query, max_results)
+        if cached is not None:
+            cache_hit = True
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            return {
+                'results': cached,
+                'sources_used': ['cache'],
+                'cache_hit': True,
+                'search_time_ms': elapsed_ms
+            }
+    
+    # Perform search based on strategy
+    results = []
+    sources_used = []
+    
+    if 'web_search' in sources:
+        try:
+            web_results = await search(query, max_results)
+            results.extend(web_results)
+            sources_used.append('web_search')
+        except Exception as e:
+            _log(f"Smart search web_search error: {e}")
+    
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    
+    return {
+        'results': results[:max_results],
+        'sources_used': sources_used,
+        'cache_hit': cache_hit,
+        'search_time_ms': elapsed_ms
+    }
+
+
+async def parallel_multi_source_search(
+    queries: List[str],
+    sources: List[str]
+) -> List[Dict[str, str]]:
+    """
+    Parallel search across multiple sources.
+    
+    Searches web search, specific APIs (price, weather, news),
+    and memory/ChromaDB concurrently. Merges and deduplicates results.
+    
+    Parameters
+    ----------
+    queries : List[str]
+        List of search queries to execute.
+    sources : List[str]
+        List of sources to search: ['web_search', 'price_api', 'weather_api', 'memory']
+    
+    Returns
+    -------
+    List[Dict[str, str]]
+        Merged and deduplicated results.
+    """
+    all_results: List[Dict[str, str]] = []
+    seen_urls: set = set()
+    
+    # Execute searches in parallel
+    tasks = []
+    
+    for query in queries:
+        if 'web_search' in sources:
+            tasks.append(_search_with_label(query, 'web_search'))
+    
+    if tasks:
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results_list:
+            if isinstance(result, Exception):
+                _log(f"Parallel search error: {result}")
+                continue
+            
+            if isinstance(result, tuple) and len(result) == 2:
+                source_results, label = result
+                for r in source_results:
+                    url = r.get('url', '')
+                    if url and url not in seen_urls:
+                        r['source'] = label
+                        all_results.append(r)
+                        seen_urls.add(url)
+    
+    return all_results
+
+
+async def _search_with_label(query: str, label: str) -> Tuple[List[Dict[str, str]], str]:
+    """Helper to search and return results with source label."""
+    try:
+        results = await search(query, 10)
+        return (results, label)
+    except Exception as e:
+        _log(f"Search error for {label}: {e}")
+        return ([], label)
+
+
+def adaptive_synthesis(
+    results: List[Dict[str, str]],
+    synthesis_mode: str,
+    max_tokens: int = 300
+) -> str:
+    """
+    Adaptive synthesis based on mode.
+    
+    Parameters
+    ----------
+    results : List[Dict]
+        Search results to synthesize.
+    synthesis_mode : str
+        Mode: 'concise', 'detailed', 'comprehensive'.
+    max_tokens : int
+        Maximum tokens for output.
+    
+    Returns
+    -------
+    str
+        Synthesized content ready for LLM response.
+    
+    Modes:
+    - 'concise': 2-3 sentences, essential data (for price, weather)
+    - 'detailed': Full paragraph (for news)
+    - 'comprehensive': Multi-paragraph with sources (for research)
+    """
+    if not results:
+        return ""
+    
+    # Extract snippets and titles
+    snippets = []
+    for r in results:
+        snippet = r.get('snippet', '')
+        title = r.get('title', '')
+        url = r.get('url', '')
+        
+        if snippet:
+            snippets.append({
+                'text': snippet,
+                'title': title,
+                'url': url
+            })
+    
+    if not snippets:
+        return ""
+    
+    # Calculate char limit based on max_tokens (approx 4 chars per token)
+    char_limit = max_tokens * 4
+    
+    if synthesis_mode == 'concise':
+        # Just the first snippet, shortened based on max_tokens
+        text = snippets[0]['text']
+        concise_limit = min(char_limit, 200)
+        if len(text) > concise_limit:
+            text = text[:concise_limit] + "..."
+        return text
+    
+    elif synthesis_mode == 'detailed':
+        # First 3 snippets combined, respecting max_tokens
+        texts = [s['text'] for s in snippets[:3]]
+        combined = " ".join(texts)
+        detailed_limit = min(char_limit, 1200)
+        if len(combined) > detailed_limit:
+            combined = combined[:detailed_limit] + "..."
+        return combined
+    
+    else:  # comprehensive
+        # All snippets with source references
+        output_parts = []
+        for i, s in enumerate(snippets[:5], 1):
+            text = s['text']
+            title = s['title']
+            output_parts.append(f"[{i}] {text}")
+        
+        combined = "\n\n".join(output_parts)
+        
+        # Truncate to max_tokens limit (leaving room for sources)
+        source_reserve = 500  # Reserve chars for sources
+        comprehensive_limit = max(char_limit - source_reserve, 500)
+        if len(combined) > comprehensive_limit:
+            combined = combined[:comprehensive_limit] + "..."
+        
+        # Add sources
+        sources_list = [f"[{i}] {s['title']}: {s['url']}" 
+                       for i, s in enumerate(snippets[:5], 1)]
+        sources_text = "\n".join(sources_list)
+        
+        return f"{combined}\n\n---\nFonti:\n{sources_text}"
+
+
+# ================= Factory Functions =================
+
+class WebSearch:
+    """
+    Web Search class for smart search operations.
+    Provides methods for intelligent, strategy-based searching.
+    """
+    
+    def __init__(self):
+        """Initialize WebSearch instance."""
+        pass
+    
+    async def smart_search(
+        self,
+        query: str,
+        strategy: Dict[str, Any],
+        intent: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Intelligent search with optimized strategy.
+        Delegates to module-level smart_search function.
+        """
+        return await smart_search(query, strategy, intent)
+    
+    async def parallel_multi_source_search(
+        self,
+        queries: List[str],
+        sources: List[str]
+    ) -> List[Dict[str, str]]:
+        """
+        Parallel search across multiple sources.
+        Delegates to module-level function.
+        """
+        return await parallel_multi_source_search(queries, sources)
+    
+    def adaptive_synthesis(
+        self,
+        results: List[Dict[str, str]],
+        synthesis_mode: str,
+        max_tokens: int = 300
+    ) -> str:
+        """
+        Adaptive synthesis based on mode.
+        Delegates to module-level function.
+        """
+        return adaptive_synthesis(results, synthesis_mode, max_tokens)
+    
+    async def search(self, query: str, num: int = 8) -> List[Dict[str, str]]:
+        """
+        Standard search wrapper.
+        """
+        return await search(query, num)
+
+
+_web_search_instance: Optional[WebSearch] = None
+
+
+def get_web_search() -> WebSearch:
+    """Get singleton WebSearch instance."""
+    global _web_search_instance
+    if _web_search_instance is None:
+        _web_search_instance = WebSearch()
+    return _web_search_instance
