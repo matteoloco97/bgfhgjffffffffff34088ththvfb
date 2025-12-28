@@ -3966,6 +3966,10 @@ async def chat_stream(payload: dict = Body(...)):
             # ======== Stream response (either from auto-search or direct LLM) ========
             token_count = 0
             accumulated_text = ""
+            stream_start_time = time.perf_counter()  # Track timing from start
+            
+            # Streaming chunk size constant for auto-search responses
+            AUTOSEARCH_STREAM_CHUNK_SIZE = 10  # characters per chunk
             
             if use_auto_search_response and auto_search_result:
                 # Stream the pre-computed auto-search response (contains real data)
@@ -3980,9 +3984,8 @@ async def chat_stream(payload: dict = Body(...)):
                 
                 # Stream the response character by character (simulated streaming)
                 # Use chunks for efficiency
-                chunk_size = 10  # characters per chunk
-                for i in range(0, len(response_text), chunk_size):
-                    chunk_text = response_text[i:i+chunk_size]
+                for i in range(0, len(response_text), AUTOSEARCH_STREAM_CHUNK_SIZE):
+                    chunk_text = response_text[i:i+AUTOSEARCH_STREAM_CHUNK_SIZE]
                     accumulated_text += chunk_text
                     token_count += 1
                     yield create_token_message(chunk_text, token_count - 1)
@@ -3990,7 +3993,7 @@ async def chat_stream(payload: dict = Body(...)):
                     await asyncio.sleep(0.01)
                 
                 # Stream complete
-                elapsed_ms = int(time.perf_counter() * 1000) % 100000  # Approximate elapsed
+                elapsed_ms = int((time.perf_counter() - stream_start_time) * 1000)  # Accurate elapsed time
                 
                 # Record conversation turn for episodic memory
                 try:
