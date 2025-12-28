@@ -123,7 +123,7 @@ except Exception:  # pragma: no cover
         return base
 
 
-from core.chat_engine import reply_with_llm, reply_with_llm_streaming
+from core.chat_engine import reply_with_llm, reply_with_llm_streaming, process_with_auto_search
 from core.memory_autosave import autosave
 from core.streaming_utils import (
     format_sse_message,
@@ -3928,13 +3928,111 @@ async def chat_stream(payload: dict = Body(...)):
 
             sys_trim = trim_to_tokens(full_sys, 600)
 
+            # ======== AUTO-SEARCH INTELLIGENCE ========
+            # First, check if this query needs web search (live_data, research, factual)
+            yield create_thinking_message("Classifying intent and checking if search needed...")
+            
+            auto_search_result = None
+            use_auto_search_response = False
+            
+            try:
+                auto_search_result = await process_with_auto_search(
+                    user_message=text,
+                    user_id=user_id,
+                    context={"user_memory": memory_context_dict},
+                    persona=sys_trim
+                )
+                
+                # Log the auto-search decision
+                search_triggered = auto_search_result.get('search_triggered', False)
+                search_reason = auto_search_result.get('search_reason', 'unknown')
+                intent_confidence = auto_search_result.get('confidence', 0)
+                
+                log.info(f"Auto-search: triggered={search_triggered}, reason={search_reason}, confidence={intent_confidence:.2f}")
+                
+                # If search was triggered, use the auto-search response (contains real data)
+                if search_triggered:
+                    use_auto_search_response = True
+                    log.info(f"Using auto-search response with sources: {len(auto_search_result.get('sources', []))}")
+                    
+            except Exception as e:
+                log.warning(f"Auto-search processing failed, falling back to direct LLM: {e}")
+                auto_search_result = None
+                use_auto_search_response = False
+
             # ======== Send thinking complete ========
             yield create_thinking_message("Generating response...")
 
-            # ======== Stream LLM response ========
+            # ======== Stream response (either from auto-search or direct LLM) ========
             token_count = 0
             accumulated_text = ""
+            stream_start_time = time.perf_counter()  # Track timing from start
             
+            # Streaming chunk size constant for auto-search responses
+            AUTOSEARCH_STREAM_CHUNK_SIZE = 10  # characters per chunk
+            
+            if use_auto_search_response and auto_search_result:
+                # Stream the pre-computed auto-search response (contains real data)
+                response_text = auto_search_result.get('response', '')
+                sources = auto_search_result.get('sources', [])
+                
+                # Add sources footer if available
+                if sources:
+                    source_lines = [f"• {s.get('title', 'Link')}: {s.get('url', '')}" for s in sources[:3] if s.get('url')]
+                    if source_lines:
+                        response_text += "\n\n📚 Fonti:\n" + "\n".join(source_lines)
+                
+                # Stream the response character by character (simulated streaming)
+                # Use chunks for efficiency
+                for i in range(0, len(response_text), AUTOSEARCH_STREAM_CHUNK_SIZE):
+                    chunk_text = response_text[i:i+AUTOSEARCH_STREAM_CHUNK_SIZE]
+                    accumulated_text += chunk_text
+                    token_count += 1
+                    yield create_token_message(chunk_text, token_count - 1)
+                    # Small delay to simulate streaming (optional, can be removed for faster response)
+                    await asyncio.sleep(0.01)
+                
+                # Stream complete
+                elapsed_ms = int((time.perf_counter() - stream_start_time) * 1000)  # Accurate elapsed time
+                
+                # Record conversation turn for episodic memory
+                try:
+                    from core.memory_manager import record_conversation_turn
+                    record_result = await record_conversation_turn(
+                        conversation_id=conversation_id,
+                        user_message=text,
+                        assistant_message=accumulated_text,
+                        user_id=user_id,
+                        llm_func=reply_with_llm
+                    )
+                    if record_result.get("summarized"):
+                        log.info(f"[memory] Created conversation summary for {conversation_id}")
+                except Exception as e:
+                    log.warning(f"Record conversation turn failed: {e}")
+                
+                # Autosave output
+                try:
+                    if accumulated_text:
+                        asv_out = autosave(accumulated_text, source="chat_reply_stream_autosearch")
+                        if any([asv_out.get("facts"), asv_out.get("prefs"), asv_out.get("bet")]):
+                            log.info(f"[autosave:chat_reply_stream_autosearch] {asv_out}")
+                except Exception as e:
+                    log.warning(f"AutoSave chat_reply_stream failed: {e}")
+                
+                # Send completion
+                yield create_done_message(
+                    total_tokens=token_count,
+                    metadata={
+                        "elapsed_ms": elapsed_ms,
+                        "source": src,
+                        "source_id": sid,
+                        "auto_search": True,
+                        "search_reason": auto_search_result.get('search_reason', 'unknown'),
+                    }
+                )
+                return  # Exit generator after auto-search response
+            
+            # ======== Fallback: Direct LLM Streaming (conversational queries) ========
             async for chunk in reply_with_llm_streaming(text, sys_trim):
                 chunk_type = chunk.get("type")
                 
