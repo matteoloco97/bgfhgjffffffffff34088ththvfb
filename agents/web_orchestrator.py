@@ -101,9 +101,10 @@ def build_synthesis_prompt(query: str, docs: List[Dict[str, str]]) -> str:
     docs: [{idx:int,title:str,url:str,content:str}]
     """
     header = (
-        "Sei un assistente che risponde SOLO usando le fonti fornite.\n"
+        "REGOLA FONDAMENTALE: Rispondi ESCLUSIVAMENTE usando i dati presenti nelle fonti.\n"
+        "NON INVENTARE MAI dati, numeri, date o fatti non esplicitamente presenti.\n\n"
         "Cita in linea come [1], [2]… quando usi una fonte. Mantieni la risposta concisa e pratica.\n"
-        "Se l'informazione non è presente nelle fonti, dillo chiaramente.\n\n"
+        "Se l'informazione richiesta NON è presente nelle fonti, dillo CHIARAMENTE.\n\n"
         f"Domanda: {query}\n\n"
         "Fonti:\n"
     )

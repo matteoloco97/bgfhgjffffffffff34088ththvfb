@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # core/synthesis_validator.py — Validazione qualità sintesi web
 # Rileva risposte evasive e valida presenza di facts concreti
+# V2: Added hallucination detection
 
 from __future__ import annotations
 import re
@@ -34,6 +35,20 @@ BAD_PATTERNS = [
     r"mi\s+dispiace.*non",
 ]
 
+# === HALLUCINATION INDICATORS (patterns that suggest invented data) ===
+HALLUCINATION_PATTERNS = [
+    # Generic placeholder prices (common hallucination)
+    r"(prezzo|costo|valore)\s+(attuale\s+)?(è|di)\s+(circa\s+)?\d{2,3}[.,]\d{2}\s*(€|\$|euro|dollari)",
+    # Invented dates in the near future or past (dynamic range: 2023-2029)
+    r"(dal|il|nel)\s+\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+202[3-9]",
+    # Generic percentage claims
+    r"(aument|diminu|cresc|cal)[aeiou]+\s+del\s+\d{1,2}[.,]?\d*\s*%",
+    # Fictional exact values without context
+    r"esattamente\s+\d+[.,]\d+",
+    # Phrases indicating speculation as fact
+    r"(secondo\s+(le\s+)?stime|si\s+stima\s+che|probabilmente|potrebbe\s+essere)",
+]
+
 # === QUALITY INDICATORS (presenza richiesta) ===
 FACT_PATTERNS = [
     r'\d+',                              # Numeri
@@ -60,6 +75,7 @@ class SynthesisValidator:
     2. Presenza facts concreti (numeri, date, nomi)
     3. Lunghezza minima ragionevole
     4. Struttura discorsiva
+    5. Assenza pattern di hallucination
     """
     
     def __init__(
@@ -75,6 +91,7 @@ class SynthesisValidator:
         # Compile patterns
         self.bad_patterns_compiled = [re.compile(p, re.IGNORECASE) for p in BAD_PATTERNS]
         self.fact_patterns_compiled = [re.compile(p) for p in FACT_PATTERNS]
+        self.hallucination_patterns_compiled = [re.compile(p, re.IGNORECASE) for p in HALLUCINATION_PATTERNS]
     
     def validate(self, text: str, context: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -92,6 +109,7 @@ class SynthesisValidator:
                 "facts_count": int,
                 "length": int,
                 "suggestions": [str],
+                "possible_hallucinations": [str],  # NEW
             }
         """
         text = (text or "").strip()
@@ -151,11 +169,29 @@ class SynthesisValidator:
             issues.append("mostly_bullets")
             suggestions.append("Usa forma discorsiva, non solo elenchi puntati")
         
+        # === CHECK 6: Hallucination detection (NEW) ===
+        possible_hallucinations = []
+        for pattern in self.hallucination_patterns_compiled:
+            matches = pattern.findall(text)
+            if matches:
+                for match in matches[:3]:  # Limit to first 3 matches
+                    if isinstance(match, tuple):
+                        possible_hallucinations.append(' '.join(match))
+                    else:
+                        possible_hallucinations.append(match)
+        
+        hallucination_detected = len(possible_hallucinations) > 0
+        if hallucination_detected:
+            issues.append(f"possible_hallucination_{len(possible_hallucinations)}")
+            suggestions.append(
+                f"⚠️ Possibile hallucination rilevata. Verificare i dati con le fonti originali."
+            )
+        
         # === SCORE FINALE ===
-        checks = [length_ok, not bad_matches, facts_ok, sentences_ok]
+        checks = [length_ok, not bad_matches, facts_ok, sentences_ok, not hallucination_detected]
         score = sum(checks) / len(checks)
         
-        valid = score >= 0.75  # Almeno 3/4 checks passati
+        valid = score >= 0.75  # Almeno 4/5 checks passati (updated for hallucination check)
         
         result = {
             "valid": valid,
@@ -165,6 +201,7 @@ class SynthesisValidator:
             "length": len(text),
             "sentences_count": len(sentences),
             "suggestions": suggestions,
+            "possible_hallucinations": possible_hallucinations,  # NEW
         }
         
         # Log se non valido
