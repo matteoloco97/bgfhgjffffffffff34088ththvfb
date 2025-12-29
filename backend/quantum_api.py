@@ -3728,8 +3728,42 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
 
     sys_trim = trim_to_tokens(full_sys, 600)
 
-    # =================== Chiamata LLM ===================
-    reply_text = await reply_with_llm(text, sys_trim)
+    # =================== AUTO-SEARCH INTEGRATION ===================
+    # Check if query needs web search (live_data, research, factual)
+    reply_text = ""
+    auto_search_used = False
+    auto_search_sources = []
+    
+    try:
+        auto_search_result = await process_with_auto_search(
+            user_message=text,
+            user_id=user_id,
+            context={"user_memory": memory_context_dict},
+            persona=sys_trim
+        )
+        
+        # Log auto-search decision
+        search_triggered = auto_search_result.get('search_triggered', False)
+        search_reason = auto_search_result.get('search_reason', 'unknown')
+        auto_search_confidence = auto_search_result.get('confidence', 0)
+        
+        log.info(f"[/chat] Auto-search: triggered={search_triggered}, reason={search_reason}, confidence={auto_search_confidence:.2f}")
+        
+        if search_triggered:
+            # Use auto-search response (contains real web data)
+            reply_text = auto_search_result.get('response', '')
+            auto_search_used = True
+            auto_search_sources = auto_search_result.get('sources', [])
+            log.info(f"[/chat] Using auto-search response with {len(auto_search_sources)} sources")
+        else:
+            # Use direct LLM response from auto-search (conversational/calculation)
+            reply_text = auto_search_result.get('response', '')
+            log.info(f"[/chat] Using direct LLM response (reason: {search_reason})")
+            
+    except Exception as e:
+        log.warning(f"[/chat] Auto-search failed, falling back to direct LLM: {e}")
+        # Fallback to direct LLM if auto-search fails
+        reply_text = await reply_with_llm(text, sys_trim)
 
     # =================== NEW: Record conversation turn for episodic memory ===================
     try:
@@ -3791,12 +3825,20 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
         observe_chat_latency("/chat", time.perf_counter() - request_start_time)
         observe_response_size("/chat", len(reply_text) if reply_text else 0)
 
-    return {
+    # Build response with auto-search info if used
+    response = {
         "reply": reply_text,
         "cached": False,
         "cache_level": None,
         "latency_ms": total_latency_ms,
     }
+    
+    # Add auto-search info if search was triggered
+    if auto_search_used:
+        response["auto_search"] = True
+        response["sources"] = auto_search_sources
+    
+    return response
 
 
 # ========================= /chat/stream endpoint (SSE Streaming) =========================
