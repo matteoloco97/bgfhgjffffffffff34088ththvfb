@@ -680,14 +680,20 @@ async def _handle_live_data_query(
     Routes to specific tool (price_tool, weather_tool).
     Bypasses cache if expired.
     Uses concise synthesis.
+    
+    ANTI-HALLUCINATION FIX: Now fetches real content for results with 
+    missing/insufficient snippets before synthesis.
     """
-    from core.web_search import smart_search, adaptive_synthesis
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
     
     log.info(f"[AUTO-SEARCH:LIVE_DATA] Handling query: type={data_type}, query='{query[:50]}...'")
     
     try:
-        # Perform smart search
-        log.info(f"[AUTO-SEARCH:LIVE_DATA] Calling smart_search...")
+        # Step 1: Perform smart search
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Step 1: Calling smart_search...")
         search_result = await smart_search(
             query,
             strategy,
@@ -716,9 +722,17 @@ async def _handle_live_data_query(
                 'confidence': 0.5
             }
         
-        # Synthesize results
+        # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Step 2.5: Checking snippets and fetching missing content...")
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
+        
+        # Calculate total content length for logging
+        total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] After content fetch: total content length = {total_content_length} chars")
+        
+        # Step 3: Synthesize results
         synthesis_mode = strategy.get('synthesis_mode', 'concise')
-        log.info(f"[AUTO-SEARCH:LIVE_DATA] Synthesizing {len(results)} results with mode={synthesis_mode}")
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Step 3: Synthesizing {len(results)} results with mode={synthesis_mode}")
         synthesized = adaptive_synthesis(results, synthesis_mode)
         
         log.debug(f"[AUTO-SEARCH:LIVE_DATA] Synthesized content: {synthesized[:200]}...")
@@ -770,13 +784,20 @@ async def _handle_research_query(
     Handle deep research query.
     
     Multi-source search, deep synthesis, source citation.
-    """
-    from core.web_search import smart_search, adaptive_synthesis
     
-    log.info(f"Handling research query")
+    ANTI-HALLUCINATION FIX: Now fetches real content for results with 
+    missing/insufficient snippets before synthesis.
+    """
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
+    
+    log.info(f"[AUTO-SEARCH:RESEARCH] Handling research query: '{query[:50]}...'")
     
     try:
-        # Perform comprehensive search
+        # Step 1: Perform comprehensive search
+        log.info("[AUTO-SEARCH:RESEARCH] Step 1: Calling smart_search...")
         search_result = await smart_search(
             query,
             strategy,
@@ -786,6 +807,7 @@ async def _handle_research_query(
         results = search_result.get('results', [])
         
         if not results:
+            log.warning("[AUTO-SEARCH:RESEARCH] No results found, falling back to LLM")
             response = await reply_with_llm(query, persona)
             return {
                 'response': response,
@@ -795,7 +817,18 @@ async def _handle_research_query(
                 'confidence': 0.6
             }
         
-        # Comprehensive synthesis
+        log.info(f"[AUTO-SEARCH:RESEARCH] Found {len(results)} results")
+        
+        # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
+        log.info("[AUTO-SEARCH:RESEARCH] Step 2.5: Fetching missing content...")
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
+        
+        # Calculate total content length for logging
+        total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
+        log.info(f"[AUTO-SEARCH:RESEARCH] After content fetch: total content length = {total_content_length} chars")
+        
+        # Step 3: Comprehensive synthesis
+        log.info("[AUTO-SEARCH:RESEARCH] Step 3: Synthesizing results...")
         synthesized = adaptive_synthesis(results, 'comprehensive')
         
         synthesis_prompt = (
@@ -842,10 +875,16 @@ async def _handle_factual_query(
     Handle factual query with optional search.
     
     Checks memory first, then searches if knowledge gap detected.
-    """
-    from core.web_search import smart_search, adaptive_synthesis
     
-    log.info(f"Handling factual query")
+    ANTI-HALLUCINATION FIX: Now fetches real content for results with 
+    missing/insufficient snippets before synthesis.
+    """
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
+    
+    log.info(f"[AUTO-SEARCH:FACTUAL] Handling factual query: '{query[:50]}...'")
     
     try:
         # Check if search is really needed based on urgency
@@ -853,6 +892,7 @@ async def _handle_factual_query(
         
         if urgency == 'none':
             # No search needed, use LLM directly
+            log.info("[AUTO-SEARCH:FACTUAL] No search needed (urgency=none)")
             response = await reply_with_llm(query, persona)
             return {
                 'response': response,
@@ -862,7 +902,8 @@ async def _handle_factual_query(
                 'confidence': intent_result.get('confidence', 0.7)
             }
         
-        # Perform search
+        # Step 1: Perform search
+        log.info("[AUTO-SEARCH:FACTUAL] Step 1: Calling smart_search...")
         search_result = await smart_search(
             query,
             strategy,
@@ -872,6 +913,7 @@ async def _handle_factual_query(
         results = search_result.get('results', [])
         
         if not results:
+            log.warning("[AUTO-SEARCH:FACTUAL] No results found, falling back to LLM")
             response = await reply_with_llm(query, persona)
             return {
                 'response': response,
@@ -881,7 +923,18 @@ async def _handle_factual_query(
                 'confidence': 0.6
             }
         
-        # Synthesize
+        log.info(f"[AUTO-SEARCH:FACTUAL] Found {len(results)} results")
+        
+        # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
+        log.info("[AUTO-SEARCH:FACTUAL] Step 2.5: Fetching missing content...")
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
+        
+        # Calculate total content length for logging
+        total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
+        log.info(f"[AUTO-SEARCH:FACTUAL] After content fetch: total content length = {total_content_length} chars")
+        
+        # Step 3: Synthesize
+        log.info("[AUTO-SEARCH:FACTUAL] Step 3: Synthesizing results...")
         synthesized = adaptive_synthesis(results, 'detailed')
         
         synthesis_prompt = (
