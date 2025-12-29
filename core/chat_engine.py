@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import os, json, asyncio, time, math
+import os, json, asyncio, time, math, re
 from typing import Dict, Any, Optional
 
 # Import async HTTP client instead of requests
@@ -136,11 +136,54 @@ def _build_payload(user_text: str, system_prompt: str) -> Dict[str, Any]:
     }
     return payload
 
+# === Think tag stripping (for reasoning models like DeepSeek-R1) ===
+# Pattern to match <think>...</think> tags (multiline, case insensitive)
+_THINK_TAG_PATTERN = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
+
+def _strip_think_tags(text: str) -> str:
+    """
+    Strip <think>...</think> tags from LLM output.
+    
+    Reasoning models like DeepSeek-R1 output their thinking process
+    between these tags. This function removes them from the final response.
+    
+    Parameters
+    ----------
+    text : str
+        The raw LLM output text.
+    
+    Returns
+    -------
+    str
+        Text with think tags removed.
+    """
+    if not text:
+        return text
+    
+    # Check if there are think tags
+    if '<think>' not in text.lower():
+        return text
+    
+    # Strip the think tags
+    cleaned = _THINK_TAG_PATTERN.sub('', text)
+    
+    # Clean up extra whitespace that may result from removal
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    cleaned = cleaned.strip()
+    
+    # Log if we stripped tags (for debugging)
+    if len(cleaned) < len(text):
+        log.debug(f"Stripped <think> tags: {len(text)} -> {len(cleaned)} chars")
+    
+    return cleaned
+
+
 # === Response parser robusto ===
 def _extract_text(data: Dict[str, Any]) -> str:
     """
     Estrae il testo dalla risposta OpenAI-compat.
     Supporta varianti minimali.
+    Rimuove i tag <think> dai modelli di ragionamento.
     Alza ValueError se mancante.
     """
     try:
@@ -150,11 +193,13 @@ def _extract_text(data: Dict[str, Any]) -> str:
         msg = choices[0].get("message") or {}
         content = (msg.get("content") or "").strip()
         if content:
-            return content
+            # Rimuovi tag <think> dai modelli di ragionamento
+            return _strip_think_tags(content)
         # Alcuni provider usano 'text' direttamente
         txt = (choices[0].get("text") or "").strip()
         if txt:
-            return txt
+            # Rimuovi tag <think> dai modelli di ragionamento
+            return _strip_think_tags(txt)
         raise ValueError("contenuto mancante")
     except Exception as e:
         raise ValueError(f"Formato risposta inatteso: {e}")
@@ -503,18 +548,24 @@ async def process_with_auto_search(
     """
     context = context or {}
     
+    log.info(f"[AUTO-SEARCH] Starting process_with_auto_search for query: {user_message[:100]}...")
+    
     # Get detector and classifier instances
     detector = get_auto_search_detector()
     classifier = get_query_classifier()
     planner = get_search_strategy_planner()
     
     # Step 1: Classify intent
+    log.info("[AUTO-SEARCH] Step 1: Classifying intent...")
     intent_result = await classifier.classify_intent(user_message, context)
     intent = intent_result.get('intent', 'factual')
+    sub_intent = intent_result.get('sub_intent', 'unknown')
+    confidence = intent_result.get('confidence', 0)
     
-    log.info(f"Auto-search: intent={intent}, confidence={intent_result.get('confidence', 0):.2f}")
+    log.info(f"[AUTO-SEARCH] Intent classification: intent={intent}, sub_intent={sub_intent}, confidence={confidence:.2f}")
     
     # Step 2: Check if search should be triggered
+    log.info("[AUTO-SEARCH] Step 2: Checking if search should be triggered...")
     user_memory = context.get('user_memory', {})
     search_decision = await detector.should_trigger_search(user_message, context, user_memory)
     
@@ -522,9 +573,14 @@ async def process_with_auto_search(
     search_reason = search_decision.get('search_reason', 'none')
     search_type = search_decision.get('search_type', 'none')
     
+    log.info(f"[AUTO-SEARCH] Search decision: should_search={should_search}, reason={search_reason}, type={search_type}")
+    
     # Step 3: Handle based on intent
+    log.info(f"[AUTO-SEARCH] Step 3: Handling based on intent={intent}, should_search={should_search}")
+    
     if intent == 'conversational' and not should_search:
         # Direct LLM response for conversational
+        log.info("[AUTO-SEARCH] Using direct LLM response (conversational)")
         try:
             response = await reply_with_llm(user_message, persona)
             return {
@@ -546,6 +602,7 @@ async def process_with_auto_search(
     
     if intent == 'calculation':
         # Handle calculation directly
+        log.info("[AUTO-SEARCH] Using direct LLM response (calculation)")
         try:
             response = await reply_with_llm(user_message, persona)
             return {
@@ -568,22 +625,28 @@ async def process_with_auto_search(
     # Step 4: Handle live_data or search-required queries
     if should_search or intent in ['live_data', 'research', 'factual']:
         data_type = search_decision.get('data_type', intent_result.get('sub_intent', 'general'))
+        log.info(f"[AUTO-SEARCH] Step 4: Search required - data_type={data_type}")
         
         # Get search strategy
         strategy = await planner.plan_search_strategy(user_message, intent_result)
+        log.info(f"[AUTO-SEARCH] Search strategy: {strategy.get('strategy')}, synthesis_mode={strategy.get('synthesis_mode')}")
         
         # Handle live data query
         if intent == 'live_data' or data_type in ['price', 'weather', 'news', 'sports']:
+            log.info(f"[AUTO-SEARCH] Handling as LIVE DATA query (type={data_type})")
             return await _handle_live_data_query(user_message, data_type, context, persona, strategy)
         
         # Handle research query
         if intent == 'research':
+            log.info("[AUTO-SEARCH] Handling as RESEARCH query")
             return await _handle_research_query(user_message, context, persona, strategy)
         
         # Handle factual query with potential search
+        log.info("[AUTO-SEARCH] Handling as FACTUAL query with search")
         return await _handle_factual_query(user_message, context, persona, strategy, intent_result)
     
     # Default: Direct LLM response
+    log.info("[AUTO-SEARCH] Using default direct LLM response")
     try:
         response = await reply_with_llm(user_message, persona)
         return {
@@ -620,10 +683,11 @@ async def _handle_live_data_query(
     """
     from core.web_search import smart_search, adaptive_synthesis
     
-    log.info(f"Handling live data query: type={data_type}")
+    log.info(f"[AUTO-SEARCH:LIVE_DATA] Handling query: type={data_type}, query='{query[:50]}...'")
     
     try:
         # Perform smart search
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Calling smart_search...")
         search_result = await smart_search(
             query,
             strategy,
@@ -631,9 +695,14 @@ async def _handle_live_data_query(
         )
         
         results = search_result.get('results', [])
+        search_time_ms = search_result.get('search_time_ms', 0)
+        cache_hit = search_result.get('cache_hit', False)
+        
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Search completed: {len(results)} results, cache_hit={cache_hit}, time={search_time_ms}ms")
         
         if not results:
             # Fallback to LLM with context about no results
+            log.warning(f"[AUTO-SEARCH:LIVE_DATA] No results found, falling back to LLM")
             response = await reply_with_llm(
                 f"Non ho trovato informazioni aggiornate su: {query}. "
                 "Basandomi sulla mia conoscenza, rispondo: " + query,
@@ -649,7 +718,10 @@ async def _handle_live_data_query(
         
         # Synthesize results
         synthesis_mode = strategy.get('synthesis_mode', 'concise')
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Synthesizing {len(results)} results with mode={synthesis_mode}")
         synthesized = adaptive_synthesis(results, synthesis_mode)
+        
+        log.debug(f"[AUTO-SEARCH:LIVE_DATA] Synthesized content: {synthesized[:200]}...")
         
         # Build response with LLM - ANTI-HALLUCINATION prompt
         synthesis_prompt = (
@@ -661,10 +733,13 @@ async def _handle_live_data_query(
             f"Rispondi in modo conciso e accurato:"
         )
         
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Generating response with LLM...")
         response = await reply_with_llm(synthesis_prompt, persona)
         
         sources = [{'url': r.get('url', ''), 'title': r.get('title', '')} 
                    for r in results[:3]]
+        
+        log.info(f"[AUTO-SEARCH:LIVE_DATA] Success! Response length={len(response)}, sources={len(sources)}")
         
         return {
             'response': response,
@@ -675,7 +750,7 @@ async def _handle_live_data_query(
         }
         
     except Exception as e:
-        log.error(f"Live data query error: {e}")
+        log.error(f"[AUTO-SEARCH:LIVE_DATA] Error: {e}", exc_info=True)
         return {
             'response': f"Errore nel recupero dati live: {str(e)}",
             'sources': [],
