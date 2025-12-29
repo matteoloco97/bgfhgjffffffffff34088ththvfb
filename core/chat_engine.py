@@ -183,7 +183,7 @@ def _extract_text(data: Dict[str, Any]) -> str:
     """
     Estrae il testo dalla risposta OpenAI-compat.
     Supporta varianti minimali.
-    Strips <think> tags from reasoning models.
+    Rimuove i tag <think> dai modelli di ragionamento.
     Alza ValueError se mancante.
     """
     try:
@@ -193,12 +193,12 @@ def _extract_text(data: Dict[str, Any]) -> str:
         msg = choices[0].get("message") or {}
         content = (msg.get("content") or "").strip()
         if content:
-            # Strip <think> tags from reasoning models
+            # Rimuovi tag <think> dai modelli di ragionamento
             return _strip_think_tags(content)
         # Alcuni provider usano 'text' direttamente
         txt = (choices[0].get("text") or "").strip()
         if txt:
-            # Strip <think> tags from reasoning models
+            # Rimuovi tag <think> dai modelli di ragionamento
             return _strip_think_tags(txt)
         raise ValueError("contenuto mancante")
     except Exception as e:

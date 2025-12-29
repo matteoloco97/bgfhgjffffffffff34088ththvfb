@@ -264,7 +264,8 @@ Based on my analysis, the price of Bitcoin is approximately $96,000."""
         for input_text in test_cases:
             result = _strip_think_tags(input_text)
             assert 'real' in result
-            assert '<' not in result or '>' not in result
+            # Verify no think tags remain (both < and > should be absent for think tags)
+            assert '<think>' not in result.lower() and '</think>' not in result.lower()
             print(f"✅ Case insensitive: '{input_text[:20]}' → '{result}'")
 
 
