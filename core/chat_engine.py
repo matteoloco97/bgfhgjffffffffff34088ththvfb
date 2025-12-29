@@ -684,7 +684,10 @@ async def _handle_live_data_query(
     ANTI-HALLUCINATION FIX: Now fetches real content for results with 
     missing/insufficient snippets before synthesis.
     """
-    from core.web_search import smart_search, adaptive_synthesis, fetch_missing_content
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
     
     log.info(f"[AUTO-SEARCH:LIVE_DATA] Handling query: type={data_type}, query='{query[:50]}...'")
     
@@ -721,7 +724,7 @@ async def _handle_live_data_query(
         
         # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
         log.info(f"[AUTO-SEARCH:LIVE_DATA] Step 2.5: Checking snippets and fetching missing content...")
-        results = await fetch_missing_content(results, min_snippet_length=100, max_concurrent=3)
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
         
         # Calculate total content length for logging
         total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
@@ -785,7 +788,10 @@ async def _handle_research_query(
     ANTI-HALLUCINATION FIX: Now fetches real content for results with 
     missing/insufficient snippets before synthesis.
     """
-    from core.web_search import smart_search, adaptive_synthesis, fetch_missing_content
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
     
     log.info(f"[AUTO-SEARCH:RESEARCH] Handling research query: '{query[:50]}...'")
     
@@ -815,7 +821,7 @@ async def _handle_research_query(
         
         # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
         log.info("[AUTO-SEARCH:RESEARCH] Step 2.5: Fetching missing content...")
-        results = await fetch_missing_content(results, min_snippet_length=100, max_concurrent=3)
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
         
         # Calculate total content length for logging
         total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
@@ -873,7 +879,10 @@ async def _handle_factual_query(
     ANTI-HALLUCINATION FIX: Now fetches real content for results with 
     missing/insufficient snippets before synthesis.
     """
-    from core.web_search import smart_search, adaptive_synthesis, fetch_missing_content
+    from core.web_search import (
+        smart_search, adaptive_synthesis, fetch_missing_content,
+        SNIPPET_MIN_LENGTH
+    )
     
     log.info(f"[AUTO-SEARCH:FACTUAL] Handling factual query: '{query[:50]}...'")
     
@@ -918,7 +927,7 @@ async def _handle_factual_query(
         
         # Step 2.5: ANTI-HALLUCINATION - Fetch real content for results with missing snippets
         log.info("[AUTO-SEARCH:FACTUAL] Step 2.5: Fetching missing content...")
-        results = await fetch_missing_content(results, min_snippet_length=100, max_concurrent=3)
+        results = await fetch_missing_content(results, min_snippet_length=SNIPPET_MIN_LENGTH, max_concurrent=3)
         
         # Calculate total content length for logging
         total_content_length = sum(len(r.get('snippet', '') or '') for r in results)
