@@ -389,6 +389,221 @@ async def _search_ddg_lite_via_browserless(query: str, num: int) -> List[Dict[st
         _log(f"BLS error: {e}")
         return []
 
+
+# ===================== Content Fetching for Missing Snippets =====================
+
+# Threshold for snippet length to be considered insufficient
+SNIPPET_MIN_LENGTH = int(os.getenv("SNIPPET_MIN_LENGTH", "100"))
+
+# Maximum content length to fetch per URL
+FETCH_CONTENT_MAX_LENGTH = int(os.getenv("FETCH_CONTENT_MAX_LENGTH", "4000"))
+
+# Timeout for content fetching
+FETCH_CONTENT_TIMEOUT_S = float(os.getenv("FETCH_CONTENT_TIMEOUT_S", "10.0"))
+
+
+async def fetch_with_browserless(url: str, timeout: float = FETCH_CONTENT_TIMEOUT_S) -> str:
+    """
+    Fetch page content using Browserless for JS rendering.
+    
+    Falls back to direct HTTP fetch if Browserless is not configured.
+    Uses multiple extraction strategies for best content extraction.
+    
+    Parameters
+    ----------
+    url : str
+        URL to fetch content from.
+    timeout : float
+        Request timeout in seconds.
+    
+    Returns
+    -------
+    str
+        Extracted text content from the page, or empty string on failure.
+    """
+    if not url:
+        return ""
+    
+    log.info(f"[CONTENT-FETCH] Starting fetch for URL: {url[:80]}...")
+    
+    # Try Browserless first if configured
+    if EN_BROWSERLESS and BLS_URL and BLS_TOKEN:
+        log.info(f"[BROWSERLESS] Using Browserless for {url[:60]}...")
+        try:
+            bls_endpoint = f"{BLS_URL}/content?token={BLS_TOKEN}"
+            payload = {
+                "url": url,
+                "waitFor": "body",
+                "timeout": int(timeout * 1000)  # Convert to ms
+            }
+            
+            client = await get_http_client()
+            if client:
+                async with client.post(
+                    bls_endpoint,
+                    json=payload,
+                    timeout=timeout + 2.0
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        content = data.get("content", "") or data.get("text", "") or ""
+                        
+                        # Clean HTML if returned raw HTML
+                        if content and "<" in content:
+                            content = _extract_text_from_html(content)
+                        
+                        if content:
+                            log.info(f"[BROWSERLESS] ✓ Fetched {len(content)} chars from {url[:60]}")
+                            return content[:FETCH_CONTENT_MAX_LENGTH]
+                        else:
+                            log.warning(f"[BROWSERLESS] ✗ Empty content from {url[:60]}")
+                    else:
+                        log.warning(f"[BROWSERLESS] ✗ Status {r.status} for {url[:60]}")
+        except Exception as e:
+            log.warning(f"[BROWSERLESS] ✗ Error fetching {url[:60]}: {e}")
+    
+    # Fallback: Direct HTTP fetch using web_tools
+    log.info(f"[CONTENT-FETCH] Fallback to direct HTTP for {url[:60]}...")
+    try:
+        from core.web_tools import fetch_and_extract_async
+        text, _ = await fetch_and_extract_async(url, timeout)
+        if text:
+            log.info(f"[CONTENT-FETCH] ✓ Direct fetch: {len(text)} chars from {url[:60]}")
+            return text[:FETCH_CONTENT_MAX_LENGTH]
+        else:
+            log.warning(f"[CONTENT-FETCH] ✗ Empty from direct fetch: {url[:60]}")
+    except ImportError:
+        log.warning("[CONTENT-FETCH] web_tools not available for fallback")
+    except Exception as e:
+        log.warning(f"[CONTENT-FETCH] ✗ Direct fetch error for {url[:60]}: {e}")
+    
+    return ""
+
+
+def _extract_text_from_html(html_content: str) -> str:
+    """
+    Extract clean text from HTML content.
+    
+    Uses BeautifulSoup if available, falls back to regex.
+    """
+    if not html_content:
+        return ""
+    
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Remove noise elements
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside", "noscript", "iframe"]):
+            tag.decompose()
+        
+        # Get text from main content areas
+        text_parts = []
+        for tag in soup.find_all(["p", "article", "section", "div", "span", "li"]):
+            text = tag.get_text(strip=True)
+            if len(text) > 20:  # Skip very short fragments
+                text_parts.append(text)
+        
+        return " ".join(text_parts[:100])  # Limit to first 100 text blocks
+    except ImportError:
+        # Fallback to regex
+        pass
+    except Exception as e:
+        log.debug(f"BeautifulSoup extraction failed: {e}")
+    
+    # Regex fallback
+    # Remove script and style tags
+    html_clean = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html_content)
+    # Remove all HTML tags
+    text = re.sub(r"<[^>]+>", " ", html_clean)
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+async def fetch_missing_content(
+    results: List[Dict[str, str]],
+    min_snippet_length: int = SNIPPET_MIN_LENGTH,
+    max_concurrent: int = 3,
+    timeout: float = FETCH_CONTENT_TIMEOUT_S
+) -> List[Dict[str, str]]:
+    """
+    Fetch real content for search results with missing or insufficient snippets.
+    
+    This function identifies results where the snippet is empty or too short,
+    and fetches the actual page content to fill in the gaps.
+    
+    Parameters
+    ----------
+    results : List[Dict[str, str]]
+        Search results, each with 'url', 'title', and optional 'snippet'.
+    min_snippet_length : int
+        Minimum snippet length to be considered sufficient.
+    max_concurrent : int
+        Maximum concurrent fetch operations.
+    timeout : float
+        Timeout per fetch operation.
+    
+    Returns
+    -------
+    List[Dict[str, str]]
+        Updated results with fetched content.
+    """
+    if not results:
+        return results
+    
+    log.info(f"[CONTENT-FETCH] Checking {len(results)} results for missing snippets...")
+    
+    # Identify results needing content fetch
+    results_needing_fetch = []
+    for result in results:
+        snippet = (result.get('snippet') or '').strip()
+        if not snippet or len(snippet) < min_snippet_length:
+            url = result.get('url')
+            if url:
+                results_needing_fetch.append(result)
+    
+    if not results_needing_fetch:
+        log.info("[CONTENT-FETCH] All results have sufficient snippets")
+        return results
+    
+    log.info(f"[CONTENT-FETCH] {len(results_needing_fetch)} results need content fetching")
+    
+    # Use semaphore to limit concurrent fetches
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def fetch_one(result: Dict[str, str]) -> None:
+        """Fetch content for a single result."""
+        async with semaphore:
+            url = result.get('url')
+            if not url:
+                return
+            
+            try:
+                content = await fetch_with_browserless(url, timeout)
+                
+                if content:
+                    # Update result with fetched content
+                    # Use first 2000 chars as snippet
+                    result['snippet'] = content[:2000]
+                    result['full_content'] = content
+                    log.info(f"[CONTENT-FETCH] ✓ Updated snippet ({len(content)} chars) for {url[:60]}")
+                else:
+                    log.warning(f"[CONTENT-FETCH] ✗ No content fetched for {url[:60]}")
+            except Exception as e:
+                log.error(f"[CONTENT-FETCH] ✗ Error fetching {url[:60]}: {e}")
+    
+    # Fetch all needed content in parallel
+    tasks = [fetch_one(result) for result in results_needing_fetch]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Log summary
+    fetched_count = sum(1 for r in results_needing_fetch if r.get('full_content'))
+    log.info(f"[CONTENT-FETCH] Completed: {fetched_count}/{len(results_needing_fetch)} successfully fetched")
+    
+    return results
+
+
 # --- SerpAPI / Google Custom Search (placeholder) ---
 
 async def _search_serpapi(query: str, num: int) -> List[Dict[str, str]]:
