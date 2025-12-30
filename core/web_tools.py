@@ -1237,13 +1237,22 @@ async def fetch_and_extract_async(
         - text: readable content for LLM
         - og_image_url: Open Graph image if found, else None
     
-    Features (Phase 1):
+    Features (Phase 1 + Issue 3B):
     - Async HTTP with aiohttp
     - Per-domain rate limiting
     - Exponential backoff for errors
     - Proper encoding detection
+    - **Automatic JS renderer fallback (Issue 3B)**
     """
     logger.info("[PERF] fetch_and_extract_async url=%s timeout=%.2f", url, timeout)
+    
+    # Issue 3B: Use renderer pipeline when enabled
+    if RENDERER_ENABLED:
+        extracted, fetch_log = await fetch_and_extract_with_renderer(url, timeout)
+        # Return in the old format (text, og_image) for backward compatibility
+        return extracted.text, extracted.og_image
+    
+    # Legacy path (when renderer is disabled)
     t0 = time.time()
     
     # Fetch with async HTTP
