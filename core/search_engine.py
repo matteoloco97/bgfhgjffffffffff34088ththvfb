@@ -536,7 +536,9 @@ class SearchEngine:
                         # Add results that haven't been seen
                         for r in response.results:
                             if r.url not in seen_urls:
-                                # Apply trust scoring
+                                # Apply trust scoring: combine provider relevance score
+                                # with domain trust score (50/50 weighting balances
+                                # search relevance with source credibility)
                                 trust_score = get_domain_trust_score(r.domain)
                                 r.score = (r.score + trust_score) / 2.0
                                 all_results.append(r)
@@ -553,10 +555,12 @@ class SearchEngine:
                 log.debug(f"[SEARCH] Got {len(all_results)} results from {provider_name}, stopping")
                 break
             
-            # Mark fallback triggered
-            if providers_tried:
-                result.fallback_triggered = True
-                log.info(f"[SEARCH] Fallback triggered, trying next provider")
+            # Log that we're falling back to next provider
+            log.info(f"[SEARCH] Fallback triggered, trying next provider")
+        
+        # Mark fallback_triggered if we used a provider other than the first one
+        if len(providers_tried) > 1 and provider_used != providers_tried[0]:
+            result.fallback_triggered = True
         
         # Apply deduplication and max-per-domain
         all_results = self._deduplicate_results(all_results)

@@ -147,6 +147,8 @@ class BaseSearchProvider(ABC):
         str
             Domain name (e.g., "example.com").
         """
+        if not url:
+            return ""
         try:
             from urllib.parse import urlparse
             parsed = urlparse(url)
@@ -155,7 +157,8 @@ class BaseSearchProvider(ABC):
             if host.startswith("www."):
                 host = host[4:]
             return host.lower()
-        except Exception:
+        except (ValueError, AttributeError):
+            # ValueError for malformed URLs, AttributeError for None values
             return ""
     
     def _normalize_result(
