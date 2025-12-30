@@ -3778,7 +3778,7 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
         # Pass routing decision to auto-search for informed processing
         context_with_routing = {
             "user_memory": memory_context_dict,
-            "web_router_decision": web_route_decision if web_route_decision else None,
+            "web_router_decision": web_route_decision,
             "force_web": forced_web_by_router,
         }
         

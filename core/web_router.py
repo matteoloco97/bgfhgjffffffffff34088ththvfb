@@ -277,6 +277,9 @@ class WebRouter:
         """
         Use LLM micro-classifier for ambiguous cases.
         
+        NOTE: This feature is EXPERIMENTAL and disabled by default.
+        The async handling is complex and should only be enabled if needed.
+        
         This is a lightweight classifier that uses a short prompt (80-120 tokens)
         to determine if web search is needed.
         
@@ -295,69 +298,45 @@ class WebRouter:
         import asyncio
         import json
         
-        try:
-            # Import here to avoid circular dependency
-            from core.chat_engine import reply_with_llm
-            
-            # Build classification prompt (short and focused)
-            prompt = f"""Analyze this query and determine if it requires web search (current/live data).
-
-Query: "{query}"
-
-Return ONLY a JSON object (no explanation):
-{{
-  "web_required": true/false,
-  "category": "news|tech|price|sports|weather|general",
-  "freshness_days": 7,
-  "reason": "brief reason"
-}}
-
-Rules:
-- web_required=true if query needs current/live/recent data
-- web_required=false for general knowledge, opinions, calculations
-- freshness_days: 1-7 for very recent, 30 for monthly, 90 for general
-
-JSON:"""
-            
-            # Call LLM with timeout
-            response = asyncio.wait_for(
-                reply_with_llm(prompt, "You are a query classifier. Return only JSON."),
-                timeout=self.llm_classifier_timeout
-            )
-            
-            # Parse response (extract JSON)
-            response_text = asyncio.run(response) if asyncio.iscoroutine(response) else response
-            
-            # Try to extract JSON from response
-            json_match = re.search(r'\{[^}]+\}', response_text)
-            if json_match:
-                result = json.loads(json_match.group(0))
-                
-                # Validate and normalize
-                web_required = bool(result.get('web_required', False))
-                category = str(result.get('category', 'general'))
-                freshness_days = int(result.get('freshness_days', 30))
-                reason = str(result.get('reason', 'llm classification'))
-                
-                return {
-                    'web_required': web_required,
-                    'category': category,
-                    'languages': self._detect_languages(query),
-                    'freshness_days': freshness_days,
-                    'reason': f'LLM: {reason}',
-                    'confidence': 0.85,
-                    'trigger_type': 'llm'
-                }
-            else:
-                log.warning(f"[WebRouter] LLM response not JSON: {response_text[:100]}")
-                return None
-                
-        except asyncio.TimeoutError:
-            log.warning(f"[WebRouter] LLM classifier timeout ({self.llm_classifier_timeout}s)")
-            return None
-        except Exception as e:
-            log.warning(f"[WebRouter] LLM classifier error: {e}")
-            return None
+        # IMPORTANT: LLM classifier is experimental - disabled by default
+        # The async/sync interaction here is complex and may cause issues
+        log.warning("[WebRouter] LLM classifier called but is experimental - returning None")
+        return None
+        
+        # TODO: Fix async handling before enabling
+        # The code below has issues with asyncio.wait_for/asyncio.run interaction
+        # Need to refactor to properly handle async context
+        
+        # try:
+        #     # Import here to avoid circular dependency
+        #     from core.chat_engine import reply_with_llm
+        #     
+        #     # Build classification prompt (short and focused)
+        #     prompt = f"""Analyze this query and determine if it requires web search (current/live data).
+        # 
+        # Query: "{query}"
+        # 
+        # Return ONLY a JSON object (no explanation):
+        # {{
+        #   "web_required": true/false,
+        #   "category": "news|tech|price|sports|weather|general",
+        #   "freshness_days": 7,
+        #   "reason": "brief reason"
+        # }}
+        # 
+        # Rules:
+        # - web_required=true if query needs current/live/recent data
+        # - web_required=false for general knowledge, opinions, calculations
+        # - freshness_days: 1-7 for very recent, 30 for monthly, 90 for general
+        # 
+        # JSON:"""
+        #     
+        #     # TODO: Fix async handling here
+        #     # Current code doesn't properly await or handle async context
+        #     
+        # except Exception as e:
+        #     log.warning(f"[WebRouter] LLM classifier error: {e}")
+        #     return None
     
     def _categorize_query(self, query_lower: str) -> str:
         """
