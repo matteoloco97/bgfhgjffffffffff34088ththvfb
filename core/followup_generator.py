@@ -153,10 +153,25 @@ class FollowUpGenerator:
         Returns:
             List of topics
         """
-        # Use noun phrases as topics
         topics = []
         
-        # Find capitalized sequences
+        # First, try to extract key nouns/concepts from the text
+        # Look for common topic patterns in Italian
+        topic_patterns = [
+            r'\b(?:la|il|lo|un|una|gli|le|i)\s+(\w{4,})\b',  # Articles + nouns
+            r'\bè\s+(?:un[ao]?\s+)?(\w{4,})\b',  # "è una X", "è X"
+            r'\bregistro\s+(\w+)\b',  # "registro X"
+            r'\bsistema\s+(?:di\s+)?(\w+)\b',  # "sistema di X"
+            r'\bpermette\s+di\s+(\w+)\b',  # "permette di X"
+        ]
+        
+        for pattern in topic_patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                topic = match.group(1)
+                if len(topic) > 3 and topic.lower() not in self.STOP_ENTITIES:
+                    topics.append(topic.capitalize())
+        
+        # Find capitalized sequences (proper nouns)
         caps_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b'
         for match in re.finditer(caps_pattern, text):
             topic = match.group(1)
@@ -169,6 +184,13 @@ class FollowUpGenerator:
             topic = match.group(1) or match.group(2)
             if topic and len(topic) > 3:
                 topics.append(topic)
+        
+        # Also extract from query - look for "Cos'è X" pattern
+        query_pattern = r"cos[''`]?\s*[èe]\s+(?:la|il|lo|un|una|gli|le|i)?\s*(\w{4,})"
+        for match in re.finditer(query_pattern, text, re.IGNORECASE):
+            topic = match.group(1)
+            if topic.lower() not in self.STOP_ENTITIES:
+                topics.insert(0, topic.capitalize())  # Priority
         
         # Deduplicate while preserving order
         seen = set()
@@ -339,7 +361,8 @@ OUTPUT (solo domande, una per riga):"""
                 # Remove numbering
                 line = re.sub(r'^\d+[.)]\s*', '', line)
                 
-                if line and len(line) > 10 and '?' in line or line.endswith('?') == False:
+                # Accept lines that are long enough and either have a question mark or we can add one
+                if line and len(line) > 10:
                     if not line.endswith('?'):
                         line += '?'
                     
