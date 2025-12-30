@@ -1,0 +1,45 @@
+# /etc/systemd/system/quantum-web-renderer.service
+[Unit]
+Description=QuantumDev Web Renderer (Playwright/Chromium JS Rendering Microservice)
+Documentation=https://github.com/matteoloco97/bgfhgjffffffffff34088ththvfb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/quantumdev-open/services/web_renderer
+
+# Environment - Load from main .env or dedicated renderer env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/root/quantumdev-open
+EnvironmentFile=-/root/quantumdev-open/.env
+EnvironmentFile=-/root/quantumdev-open/services/web_renderer/.env
+
+# Pre-flight: verify playwright and chromium are installed
+ExecStartPre=/bin/bash -c 'python3 -c "from playwright.async_api import async_playwright" || (pip install playwright && playwright install chromium)'
+
+# Start uvicorn server
+ExecStart=/root/quantumdev-open/venv/bin/python -m uvicorn app:app \
+  --host 127.0.0.1 \
+  --port 8890 \
+  --log-level info
+
+# Restart policy
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=20
+KillMode=mixed
+KillSignal=SIGINT
+
+# Resource limits
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+# Security
+User=root
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
