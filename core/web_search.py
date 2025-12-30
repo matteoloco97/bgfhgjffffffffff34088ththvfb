@@ -445,12 +445,8 @@ async def fetch_with_browserless(url: str, timeout: float = FETCH_CONTENT_TIMEOU
                     timeout=timeout + 2.0
                 ) as r:
                     if r.status == 200:
-                        data = await r.json()
-                        content = data.get("content", "") or data.get("text", "") or ""
-                        
-                        # Clean HTML if returned raw HTML
-                        if content and "<" in content:
-                            content = _extract_text_from_html(content)
+                        html_content = await r.text()
+                        content = _extract_text_from_html(html_content)
                         
                         if content:
                             log.info(f"[BROWSERLESS] ✓ Fetched {len(content)} chars from {url[:60]}")

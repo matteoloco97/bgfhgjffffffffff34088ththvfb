@@ -54,6 +54,65 @@ class TestFetchWithBrowserless:
             result = await fetch_with_browserless("https://example.com")
             # Result might be empty if network fails, that's OK
             assert isinstance(result, str)
+    
+    @pytest.mark.asyncio
+    async def test_browserless_handles_html_response(self):
+        """Test that Browserless correctly handles HTML response from /content endpoint."""
+        from core.web_search import fetch_with_browserless
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Mock HTML response from Browserless /content endpoint
+        mock_html = """
+        <html>
+            <head><title>Bitcoin Price</title></head>
+            <body>
+                <div class="price">
+                    <h1>Bitcoin (BTC) Price</h1>
+                    <p>Bitcoin is trading at $87,244.95 USD today with strong market volume.</p>
+                    <p>24h change: +2.5%</p>
+                </div>
+                <script>console.log('should be removed');</script>
+            </body>
+        </html>
+        """
+        
+        # Patch the environment variables and HTTP client
+        with patch.dict(os.environ, {
+            "EN_BROWSERLESS": "1",
+            "BROWSERLESS_URL": "https://test.browserless.io",
+            "BROWSERLESS_TOKEN": "test-token"
+        }):
+            # Import after patching env vars so module picks up the new values
+            import importlib
+            import core.web_search
+            importlib.reload(core.web_search)
+            from core.web_search import fetch_with_browserless
+            
+            # Create a proper async context manager mock
+            mock_response = AsyncMock()
+            mock_response.status = 200
+            mock_response.text = AsyncMock(return_value=mock_html)
+            
+            mock_post = AsyncMock()
+            mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_post.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_client = AsyncMock()
+            mock_client.post = MagicMock(return_value=mock_post)
+            
+            with patch('core.web_search.get_http_client', new_callable=AsyncMock) as mock_get_client:
+                mock_get_client.return_value = mock_client
+                
+                result = await fetch_with_browserless("https://example.com/bitcoin-price")
+                
+                # Verify the result contains extracted text from HTML
+                assert isinstance(result, str)
+                assert len(result) > 0, f"Expected non-empty result, got: '{result}'"
+                # Should contain Bitcoin price info
+                assert "Bitcoin" in result or "87,244" in result or "BTC" in result, f"Expected Bitcoin content in result: '{result}'"
+                # Should NOT contain script content
+                assert "console.log" not in result
+                assert "should be removed" not in result
 
 
 class TestFetchMissingContent:
