@@ -216,28 +216,32 @@ class RenderResponse(BaseModel):
 
 # ===================== FastAPI App =====================
 
-app = FastAPI(
-    title="QuantumDev Web Renderer",
-    description="Playwright-based JS rendering microservice",
-    version="1.0.0"
-)
+from contextlib import asynccontextmanager
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize browser on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown."""
+    # Startup
     try:
         await _get_browser()
         logger.info("Web renderer ready")
     except Exception as e:
         logger.error(f"Failed to initialize browser on startup: {e}")
         # Don't fail startup - browser will be initialized on first request
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup on shutdown."""
+    
+    yield
+    
+    # Shutdown
     await _close_browser()
+
+
+app = FastAPI(
+    title="QuantumDev Web Renderer",
+    description="Playwright-based JS rendering microservice",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 
 @app.get("/health")

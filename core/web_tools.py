@@ -104,6 +104,18 @@ EXTRACT_MIN_CHARS = int(os.getenv("EXTRACT_MIN_CHARS", "800"))
 # JS-heavy detection threshold (ratio of script-like content)
 EXTRACT_JS_HEAVY_THRESHOLD = float(os.getenv("EXTRACT_JS_HEAVY_THRESHOLD", "0.30"))
 
+# JS density multiplier for threshold calculation (script matches per KB)
+JS_DENSITY_MULTIPLIER = 10
+
+# Minimum text-to-HTML ratio for content to be considered valid
+MIN_TEXT_RATIO = 0.01
+
+# Minimum HTML size to apply text ratio check
+MIN_HTML_SIZE_FOR_RATIO_CHECK = 5000
+
+# Default connect timeout in seconds
+DEFAULT_CONNECT_TIMEOUT_S = float(os.getenv("HTTP_CONNECT_TIMEOUT_S", "3.0"))
+
 # ===================== Async Config (Phase 1) =====================
 
 # Max concurrent HTTP requests
@@ -211,8 +223,8 @@ async def get_aiohttp_session() -> Optional['aiohttp.ClientSession']:
                 
                 timeout = aiohttp.ClientTimeout(
                     total=DEFAULT_TIMEOUT_S,
-                    connect=3.0,
-                    sock_read=DEFAULT_TIMEOUT_S - 3.0
+                    connect=DEFAULT_CONNECT_TIMEOUT_S,
+                    sock_read=DEFAULT_TIMEOUT_S - DEFAULT_CONNECT_TIMEOUT_S
                 )
                 
                 _AIOHTTP_SESSION = aiohttp.ClientSession(
@@ -362,18 +374,18 @@ def _is_js_heavy(html: str, extracted_text: str) -> bool:
     for pattern in script_patterns:
         script_matches += len(re.findall(pattern, html))
     
-    # Rough estimate of script density
+    # Rough estimate of script density (matches per 1KB)
     html_len = max(len(html), 1)
-    script_density = script_matches / (html_len / 1000)  # per 1KB
+    script_density = script_matches / (html_len / 1000)
     
-    if script_density > EXTRACT_JS_HEAVY_THRESHOLD * 10:
+    if script_density > EXTRACT_JS_HEAVY_THRESHOLD * JS_DENSITY_MULTIPLIER:
         logger.debug(f"JS-heavy check: script_density={script_density:.2f} > threshold")
         return True
     
     # Check 4: Very low text-to-html ratio
     text_ratio = len(extracted_text) / max(len(html), 1)
-    if text_ratio < 0.01 and len(html) > 5000:  # Less than 1% text content
-        logger.debug(f"JS-heavy check: text_ratio={text_ratio:.4f} < 0.01")
+    if text_ratio < MIN_TEXT_RATIO and len(html) > MIN_HTML_SIZE_FOR_RATIO_CHECK:
+        logger.debug(f"JS-heavy check: text_ratio={text_ratio:.4f} < {MIN_TEXT_RATIO}")
         return True
     
     return False
@@ -583,7 +595,7 @@ async def fetch_url(
                 url,
                 allow_redirects=True,
                 max_redirects=3,
-                timeout=aiohttp.ClientTimeout(total=timeout, connect=3.0),
+                timeout=aiohttp.ClientTimeout(total=timeout, connect=DEFAULT_CONNECT_TIMEOUT_S),
             ) as resp:
                 # Check for rate limiting or server errors
                 if resp.status in (429, 503):
