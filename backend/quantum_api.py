@@ -134,6 +134,15 @@ from core.streaming_utils import (
     get_sse_headers,
 )
 
+# WebRouter for intelligent web vs LLM routing
+try:
+    from core.web_router import get_web_router, WebRouter
+    WEB_ROUTER_AVAILABLE = True
+except Exception:  # pragma: no cover
+    get_web_router = None  # type: ignore
+    WebRouter = None  # type: ignore
+    WEB_ROUTER_AVAILABLE = False
+
 # LLM config presets for optimized parameters
 try:
     from core.llm_config import get_preset, to_payload_params
@@ -3728,17 +3737,55 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
 
     sys_trim = trim_to_tokens(full_sys, 600)
 
+    # =================== WEB ROUTER: Deterministic web detection ===================
+    # Use WebRouter to make a deterministic decision about web vs LLM
+    web_route_decision = None
+    web_route_required = False
+    web_route_category = "general"
+    web_route_reason = "not_checked"
+    
+    if WEB_ROUTER_AVAILABLE:
+        try:
+            router = get_web_router(use_llm_classifier=False)  # Disable LLM classifier for speed
+            web_route_decision = router.route(text, context={
+                'user_id': user_id,
+                'conversation_id': conversation_id,
+                'user_memory': memory_context_dict
+            })
+            
+            web_route_required = web_route_decision.get('web_required', False)
+            web_route_category = web_route_decision.get('category', 'general')
+            web_route_reason = web_route_decision.get('reason', 'unknown')
+            
+            # Log routing decision
+            log_line = router.format_log(web_route_decision)
+            log.info(log_line)
+            
+        except Exception as e:
+            log.warning(f"[WebRouter] Failed: {e}, continuing without routing")
+
     # =================== AUTO-SEARCH INTEGRATION ===================
     # Check if query needs web search (live_data, research, factual)
+    # IMPORTANT: Respect WebRouter decision if web_required=true
     reply_text = ""
     auto_search_used = False
     auto_search_sources = []
     
+    # If WebRouter says web is required, force web search
+    forced_web_by_router = web_route_required if WEB_ROUTER_AVAILABLE else False
+    
     try:
+        # Pass routing decision to auto-search for informed processing
+        context_with_routing = {
+            "user_memory": memory_context_dict,
+            "web_router_decision": web_route_decision,
+            "force_web": forced_web_by_router,
+        }
+        
         auto_search_result = await process_with_auto_search(
             user_message=text,
             user_id=user_id,
-            context={"user_memory": memory_context_dict},
+            context=context_with_routing,
             persona=sys_trim
         )
         
@@ -3748,6 +3795,14 @@ async def chat(payload: dict = Body(...), request: Request = None) -> Dict[str, 
         auto_search_confidence = auto_search_result.get('confidence', 0)
         
         log.info(f"[/chat] Auto-search: triggered={search_triggered}, reason={search_reason}, confidence={auto_search_confidence:.2f}")
+        
+        # ANTI-HALLUCINATION CHECK: If WebRouter said web_required=true, 
+        # ensure we actually used web (not pure LLM)
+        if forced_web_by_router and not search_triggered:
+            log.warning(
+                f"[/chat] WebRouter required web but auto-search didn't trigger! "
+                f"Router reason: {web_route_reason}, Auto-search reason: {search_reason}"
+            )
         
         if search_triggered:
             # Use auto-search response (contains real web data)
