@@ -16,7 +16,7 @@ Version: 1.0.0
 from __future__ import annotations
 
 import re
-from typing import List, Set, Dict, Tuple
+from typing import List, Set, Dict, Tuple, Optional
 from datetime import datetime
 from dataclasses import dataclass
 

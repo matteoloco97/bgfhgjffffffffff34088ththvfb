@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import logging
-from typing import List, Dict, Any, Tuple, Set
+from typing import List, Dict, Any, Tuple, Set, Optional
 from collections import Counter
 from dataclasses import dataclass
 
