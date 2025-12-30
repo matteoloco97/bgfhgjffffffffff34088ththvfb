@@ -28,7 +28,14 @@ from core.chat_engine import reply_with_llm
 
 log = logging.getLogger(__name__)
 
-# CRITICAL FIX: web_search is now ASYNC - import correctly
+# Import SearchEngine for multi-provider search with fallback
+try:
+    from core.search_engine import get_search_engine, SearchEngine
+    _search_engine = get_search_engine()
+except Exception:
+    _search_engine = None  # type: ignore
+
+# Legacy fallback to old web_search if SearchEngine is not available
 try:
     from core.web_search import search as web_search_async
 except Exception:
@@ -256,7 +263,8 @@ class WebResearchAgent:
         self.seen_urls = set()
         self.seen_domains = {}
 
-        if not web_search_async:
+        # Check for available search capability
+        if not _search_engine and not web_search_async:
             return {
                 "answer": (
                     "Il motore di ricerca interno non è configurato, quindi non posso "
@@ -275,9 +283,31 @@ class WebResearchAgent:
         for step_num in range(1, self.max_steps + 1):
             step_start = time.perf_counter()
 
-            # STEP N: ricerca SERP - CRITICAL FIX: await async search
+            # STEP N: ricerca SERP - Use SearchEngine with multi-provider fallback
+            results = []
             try:
-                results = await web_search_async(current_query, num=10) or []
+                if _search_engine:
+                    # Use new SearchEngine with multi-provider and multilingual support
+                    search_result = await _search_engine.search(current_query)
+                    # Convert SearchResult objects to dict format
+                    results = [
+                        {
+                            "url": r.url,
+                            "title": r.title,
+                            "snippet": r.snippet,
+                            "domain": r.domain,
+                            "score": r.score,
+                        }
+                        for r in search_result.results
+                    ]
+                    # Log diagnostic info
+                    if search_result.fallback_triggered:
+                        log.info(
+                            f"SearchEngine fallback: providers_tried={search_result.providers_tried}"
+                        )
+                elif web_search_async:
+                    # Legacy fallback to old web_search
+                    results = await web_search_async(current_query, num=10) or []
             except Exception as e:
                 # Truncate query in log to avoid logging sensitive data
                 log.warning(f"Web search failed: {e}")
