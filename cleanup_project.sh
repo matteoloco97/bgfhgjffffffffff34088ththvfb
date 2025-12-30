@@ -33,7 +33,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 create_archive_dir() {
     echo -e "${BLUE}[INFO]${NC} Creating archive directory: ${ARCHIVE_DIR}"
     mkdir -p "${SCRIPT_DIR}/${ARCHIVE_DIR}"
-    chmod -R u+w "${SCRIPT_DIR}/${ARCHIVE_DIR}"
     echo -e "${GREEN}[SUCCESS]${NC} Archive directory created"
     echo ""
 }
@@ -114,7 +113,7 @@ main() {
         move_to_archive "$file"
     done < <(find . -type f -name "*.old" -not -path "./_archive/*" -not -path "./.git/*" -print0 2>/dev/null)
     
-    # Specific file 1: core/smart_search.pyy
+    # Specific file 1: core/smart_search.pyy (typo file to be archived)
     echo -e "${BLUE}[SPECIFIC]${NC} Checking for core/smart_search.pyy..."
     if [ -f "core/smart_search.pyy" ]; then
         move_to_archive "./core/smart_search.pyy"
@@ -130,7 +129,7 @@ main() {
     echo -e "${BLUE}[PATTERN]${NC} Searching for scripts/demo_*.py files..."
     while IFS= read -r -d '' file; do
         move_to_archive "$file"
-    done < <(find ./scripts -maxdepth 1 -type f -name "demo_*.py" -print0 2>/dev/null)
+    done < <(find ./scripts -maxdepth 1 -type f -name "demo_*.py" -not -path "./_archive/*" -not -path "./.git/*" -print0 2>/dev/null)
     
     # Specific file 3: scripts/test_streaming_demo.py
     echo -e "${BLUE}[SPECIFIC]${NC} Checking for scripts/test_streaming_demo.py..."
