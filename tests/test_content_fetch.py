@@ -221,6 +221,63 @@ class TestExtractTextFromHtml:
         result = _extract_text_from_html(html)
         assert "evil" not in result
         assert "should not appear" not in result
+    
+    def test_extracts_bitcoin_price_from_realistic_html(self):
+        """Test extraction of Bitcoin price from realistic CoinMarketCap-like HTML."""
+        from core.web_search import _extract_text_from_html
+        
+        # Simulates realistic HTML structure from CoinMarketCap
+        html = """
+        <html>
+            <head>
+                <title>Bitcoin (BTC) Price, Charts, Market Cap | CoinMarketCap</title>
+                <script>window.__PRELOADED_STATE__ = {...}</script>
+            </head>
+            <body>
+                <nav>Navigation items</nav>
+                <header>Site header</header>
+                <main>
+                    <div class="price-container">
+                        <h1>Bitcoin</h1>
+                        <p class="price-text">Bitcoin is trading at $87,244.95 USD today</p>
+                        <div class="stats">
+                            <span>24h change: +2.5%</span>
+                            <span>Market cap: $1.7T</span>
+                        </div>
+                    </div>
+                    <article class="details">
+                        <p>Bitcoin (BTC) is a cryptocurrency launched in 2009 by Satoshi Nakamoto.</p>
+                        <p>The current price reflects strong market momentum with high trading volume.</p>
+                    </article>
+                </main>
+                <footer>Footer content</footer>
+                <script>console.log('tracking');</script>
+                <noscript>Please enable JavaScript to view this page.</noscript>
+            </body>
+        </html>
+        """
+        
+        result = _extract_text_from_html(html)
+        
+        # Should contain the price information
+        assert "87,244.95" in result or "Bitcoin" in result, \
+            f"Expected Bitcoin price in extracted text, got: {result}"
+        
+        # Should contain meaningful content
+        assert "trading" in result or "price" in result or "cryptocurrency" in result, \
+            f"Expected meaningful Bitcoin content in result: {result}"
+        
+        # Should NOT contain script/noscript content
+        assert "console.log" not in result
+        assert "tracking" not in result
+        assert "Please enable JavaScript" not in result
+        
+        # Should have extracted reasonable amount of content
+        assert len(result) > 50, f"Expected substantial content, got only {len(result)} chars"
+        
+        # Verify price value is extracted correctly
+        assert "$87,244.95" in result or "87,244.95" in result, \
+            f"Expected to find the exact price value in: {result}"
 
 
 # ===================== INTEGRATION TESTS =====================
