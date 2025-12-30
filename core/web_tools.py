@@ -23,20 +23,22 @@ ASYNC PARALLELIZATION (Phase 1):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import random
 import re
 import asyncio
 import time
-from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict
+from dataclasses import dataclass, field, asdict
+from typing import Optional, Tuple, List, Dict, Any
 from collections import defaultdict
 
 import requests
 from requests.exceptions import RequestException
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from core.robust_content_extraction import extract_content_robust
 
 # Async HTTP support
@@ -51,23 +53,68 @@ logger = logging.getLogger(__name__)
 
 # ===================== Config =====================
 
+# User-Agent (can be overridden via SEARCH_UA or WEB_EXTRACT_UA)
 DEFAULT_UA = os.getenv(
-    "WEB_EXTRACT_UA",
-    # UA abbastanza “normale”
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122 Safari/537.36",
+    "SEARCH_UA",
+    os.getenv(
+        "WEB_EXTRACT_UA",
+        # UA abbastanza "normale"
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122 Safari/537.36",
+    ),
 )
 
+# Accept-Language (can be overridden via WEB_ACCEPT_LANGUAGE or SEARCH_LANG)
 DEFAULT_LANG = os.getenv(
-    "WEB_EXTRACT_LANG",
-    "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+    "WEB_ACCEPT_LANGUAGE",
+    os.getenv(
+        "SEARCH_LANG",
+        os.getenv(
+            "WEB_EXTRACT_LANG",
+            "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+        ),
+    ),
 )
 
 # Timeout totale di default (secondi)
 DEFAULT_TIMEOUT_S = float(os.getenv("WEB_EXTRACT_TIMEOUT_S", "8.0"))
 
 # Limite massimo di byte letti dal body (per evitare esplosioni)
-MAX_HTML_BYTES = int(os.getenv("WEB_EXTRACT_MAX_BYTES", str(1_500_000)))
+MAX_HTML_BYTES = int(os.getenv("WEB_MAX_HTML_BYTES", os.getenv("WEB_EXTRACT_MAX_BYTES", str(2_000_000))))
+
+# ===================== Issue 3: Renderer Config =====================
+
+# Renderer service URL
+RENDERER_URL = os.getenv("RENDERER_URL", "http://127.0.0.1:8890/render")
+
+# Enable/disable renderer fallback (1=enabled, 0=disabled)
+RENDERER_ENABLED = os.getenv("RENDERER_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+
+# Renderer timeout in seconds
+RENDERER_TIMEOUT_S = float(os.getenv("RENDERER_TIMEOUT_S", "15"))
+
+# Max concurrent renderer requests
+RENDERER_MAX_CONCURRENT = int(os.getenv("RENDERER_MAX_CONCURRENT", "2"))
+
+# ===================== Issue 3: Extraction Config =====================
+
+# Minimum characters for extraction to be considered successful
+EXTRACT_MIN_CHARS = int(os.getenv("EXTRACT_MIN_CHARS", "800"))
+
+# JS-heavy detection threshold (ratio of script-like content)
+EXTRACT_JS_HEAVY_THRESHOLD = float(os.getenv("EXTRACT_JS_HEAVY_THRESHOLD", "0.30"))
+
+# JS density multiplier for threshold calculation (script matches per KB)
+JS_DENSITY_MULTIPLIER = 10
+
+# Minimum text-to-HTML ratio for content to be considered valid
+MIN_TEXT_RATIO = 0.01
+
+# Minimum HTML size to apply text ratio check
+MIN_HTML_SIZE_FOR_RATIO_CHECK = 5000
+
+# Default connect timeout in seconds
+DEFAULT_CONNECT_TIMEOUT_S = float(os.getenv("HTTP_CONNECT_TIMEOUT_S", "3.0"))
 
 # ===================== Async Config (Phase 1) =====================
 
@@ -176,8 +223,8 @@ async def get_aiohttp_session() -> Optional['aiohttp.ClientSession']:
                 
                 timeout = aiohttp.ClientTimeout(
                     total=DEFAULT_TIMEOUT_S,
-                    connect=3.0,
-                    sock_read=DEFAULT_TIMEOUT_S - 3.0
+                    connect=DEFAULT_CONNECT_TIMEOUT_S,
+                    sock_read=DEFAULT_TIMEOUT_S - DEFAULT_CONNECT_TIMEOUT_S
                 )
                 
                 _AIOHTTP_SESSION = aiohttp.ClientSession(
@@ -224,6 +271,461 @@ def get_domain_rate_limiter() -> DomainRateLimiter:
 class ExtractResult:
     text: str
     og_image: Optional[str] = None
+
+
+# ===================== Issue 3: Enhanced Extraction Result =====================
+
+@dataclass
+class ExtractedContent:
+    """Enhanced extraction result with metadata."""
+    text: str
+    title: str = ""
+    meta_description: str = ""
+    content_length: int = 0
+    og_image: Optional[str] = None
+    
+    def __post_init__(self):
+        self.content_length = len(self.text)
+
+
+@dataclass
+class FetchLog:
+    """Structured log entry for URL fetch operations (Issue 3)."""
+    url: str
+    fetch_ok: bool = False
+    status_code: int = 0
+    final_url: str = ""
+    bytes_fetched: int = 0
+    extract_chars: int = 0
+    used_renderer: bool = False
+    renderer_ok: bool = False
+    timings_ms: Dict[str, float] = field(default_factory=dict)
+    error: Optional[str] = None
+    
+    def to_json(self) -> str:
+        """Return structured JSON log line."""
+        return json.dumps(asdict(self), ensure_ascii=False)
+    
+    def log(self) -> None:
+        """Log the fetch result as structured JSON."""
+        logger.info(f"[FETCH_LOG] {self.to_json()}")
+
+
+# ===================== Issue 3: JS-Heavy Detection =====================
+
+# Keywords that indicate JS-heavy pages
+JS_HEAVY_KEYWORDS = [
+    "enable javascript",
+    "javascript is required",
+    "please enable javascript",
+    "app-root",
+    "__NEXT_DATA__",
+    "__NUXT__",
+    "hydrate",
+    "chunk",
+    "webpack",
+    "react-root",
+    "ng-app",
+    "vue-app",
+    "data-reactroot",
+    "data-v-",
+    "noscript",
+]
+
+
+def _is_js_heavy(html: str, extracted_text: str) -> bool:
+    """
+    Detect if a page is JS-heavy and requires rendering.
+    
+    Heuristics:
+    1. Extracted text is too short (< EXTRACT_MIN_CHARS)
+    2. High ratio of script-like content (braces, function, var, etc.)
+    3. Contains JS framework markers
+    4. High link-to-text ratio (navigation-heavy with no content)
+    
+    Returns True if page likely needs JS rendering.
+    """
+    html_lower = html.lower()
+    
+    # Check 1: Extraction too short
+    if len(extracted_text) < EXTRACT_MIN_CHARS:
+        logger.debug(f"JS-heavy check: extracted_chars={len(extracted_text)} < {EXTRACT_MIN_CHARS}")
+        return True
+    
+    # Check 2: JS framework keywords
+    for keyword in JS_HEAVY_KEYWORDS:
+        if keyword.lower() in html_lower:
+            logger.debug(f"JS-heavy check: found keyword '{keyword}'")
+            return True
+    
+    # Check 3: High script-like content ratio
+    script_patterns = [
+        r'\bfunction\s*\(',
+        r'\bvar\s+\w+',
+        r'\bconst\s+\w+',
+        r'\blet\s+\w+',
+        r'=>',
+        r'\{\s*\}',
+        r'module\.exports',
+        r'import\s+\{',
+        r'export\s+default',
+    ]
+    script_matches = 0
+    for pattern in script_patterns:
+        script_matches += len(re.findall(pattern, html))
+    
+    # Rough estimate of script density (matches per 1KB)
+    html_len = max(len(html), 1)
+    script_density = script_matches / (html_len / 1000)
+    
+    if script_density > EXTRACT_JS_HEAVY_THRESHOLD * JS_DENSITY_MULTIPLIER:
+        logger.debug(f"JS-heavy check: script_density={script_density:.2f} > threshold")
+        return True
+    
+    # Check 4: Very low text-to-html ratio
+    text_ratio = len(extracted_text) / max(len(html), 1)
+    if text_ratio < MIN_TEXT_RATIO and len(html) > MIN_HTML_SIZE_FOR_RATIO_CHECK:
+        logger.debug(f"JS-heavy check: text_ratio={text_ratio:.4f} < {MIN_TEXT_RATIO}")
+        return True
+    
+    return False
+
+
+# ===================== Issue 3: Renderer Service Client =====================
+
+_RENDERER_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def _get_renderer_semaphore() -> asyncio.Semaphore:
+    """Get or create renderer concurrency semaphore."""
+    global _RENDERER_SEMAPHORE
+    if _RENDERER_SEMAPHORE is None:
+        _RENDERER_SEMAPHORE = asyncio.Semaphore(RENDERER_MAX_CONCURRENT)
+    return _RENDERER_SEMAPHORE
+
+
+async def _call_renderer(url: str, timeout: float = RENDERER_TIMEOUT_S) -> Optional[Dict[str, Any]]:
+    """
+    Call the Playwright renderer microservice for JS rendering.
+    
+    Args:
+        url: URL to render
+        timeout: Timeout in seconds
+        
+    Returns:
+        Dict with: ok, url, final_url, html, status_code, timings_ms, error
+        or None if renderer is disabled or fails
+    """
+    if not RENDERER_ENABLED:
+        logger.debug("Renderer is disabled (RENDERER_ENABLED=0)")
+        return None
+    
+    semaphore = _get_renderer_semaphore()
+    
+    async with semaphore:
+        try:
+            session = await get_aiohttp_session()
+            if not session:
+                logger.warning("No aiohttp session available for renderer call")
+                return None
+            
+            params = {"url": url}
+            
+            t0 = time.time()
+            async with session.get(
+                RENDERER_URL,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                elapsed_ms = (time.time() - t0) * 1000
+                
+                if resp.status != 200:
+                    logger.warning(f"Renderer returned status {resp.status} for {url}")
+                    return {
+                        "ok": False,
+                        "url": url,
+                        "final_url": url,
+                        "html": "",
+                        "status_code": resp.status,
+                        "timings_ms": {"total": elapsed_ms},
+                        "error": f"HTTP {resp.status}",
+                    }
+                
+                data = await resp.json()
+                data["timings_ms"]["call"] = elapsed_ms
+                return data
+                
+        except asyncio.TimeoutError:
+            logger.warning(f"Renderer timeout for {url} after {timeout}s")
+            return {
+                "ok": False,
+                "url": url,
+                "error": "timeout",
+            }
+        except Exception as e:
+            logger.warning(f"Renderer call failed for {url}: {e}")
+            return {
+                "ok": False,
+                "url": url,
+                "error": str(e),
+            }
+
+
+# ===================== Issue 3: Enhanced Extract with Title/Meta =====================
+
+def _extract_title(html: str) -> str:
+    """Extract page title from HTML."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        title_tag = soup.find('title')
+        if title_tag:
+            return title_tag.get_text(strip=True)
+    except Exception:
+        pass
+    
+    # Regex fallback
+    match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+    if match:
+        return re.sub(r'\s+', ' ', match.group(1)).strip()
+    return ""
+
+
+def _extract_meta_description(html: str) -> str:
+    """Extract meta description from HTML."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        meta = soup.find('meta', attrs={'name': 'description'})
+        if meta and meta.get('content'):
+            return meta['content'].strip()
+    except Exception:
+        pass
+    
+    # Regex fallback
+    match = re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)',
+        html,
+        re.IGNORECASE
+    )
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def extract_text(html: str, url: str = "") -> ExtractedContent:
+    """
+    Extract text from HTML with boilerplate removal (Issue 3 A2).
+    
+    Args:
+        html: Raw HTML content
+        url: Original URL (for context in extraction)
+        
+    Returns:
+        ExtractedContent with text, title, meta_description, content_length
+    """
+    # Extract metadata first
+    title = _extract_title(html)
+    meta_description = _extract_meta_description(html)
+    og_image = _extract_og_image(html, url) if url else None
+    
+    # Extract main content using robust extraction
+    text = extract_content_robust(html, url)
+    
+    # Normalize whitespace
+    text = _normalize_whitespace(text).strip()
+    
+    return ExtractedContent(
+        text=text,
+        title=title,
+        meta_description=meta_description,
+        content_length=len(text),
+        og_image=og_image,
+    )
+
+
+# ===================== Issue 3: Fetch URL with Renderer Fallback =====================
+
+async def fetch_url(
+    url: str,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    max_retries: int = MAX_RETRIES_ASYNC,
+) -> Tuple[Optional[bytes], str, int, Dict[str, Any]]:
+    """
+    Fetch URL with crawler-grade robustness (Issue 3 A1).
+    
+    Features:
+    - Retry with exponential backoff + jitter
+    - Follow redirects (max 3)
+    - Support gzip/br/deflate
+    - Realistic headers (UA, Accept-Language, Accept-Encoding)
+    - DNS cache / connection pooling via aiohttp
+    
+    Args:
+        url: URL to fetch
+        timeout: Total timeout in seconds
+        max_retries: Maximum retry attempts
+        
+    Returns:
+        Tuple of (content_bytes, final_url, status_code, headers_dict)
+        Returns (None, url, 0, {}) on failure
+    """
+    session = await get_aiohttp_session()
+    if not session:
+        # Fallback to sync
+        resp = _http_get(url, timeout)
+        if resp:
+            return (resp.content, resp.url, resp.status_code, dict(resp.headers))
+        return (None, url, 0, {})
+    
+    rate_limiter = get_domain_rate_limiter()
+    
+    for attempt in range(max_retries):
+        try:
+            # Apply per-domain rate limiting
+            await rate_limiter.acquire(url)
+            
+            # Add jitter to backoff
+            if attempt > 0:
+                jitter = random.uniform(0, 0.5)
+                backoff = min(BACKOFF_BASE * (2 ** attempt) + jitter, BACKOFF_MAX)
+                await asyncio.sleep(backoff)
+            
+            async with session.get(
+                url,
+                allow_redirects=True,
+                max_redirects=3,
+                timeout=aiohttp.ClientTimeout(total=timeout, connect=DEFAULT_CONNECT_TIMEOUT_S),
+            ) as resp:
+                # Check for rate limiting or server errors
+                if resp.status in (429, 503):
+                    if attempt < max_retries - 1:
+                        backoff = min(BACKOFF_BASE * (2 ** attempt), BACKOFF_MAX)
+                        logger.warning(
+                            f"HTTP {resp.status} for {url}, backing off {backoff:.2f}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        continue
+                    return (None, str(resp.url), resp.status, dict(resp.headers))
+                
+                # Check content-type
+                ctype = resp.headers.get("Content-Type", "")
+                if "text/html" not in ctype and "application/xhtml" not in ctype:
+                    logger.info(f"Non-HTML content-type for {url}: {ctype}")
+                    return (None, str(resp.url), resp.status, dict(resp.headers))
+                
+                # Read content (limit size)
+                content = await resp.read()
+                if len(content) > MAX_HTML_BYTES:
+                    content = content[:MAX_HTML_BYTES]
+                
+                return (content, str(resp.url), resp.status, dict(resp.headers))
+        
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout for {url} (attempt {attempt + 1}/{max_retries})")
+        except Exception as e:
+            logger.warning(f"Error fetching {url}: {e} (attempt {attempt + 1}/{max_retries})")
+    
+    return (None, url, 0, {})
+
+
+async def fetch_and_extract_with_renderer(
+    url: str,
+    timeout: float = DEFAULT_TIMEOUT_S,
+) -> Tuple[ExtractedContent, FetchLog]:
+    """
+    Fetch and extract with automatic JS renderer fallback (Issue 3 A4).
+    
+    Pipeline:
+    1. Fetch HTML (crawler-grade)
+    2. Extract text
+    3. If JS-heavy heuristics trigger → call renderer
+    4. Re-extract from rendered HTML
+    5. Return result with structured log
+    
+    Args:
+        url: URL to fetch
+        timeout: Timeout for initial fetch
+        
+    Returns:
+        Tuple of (ExtractedContent, FetchLog)
+    """
+    fetch_log = FetchLog(url=url)
+    t0 = time.time()
+    
+    # Step 1: Fetch HTML
+    t_fetch_start = time.time()
+    content_bytes, final_url, status_code, headers = await fetch_url(url, timeout)
+    t_fetch_end = time.time()
+    fetch_log.timings_ms["fetch"] = (t_fetch_end - t_fetch_start) * 1000
+    
+    fetch_log.final_url = final_url
+    fetch_log.status_code = status_code
+    
+    if content_bytes is None:
+        fetch_log.fetch_ok = False
+        fetch_log.error = "fetch_failed"
+        fetch_log.timings_ms["total"] = (time.time() - t0) * 1000
+        fetch_log.log()
+        return ExtractedContent(text="", title="", meta_description=""), fetch_log
+    
+    fetch_log.fetch_ok = True
+    fetch_log.bytes_fetched = len(content_bytes)
+    
+    # Decode HTML
+    encoding = None
+    content_type = headers.get("Content-Type", "")
+    if "charset=" in content_type:
+        try:
+            encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+        except Exception:
+            pass
+    
+    try:
+        html = content_bytes.decode(encoding or "utf-8", errors="replace")
+    except Exception:
+        html = content_bytes.decode("utf-8", errors="replace")
+    
+    # Step 2: Extract text
+    t_extract_start = time.time()
+    extracted = extract_text(html, final_url)
+    t_extract_end = time.time()
+    fetch_log.timings_ms["extract"] = (t_extract_end - t_extract_start) * 1000
+    fetch_log.extract_chars = extracted.content_length
+    
+    # Step 3: Check if JS-heavy
+    if _is_js_heavy(html, extracted.text):
+        logger.info(f"JS-heavy detected for {url}, attempting renderer fallback")
+        fetch_log.used_renderer = True
+        
+        # Step 4: Call renderer
+        t_render_start = time.time()
+        render_result = await _call_renderer(url, timeout=RENDERER_TIMEOUT_S)
+        t_render_end = time.time()
+        fetch_log.timings_ms["render"] = (t_render_end - t_render_start) * 1000
+        
+        if render_result and render_result.get("ok"):
+            fetch_log.renderer_ok = True
+            rendered_html = render_result.get("html", "")
+            
+            # Re-extract from rendered HTML
+            t_reextract_start = time.time()
+            extracted = extract_text(rendered_html, render_result.get("final_url", url))
+            t_reextract_end = time.time()
+            fetch_log.timings_ms["reextract"] = (t_reextract_end - t_reextract_start) * 1000
+            fetch_log.extract_chars = extracted.content_length
+            
+            logger.info(f"Renderer success for {url}: {extracted.content_length} chars extracted")
+        else:
+            fetch_log.renderer_ok = False
+            error_msg = render_result.get("error", "renderer_failed") if render_result else "renderer_unavailable"
+            logger.warning(f"Renderer failed for {url}: {error_msg}")
+            # Keep original extraction (may be partial)
+    
+    fetch_log.timings_ms["total"] = (time.time() - t0) * 1000
+    fetch_log.log()
+    
+    return extracted, fetch_log
 
 
 # ===================== HTTP layer =====================
@@ -869,4 +1371,12 @@ __all__ = [
     "ExtractResult",
     "fetch_and_extract_robust",
     "close_aiohttp_session",
+    # Issue 3: New exports
+    "fetch_url",
+    "extract_text",
+    "fetch_and_extract_with_renderer",
+    "ExtractedContent",
+    "FetchLog",
+    "EXTRACT_MIN_CHARS",
+    "RENDERER_ENABLED",
 ]
