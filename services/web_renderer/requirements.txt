@@ -1,0 +1,10 @@
+# Web Renderer Service - Requirements
+# Playwright-based JS rendering for QuantumDev
+# 
+# Install with: pip install -r requirements.txt
+# Then install browsers: playwright install chromium
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+playwright>=1.40.0
