@@ -506,6 +506,20 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# ============================= STATIC FILES & FRONTEND ===================================
+
+from fastapi.staticfiles import StaticFiles
+
+# Mount static files for frontend
+FRONTEND_DIR = os.path.join(ROOT, "frontend")
+STATIC_DIR = os.path.join(FRONTEND_DIR, "static")
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    log.info(f"✓ [FRONTEND] Static files mounted from {STATIC_DIR}")
+else:
+    log.warning(f"⚠️  [FRONTEND] Static directory not found: {STATIC_DIR}")
+
 # ============================= RATE LIMITING ===================================
 
 # Admin token for bypassing rate limits
@@ -2283,6 +2297,42 @@ def gpu_alerts_status(hours: int = 24) -> Dict[str, Any]:
             "active_alerts": [],
             "history": [],
         }
+
+
+@app.get("/", response_class=HTMLResponse)
+def chat_interface(request: Request):
+    """
+    Main chat interface - ChatGPT/Claude-like web UI.
+    
+    Features:
+    - Modern responsive chat interface
+    - Streaming responses
+    - Auto web search
+    - File upload support
+    - Conversation history
+    - Settings panel
+    - Dark/Light mode
+    
+    Returns:
+        HTML page with chat interface
+    """
+    try:
+        frontend_templates_dir = os.path.join(ROOT, "frontend", "templates")
+        if os.path.exists(os.path.join(frontend_templates_dir, "chat.html")):
+            frontend_templates = Jinja2Templates(directory=frontend_templates_dir)
+            return frontend_templates.TemplateResponse("chat.html", {"request": request})
+        else:
+            log.warning(f"Chat template not found at {frontend_templates_dir}")
+            return HTMLResponse(
+                content="<h1>Chat Interface Not Available</h1><p>Frontend templates not found.</p>",
+                status_code=404
+            )
+    except Exception as e:
+        log.error(f"Chat interface endpoint failed: {e}")
+        return HTMLResponse(
+            content=f"<h1>Error loading chat interface</h1><p>{str(e)}</p>",
+            status_code=500
+        )
 
 
 @app.get("/dashboard/gpu", response_class=HTMLResponse)
