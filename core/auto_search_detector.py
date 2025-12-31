@@ -99,19 +99,27 @@ class AutoSearchDetector:
             LLM response or None if failed/timed out.
         """
         try:
-            # Import here to avoid circular dependencies
-            from core.chat_engine import reply_with_llm
-            
-            # Run LLM call with timeout
-            response = await asyncio.wait_for(
-                reply_with_llm(
-                    user_text=prompt,
-                    persona="You are a precise query analyzer. Follow instructions exactly.",
-                    temperature=0.1,  # Low temperature for consistent JSON output
-                    max_tokens=200,  # We only need a small JSON response
-                ),
-                timeout=timeout
-            )
+            # Use provided client or import chat_engine's function
+            if self._llm_client:
+                # Custom LLM client provided
+                response = await asyncio.wait_for(
+                    self._llm_client(prompt, timeout=timeout),
+                    timeout=timeout
+                )
+            else:
+                # Import here to avoid circular dependencies
+                from core.chat_engine import reply_with_llm
+                
+                # Run LLM call with timeout
+                response = await asyncio.wait_for(
+                    reply_with_llm(
+                        user_text=prompt,
+                        persona="You are a precise query analyzer. Follow instructions exactly.",
+                        temperature=0.1,  # Low temperature for consistent JSON output
+                        max_tokens=200,  # We only need a small JSON response
+                    ),
+                    timeout=timeout
+                )
             return response
             
         except asyncio.TimeoutError:
@@ -250,14 +258,21 @@ JSON response:"""
             Parsed result or None if parsing failed.
         """
         try:
-            # Try to extract JSON from response (LLM might add extra text)
-            # Look for { ... } pattern
-            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-            if not json_match:
-                log.warning("No JSON found in LLM response")
-                return None
-            
-            data = json.loads(json_match.group(0))
+            # Try to parse the entire response as JSON first
+            try:
+                data = json.loads(response.strip())
+            except json.JSONDecodeError:
+                # If that fails, try to extract JSON using a more robust approach
+                # Look for the first { and last } to handle nested objects
+                start = response.find('{')
+                end = response.rfind('}')
+                
+                if start == -1 or end == -1 or end <= start:
+                    log.warning("No JSON object found in LLM response")
+                    return None
+                
+                json_str = response[start:end+1]
+                data = json.loads(json_str)
             
             # Validate required fields
             required = ["should_search", "search_type", "optimized_query", "reason"]
@@ -397,10 +412,14 @@ JSON response:"""
                 'suggested_queries': List[str]
             }
         """
-        # Build context string if provided
+        # Build concise context string if provided
         context_str = ""
         if context:
-            context_str = f"Context: {json.dumps(context, indent=2)}"
+            # Only include key context info to avoid bloating the prompt
+            context_keys = ['recent_topic', 'last_query', 'conversation_mode']
+            context_items = {k: context.get(k) for k in context_keys if k in context}
+            if context_items:
+                context_str = f"Context: {', '.join(f'{k}={v}' for k, v in context_items.items())}"
         
         # Call new analyze_intent method
         result = await self.analyze_intent(query, context_str)
