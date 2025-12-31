@@ -101,9 +101,9 @@ class AutoSearchDetector:
         try:
             # Use provided client or import chat_engine's function
             if self._llm_client:
-                # Custom LLM client provided
+                # Custom LLM client provided - call it directly
                 response = await asyncio.wait_for(
-                    self._llm_client(prompt, timeout=timeout),
+                    self._llm_client(prompt),
                     timeout=timeout
                 )
             else:
@@ -262,16 +262,28 @@ JSON response:"""
             try:
                 data = json.loads(response.strip())
             except json.JSONDecodeError:
-                # If that fails, try to extract JSON using a more robust approach
-                # Look for the first { and last } to handle nested objects
-                start = response.find('{')
-                end = response.rfind('}')
+                # If that fails, try to extract JSON by matching braces
+                # This handles cases where LLM adds extra text
+                brace_count = 0
+                start_idx = -1
+                end_idx = -1
                 
-                if start == -1 or end == -1 or end <= start:
-                    log.warning("No JSON object found in LLM response")
+                for i, char in enumerate(response):
+                    if char == '{':
+                        if start_idx == -1:
+                            start_idx = i
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0 and start_idx != -1:
+                            end_idx = i
+                            break
+                
+                if start_idx == -1 or end_idx == -1:
+                    log.warning("No complete JSON object found in LLM response")
                     return None
                 
-                json_str = response[start:end+1]
+                json_str = response[start_idx:end_idx+1]
                 data = json.loads(json_str)
             
             # Validate required fields
@@ -413,13 +425,23 @@ JSON response:"""
             }
         """
         # Build concise context string if provided
+        # Limit context size to avoid bloating the prompt
         context_str = ""
         if context:
-            # Only include key context info to avoid bloating the prompt
-            context_keys = ['recent_topic', 'last_query', 'conversation_mode']
-            context_items = {k: context.get(k) for k in context_keys if k in context}
+            # Convert context to string, limiting size
+            context_items = []
+            char_count = 0
+            max_chars = 200  # Limit context to 200 chars
+            
+            for key, value in context.items():
+                item = f"{key}={value}"
+                if char_count + len(item) > max_chars:
+                    break
+                context_items.append(item)
+                char_count += len(item) + 2  # +2 for ", "
+            
             if context_items:
-                context_str = f"Context: {', '.join(f'{k}={v}' for k, v in context_items.items())}"
+                context_str = f"Context: {', '.join(context_items)}"
         
         # Call new analyze_intent method
         result = await self.analyze_intent(query, context_str)
