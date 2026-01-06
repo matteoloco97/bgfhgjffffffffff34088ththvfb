@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantumDev AI - Uncensored AI Assistant</title>
+    <link rel="stylesheet" href="/static/css/chat.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fas fa-atom"></i>
+                    <span>QuantumDev AI</span>
+                </div>
+                <button class="new-chat-btn" id="newChatBtn">
+                    <i class="fas fa-plus"></i>
+                    <span>Nuova Chat</span>
+                </button>
+            </div>
+            
+            <div class="sidebar-content">
+                <div class="chat-history" id="chatHistory">
+                    <!-- Chat history will be populated here -->
+                </div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <button class="settings-btn" id="settingsBtn">
+                    <i class="fas fa-cog"></i>
+                    <span>Impostazioni</span>
+                </button>
+                <button class="theme-toggle" id="themeToggle">
+                    <i class="fas fa-moon"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-main">
+            <div class="chat-header">
+                <button class="sidebar-toggle" id="sidebarToggle">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="header-info">
+                    <h2>DeepSeek Qwen 32B - Uncensored</h2>
+                    <span class="status-indicator online">
+                        <i class="fas fa-circle"></i>
+                        Online
+                    </span>
+                </div>
+                <div class="header-actions">
+                    <button class="icon-btn" id="exportBtn" title="Esporta conversazione">
+                        <i class="fas fa-download"></i>
+                    </button>
+                    <button class="icon-btn" id="clearBtn" title="Cancella chat">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="chat-container" id="chatContainer">
+                <div class="welcome-screen" id="welcomeScreen">
+                    <div class="welcome-content">
+                        <div class="welcome-icon">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <h1>Benvenuto in QuantumDev AI</h1>
+                        <p class="welcome-subtitle">Il tuo assistente AI personale senza censura, potenziato da DeepSeek Qwen 32B</p>
+                        
+                        <div class="capabilities">
+                            <div class="capability-card">
+                                <i class="fas fa-globe"></i>
+                                <h3>Ricerca Web Automatica</h3>
+                                <p>Cerca informazioni aggiornate automaticamente quando necessario</p>
+                            </div>
+                            <div class="capability-card">
+                                <i class="fas fa-code"></i>
+                                <h3>Esecuzione Codice</h3>
+                                <p>Esegui e testa codice Python in tempo reale</p>
+                            </div>
+                            <div class="capability-card">
+                                <i class="fas fa-image"></i>
+                                <h3>OCR e Immagini</h3>
+                                <p>Analizza immagini ed estrai testo da documenti</p>
+                            </div>
+                            <div class="capability-card">
+                                <i class="fas fa-brain"></i>
+                                <h3>Memoria Conversazionale</h3>
+                                <p>Ricorda il contesto delle conversazioni passate</p>
+                            </div>
+                        </div>
+
+                        <div class="example-prompts">
+                            <p class="examples-title">Prova questi esempi:</p>
+                            <button class="example-prompt">Qual è il prezzo attuale di Bitcoin?</button>
+                            <button class="example-prompt">Scrivi uno script Python per analizzare dati CSV</button>
+                            <button class="example-prompt">Quali sono le ultime notizie di tecnologia?</button>
+                            <button class="example-prompt">Come funziona il machine learning?</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="messages" id="messages">
+                    <!-- Messages will appear here -->
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="web-search-indicator" id="webSearchIndicator" style="display: none;">
+                    <i class="fas fa-globe spin"></i>
+                    <span>Ricerca web in corso...</span>
+                </div>
+                
+                <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <span class="typing-text">L'assistente sta scrivendo...</span>
+                </div>
+
+                <form class="chat-input-form" id="chatForm">
+                    <div class="input-wrapper">
+                        <button type="button" class="attach-btn" id="attachBtn" title="Allega file">
+                            <i class="fas fa-paperclip"></i>
+                        </button>
+                        <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.doc,.docx" style="display: none;" multiple>
+                        
+                        <textarea 
+                            id="messageInput" 
+                            placeholder="Scrivi un messaggio..." 
+                            rows="1"
+                            autofocus
+                        ></textarea>
+                        
+                        <button type="submit" class="send-btn" id="sendBtn">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="attached-files" id="attachedFiles" style="display: none;">
+                        <!-- Attached files will appear here -->
+                    </div>
+                </form>
+
+                <div class="input-footer">
+                    <span class="footer-text">QuantumDev AI può commettere errori. Verifica le informazioni importanti.</span>
+                </div>
+            </div>
+        </main>
+
+        <!-- Settings Modal -->
+        <div class="modal" id="settingsModal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Impostazioni</h2>
+                    <button class="close-modal" id="closeSettings">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label for="modelSelect">Modello</label>
+                        <select id="modelSelect">
+                            <option value="deepseek-qwen-32b" selected>DeepSeek Qwen 32B (Uncensored)</option>
+                            <option value="gpt-4">GPT-4</option>
+                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        </select>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="temperatureSlider">
+                            Temperatura: <span id="temperatureValue">0.7</span>
+                        </label>
+                        <input type="range" id="temperatureSlider" min="0" max="2" step="0.1" value="0.7">
+                        <p class="setting-description">Controlla la creatività delle risposte (0 = preciso, 2 = molto creativo)</p>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="maxTokensInput">Token massimi</label>
+                        <input type="number" id="maxTokensInput" value="2048" min="256" max="4096" step="256">
+                        <p class="setting-description">Lunghezza massima delle risposte</p>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="autoSearchToggle" checked>
+                            <span>Abilita ricerca web automatica</span>
+                        </label>
+                        <p class="setting-description">Cerca automaticamente informazioni aggiornate quando necessario</p>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="memoryToggle" checked>
+                            <span>Abilita memoria conversazionale</span>
+                        </label>
+                        <p class="setting-description">Ricorda il contesto delle conversazioni precedenti</p>
+                    </div>
+
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="streamingToggle" checked>
+                            <span>Risposte in streaming</span>
+                        </label>
+                        <p class="setting-description">Mostra le risposte mentre vengono generate</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" id="resetSettings">Ripristina predefiniti</button>
+                    <button class="btn-primary" id="saveSettings">Salva</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>
